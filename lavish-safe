@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# lavish-safe - launcher for the locally hardened lavish-axi build (WSL / Linux).
+#
+# The capabilities are removed in this tree's SOURCE, not merely disabled here.
+# This launcher's job is to make sure the thing that runs is THAT tree: it
+# refuses to start if the build is missing, unbuilt, or no longer carries the
+# hardening markers (which is what a re-download or an `npm update` would look
+# like).
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+ENTRY="$ROOT/dist/cli.mjs"
+
+die() { printf 'lavish-safe: %s\n' "$1" >&2; exit 1; }
+
+[ -f "$ROOT/package.json" ] || die "not a lavish-axi checkout: $ROOT"
+grep -q '"version": "0.1.62"' "$ROOT/package.json" ||
+  die "this checkout is not version 0.1.62 - it was never audited. Re-audit before use."
+
+[ -f "$ENTRY" ] || die "dist/cli.mjs is missing - run 'npm install' in $ROOT once to build it."
+
+# The build must carry the hardening and must not carry the removed endpoints.
+grep -q 'LAVISH-HARDENED' "$ENTRY" ||
+  die "dist/cli.mjs has no hardening markers - it was rebuilt from unpatched sources. Re-run harden_lavish.py and 'npm run build'."
+for host in 'a.kunchenguid.com' 'api.ht-ml.app' 'cdn.jsdelivr.net'; do
+  if grep -q "$host" "$ENTRY"; then
+    die "dist/cli.mjs still references $host - the hardening is not in this build. Refusing to run."
+  fi
+done
+
+# Defence in depth: even though the source ignores these, keep the environment
+# itself hostile to telemetry and to binding anywhere but loopback.
+export LAVISH_AXI_TELEMETRY=0
+export LAVISH_AXI_HOST=127.0.0.1
+unset LAVISH_AXI_UMAMI_WEBSITE_ID LAVISH_AXI_UMAMI_HOST LAVISH_AXI_HTML_APP_TOKEN 2>/dev/null || true
+
+exec node "$ENTRY" "$@"

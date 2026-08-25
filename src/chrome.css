@@ -1689,3 +1689,8 @@ body.layout-gate-active iframe#artifact {
 .whiteboard-error[hidden] {
   display: none;
 }
+
+/* LAVISH-HARDENED: publishing is removed from this build - hide its menu entry. */
+#shareArtifact {
+  display: none !important;
+}

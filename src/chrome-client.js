@@ -3205,7 +3205,11 @@ copyPathButton.onclick = copyFilePath;
 reloadArtifactButton.onclick = reloadArtifact;
 copySnapshotButton.onclick = copyDomSnapshot;
 exportArtifactButton.onclick = exportArtifact;
-shareArtifactButton.onclick = openShareDialog;
+// LAVISH-HARDENED: publishing removed - the menu item is hidden in chrome.css and
+// deliberately gets no click handler. openShareDialog stays referenced so the
+// surrounding module keeps its shape.
+void shareArtifactButton;
+void openShareDialog;
 shareCloseButton.onclick = closeShareDialog;
 shareCancelButton.onclick = closeShareDialog;
 shareForm.addEventListener("submit", publishShare);

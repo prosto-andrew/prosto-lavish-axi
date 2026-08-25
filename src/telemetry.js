@@ -1,25 +1,14 @@
-const HARDCODED_FALLBACK_HOST = "https://a.kunchenguid.com";
+// LAVISH-HARDENED: analytics host removed; no telemetry endpoint exists in this build.
+const HARDCODED_FALLBACK_HOST = "";
 const UMAMI_PATH = "/api/send";
 const DEFAULT_HOSTNAME = "cli";
 const DEFAULT_TITLE = "Lavish Editor CLI";
 const DEFAULT_REQUEST_TIMEOUT_MS = 1_000;
 
-export function resolveTelemetryConfig(input) {
-  const optOut = String(input.env.LAVISH_AXI_TELEMETRY || "")
-    .trim()
-    .toLowerCase();
-  if (optOut === "0" || optOut === "false" || optOut === "off") {
-    return { enabled: false, host: "", websiteID: "" };
-  }
-
-  const websiteID = String(input.env.LAVISH_AXI_UMAMI_WEBSITE_ID || "").trim() || input.buildWebsiteID.trim();
-  if (!websiteID) {
-    return { enabled: false, host: "", websiteID: "" };
-  }
-
-  const host =
-    String(input.env.LAVISH_AXI_UMAMI_HOST || "").trim() || input.buildHost.trim() || HARDCODED_FALLBACK_HOST;
-  return { enabled: true, host, websiteID };
+export function resolveTelemetryConfig() {
+  // LAVISH-HARDENED: telemetry is permanently off. No environment variable, build-time
+  // define, or config value can re-enable it.
+  return { enabled: false, host: "", websiteID: "" };
 }
 
 export function getBuildTimeUmamiHost() {
@@ -30,15 +19,10 @@ export function getBuildTimeUmamiWebsiteID() {
   return process.env.LAVISH_AXI_BUILD_UMAMI_WEBSITE_ID || "";
 }
 
-export function createTelemetryClient(config) {
-  if (!config.enabled || !config.websiteID) {
-    return new NoopTelemetryClient();
-  }
-  const endpoint = normalizeEndpoint(config.host);
-  if (!endpoint) {
-    return new NoopTelemetryClient();
-  }
-  return new HttpTelemetryClient(endpoint, config);
+export function createTelemetryClient() {
+  // LAVISH-HARDENED: always a no-op client. HttpTelemetryClient is never constructed,
+  // so no network request is ever made from this module.
+  return new NoopTelemetryClient();
 }
 
 let defaultClient = null;

@@ -1,3 +1,46 @@
+> ## Hardened fork - not upstream lavish-axi
+>
+> This fork is upstream **v0.1.62** with five capabilities removed **at source level**,
+> for private use on trusted machines. It is not a drop-in replacement for the published
+> package and is not meant to be published to npm.
+>
+> The hardening lives on `main`, so a plain `git clone` gets the safe build - there is no
+> branch to remember and no way to end up on an unhardened checkout by accident.
+>
+> | Removed | Where |
+> |---|---|
+> | Telemetry | `src/telemetry.js` - `resolveTelemetryConfig()` always returns disabled; the analytics host is gone. |
+> | Publishing to a third-party host | The `share` command, `POST /api/:key/share`, the browser "Publish link" action, and the ht-ml.app client. |
+> | Tailnet / LAN binding | `resolveListenHosts()` returns `127.0.0.1` only; `detectTailscale()` never runs the binary. `LAVISH_AXI_HOST` is ignored. |
+> | `setup hooks` / `setup plugin` | No persistent SessionStart hooks, no agent-plugin registration. |
+> | CDN asset loading | Tailwind, DaisyUI and Mermaid are served by the local server; Mermaid is vendored at build time. |
+>
+> The agent-facing help text (`--help`, `design`, `playbook`) was rewritten to match, so
+> nothing instructs an agent to publish, install hooks, or fetch from a CDN.
+>
+> **Install:** [`hardening/INSTALL-WSL.md`](hardening/INSTALL-WSL.md) -
+> [`hardening/INSTALL-WINDOWS.md`](hardening/INSTALL-WINDOWS.md) -
+> overview in [`hardening/SETUP.md`](hardening/SETUP.md)
+>
+> **Verify any checkout:** `npm install && node verify-hardening.mjs` -> *All 10 checks passed.*
+>
+> **Re-applying to a newer version is deliberately blocked.** `hardening/harden_lavish.py`
+> refuses to run against anything but 0.1.62 - a newer upstream needs a fresh audit first.
+>
+> Run it only through `./lavish-safe` (or `lavish-safe.cmd`), never `npx lavish-axi`, which
+> would fetch the unhardened package.
+>
+> **See exactly what was changed** - GitHub's "compare" against the upstream repo shows it,
+> or locally:
+>
+> ```
+> git remote add upstream https://github.com/kunchenguid/lavish-axi.git
+> git fetch upstream
+> git diff upstream/main..main
+> ```
+
+---
+
 <h1 align="center">lavish-axi</h1>
 <p align="center">
   <a href="https://github.com/kunchenguid/lavish-axi/actions/workflows/ci.yml"

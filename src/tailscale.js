@@ -72,7 +72,13 @@ export function parseTailscaleStatus(raw) {
  * @param {{ execFile?: typeof execFileAsync, timeoutMs?: number, commands?: string[], now?: () => number }} [options]
  * @returns {Promise<TailscaleNet | IncompleteTailscaleNet | null>}
  */
-export async function detectTailscale({
+export async function detectTailscale() {
+  // LAVISH-HARDENED: Tailscale detection removed. The `tailscale` binary is never
+  // executed, so this build starts no subprocess to probe the tailnet.
+  return null;
+}
+
+async function detectTailscaleDisabled({
   execFile = execFileAsync,
   timeoutMs = 2000,
   commands = tailscaleCommandCandidates(),

@@ -946,6 +946,11 @@ export async function serve({
   // loopback server.
   app.post("/api/:key/share", async (req, res, next) => {
     try {
+      // LAVISH-HARDENED: publishing is removed. The route stays so the browser gets a
+      // clear refusal rather than a confusing 404.
+      res.status(403).json({ error: "publishing is disabled in this hardened build" });
+      return;
+      // eslint-disable-next-line no-unreachable
       if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
         res.status(403).json({ error: "cross-origin share request rejected" });
         return;
@@ -1275,6 +1280,18 @@ export async function serve({
       next(error);
     }
   });
+
+  // LAVISH-HARDENED: vendored Mermaid ESM bundle (the module plus its chunk graph), so an
+  // artifact that renders Mermaid never reaches out to a CDN. Resolved the same
+  // way as the other design assets: the packaged copy when this file runs from
+  // dist/, the built copy when the server is spawned from this checkout's src/
+  // (which is what resolveServerEntry does whenever bin/ is present).
+  const hardenedMermaidDir = (() => {
+    const packaged = fileURLToPath(new URL("./design/mermaid", import.meta.url));
+    if (existsSync(packaged)) return packaged;
+    return fileURLToPath(new URL("../dist/design/mermaid", import.meta.url));
+  })();
+  app.use("/design/mermaid", express.static(hardenedMermaidDir));
 
   app.get("/design/:asset", async (req, res, next) => {
     try {

@@ -12,7 +12,8 @@
 // service has no delete endpoint at all, which is why unpublishing is a republish of a placeholder
 // page rather than a removal.
 
-const DEFAULT_API_URL = "https://api.ht-ml.app";
+// LAVISH-HARDENED: third-party publishing host removed; no default endpoint remains.
+const DEFAULT_API_URL = "";
 const PUBLISH_TIMEOUT_MS = 30_000;
 const SITE_ID_RE = /^[A-Za-z0-9._-]+$/;
 
@@ -119,7 +120,12 @@ export function createUnpublishedPageHtml() {
  * @param {number} [options.timeoutMs]
  * @returns {Promise<{ url: string, site_id: string, update_key: string, status: string }>}
  */
-export async function publishToHtmlApp(html, options = {}) {
+export async function publishToHtmlApp() {
+  // LAVISH-HARDENED: publishing to a third-party host is removed from this build.
+  throw new Error("publishing is disabled in this hardened build of lavish-axi");
+}
+
+async function publishToHtmlAppDisabled(html, options = {}) {
   const env = options.env || process.env;
   const token = optionalString(options.token ?? env.LAVISH_AXI_HTML_APP_TOKEN);
   const data = await requestHtmlApp({
@@ -187,7 +193,12 @@ function echoedSiteId(echoed, fallback) {
  * @param {number} [options.timeoutMs]
  * @returns {Promise<{ url: string, site_id: string, status: string }>}
  */
-export async function updateHtmlApp(siteId, html, options = {}) {
+export async function updateHtmlApp() {
+  // LAVISH-HARDENED: republishing to a third-party host is removed from this build.
+  throw new Error("publishing is disabled in this hardened build of lavish-axi");
+}
+
+async function updateHtmlAppDisabled(siteId, html, options = {}) {
   const env = options.env || process.env;
   const site = normalizeSiteId(siteId);
   const updateKey = optionalString(options.updateKey);

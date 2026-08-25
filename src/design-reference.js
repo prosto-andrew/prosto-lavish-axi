@@ -2,15 +2,20 @@ import { listPlaybooks, PLAYBOOK_ROUTER_INSTRUCTION } from "./playbooks.js";
 
 export const TAILWIND_BROWSER_VERSION = "4.2.4";
 export const DAISYUI_VERSION = "5.5.19";
-export const MERMAID_VERSION = "11.15.0";
+// LAVISH-HARDENED: pinned to the copy vendored into dist/design/mermaid by the build.
+export const MERMAID_VERSION = "11.12.1";
 
+// LAVISH-HARDENED: artifacts load styling from this machine's own Lavish server instead
+// of a public CDN, so opening one makes no outbound request. `export` inlines
+// these same files, so a standalone copy stays styled offline.
 export const DESIGN_CDN_URLS = {
-  tailwind: `https://cdn.jsdelivr.net/npm/@tailwindcss/browser@${TAILWIND_BROWSER_VERSION}/dist/index.global.js`,
-  daisyui: `https://cdn.jsdelivr.net/npm/daisyui@${DAISYUI_VERSION}/daisyui.css`,
-  daisyuiThemes: `https://cdn.jsdelivr.net/npm/daisyui@${DAISYUI_VERSION}/themes.css`,
+  tailwind: "/design/tailwindcss-browser.js",
+  daisyui: "/design/daisyui.css",
+  daisyuiThemes: "/design/daisyui-themes.css",
 };
 
-export const MERMAID_CDN_URL = `https://cdn.jsdelivr.net/npm/mermaid@${MERMAID_VERSION}/dist/mermaid.esm.min.mjs`;
+// LAVISH-HARDENED: served from this machine's Lavish server, not a CDN.
+export const MERMAID_CDN_URL = "/design/mermaid/mermaid.esm.min.mjs";
 
 export const DESIGN_CDN_SNIPPET = `<link rel="stylesheet" href="${DESIGN_CDN_URLS.daisyui}">
 <link rel="stylesheet" href="${DESIGN_CDN_URLS.daisyuiThemes}">
@@ -143,12 +148,12 @@ export const LAYOUT_SAFETY_CSS_SNIPPET = `<style>
 // summary, and the design command help. The installable skill does not embed this rule;
 // it points at `lavish-axi design`. Edit the rule here only.
 export const DESIGN_PRIORITY_RULE =
-  "Decide the design direction in this strict priority order, and only move to the next step when the current one truly yields nothing: (1) if the user asked for a specific look or named design system, use that; (2) otherwise you must first inspect the project the artifact is about - the subject or product whose content or UI it represents, which may differ from your current working directory - and match that project's design system: Tailwind or theme config, shared CSS variables or design tokens, component library, brand assets, or existing styled pages. If the artifact previews, proposes, or mocks a specific app's UI, render it in that app's own design system so it faithfully shows the product, even when you are running in a different repo; (3) only when both steps come up empty, use the Lavish-recommended Tailwind CSS browser runtime v4 + DaisyUI v5, available via CDN, and prefer that CDN snippet over hand-writing styles unless explicitly instructed otherwise by the user.";
+  "Decide the design direction in this strict priority order, and only move to the next step when the current one truly yields nothing: (1) if the user asked for a specific look or named design system, use that; (2) otherwise you must first inspect the project the artifact is about - the subject or product whose content or UI it represents, which may differ from your current working directory - and match that project's design system: Tailwind or theme config, shared CSS variables or design tokens, component library, brand assets, or existing styled pages. If the artifact previews, proposes, or mocks a specific app's UI, render it in that app's own design system so it faithfully shows the product, even when you are running in a different repo; (3) only when both steps come up empty, use the Lavish-recommended Tailwind CSS browser runtime v4 + DaisyUI v5, served locally by this machine's own Lavish server (no CDN), and prefer that local snippet over hand-writing styles unless explicitly instructed otherwise by the user.";
 
 export const DESIGN_SYSTEM_HINT =
   "Lavish does not auto-inject any design system - artifacts stay portable so they render identically when opened directly without lavish-axi running. Before writing any HTML: " +
   DESIGN_PRIORITY_RULE +
-  " Run `lavish-axi design` for a content-to-playbook router, a copy-pasteable CDN snippet, the whiteboard (Mermaid) opt-in snippet, and the DaisyUI component reference. When you deliver the artifact, state which of the three design sources you used and why.";
+  " Run `lavish-axi design` for a content-to-playbook router, a copy-pasteable local design snippet, the whiteboard (Mermaid) opt-in snippet, and the DaisyUI component reference. When you deliver the artifact, state which of the three design sources you used and why.";
 
 export const DAISYUI_THEMES = [
   "light",
@@ -196,9 +201,9 @@ export function createDesignOutput() {
     },
     design: {
       summary:
-        "Use this Lavish CDN fallback only if (1) the user gave no design direction and (2) you already inspected the project the artifact is about and found no design system or style conventions to match. If you have not checked the subject project yet, check first. Lavish does not auto-inject any design system; artifacts stay portable HTML. Paint an explicit page background and readable text. " +
+        "Use this Lavish local design fallback only if (1) the user gave no design direction and (2) you already inspected the project the artifact is about and found no design system or style conventions to match. If you have not checked the subject project yet, check first. Lavish does not auto-inject any design system; artifacts stay portable HTML. Paint an explicit page background and readable text. " +
         DESIGN_PRIORITY_RULE +
-        " Paste the CDN snippet below into your `<head>`.",
+        " Paste the local design snippet below into your `<head>`. It loads from this machine's Lavish server, so the artifact makes no outbound request; `export` inlines these files into the standalone copy.",
       cdn_snippet: DESIGN_CDN_SNIPPET,
       cdn_urls: DESIGN_CDN_URLS,
       versions: { tailwind: TAILWIND_BROWSER_VERSION, daisyui: DAISYUI_VERSION },
