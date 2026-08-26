@@ -126,7 +126,7 @@ export const PLAYBOOKS = [
     use_when: "Render source code, code files, patches, PR diffs, and before/after code inside Lavish artifacts",
     choose: [
       "Use this whenever an artifact shows source code: a snippet, full file, patch, PR diff, local change set, or before/after code.",
-      "Use File for one code file, FileDiff for old/new versions or parsed patch metadata, and CodeView only when several files or diffs need coordinated navigation.",
+      "Render a single file as one code block, an old/new comparison as a diff block with change markers, and reach for a multi-file layout with its own navigation only when several files or diffs must be read together.",
       "Choose split layout for careful side-by-side review when width allows; choose unified layout when space is tight, changes are mostly additive, or mobile readability matters.",
     ],
     structure: [
@@ -135,51 +135,66 @@ export const PLAYBOOKS = [
       "For multi-file changes, group files by user-facing area or task instead of dumping a raw patch in repository order.",
     ],
     design_rules: [
-      `Rendering MUST use @pierre/diffs, not hand-rolled <pre> blocks or another diff library. This verified no-build standalone HTML snippet renders one file and one split diff from esm.sh:
+      // LAVISH-HARDENED: the stock rule required @pierre/diffs imported from
+      // an esm.sh CDN URL at view time. This build ships no CDN and pins every
+      // artifact source to loopback, so that import is refused by the review
+      // server's Content-Security-Policy and the page renders nothing. Code and
+      // diffs are built from local markup instead.
+      "Rendering MUST be self-contained. No import, <script src>, <link>, font, or image may point at esm.sh, jsdelivr, unpkg, or any host other than this machine - the review server's Content-Security-Policy refuses them and the block renders empty.",
+      `Render code as one row per line so line numbers, change markers, and annotations attach to individual lines. This standalone snippet needs no library:
 \`\`\`html
-<div id="file"></div>
-<div id="diff"></div>
+<style>
+  .code { font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+          border: 1px solid #d0d7de; border-radius: 8px; overflow: auto; padding: 6px 0; }
+  .code .row { display: grid; grid-template-columns: 3.5rem 1ch 1fr; }
+  .code .ln { text-align: right; padding-right: .75rem; opacity: .55; user-select: none; }
+  .code .add { background: #e6ffec; }
+  .code .del { background: #ffebe9; }
+  @media (prefers-color-scheme: dark) {
+    .code { border-color: #30363d; }
+    .code .add { background: #12261e; }
+    .code .del { background: #25171c; }
+  }
+</style>
+<pre class="code" id="diff"></pre>
 <script type="module">
-  import { File, FileDiff } from "https://esm.sh/@pierre/diffs@1.2.10?bundle";
-
-  const theme = { light: "github-light", dark: "github-dark" };
-  const options = { theme, themeType: "dark", overflow: "wrap" };
-  const oldFile = {
-    name: "src/greeting.ts",
-    contents: "export function greet(name: string) {\\n  return \\"Hello \\" + name;\\n}\\n\\nconsole.log(greet(\\"Lavish\\"));\\n",
-  };
-  const newFile = {
-    name: "src/greeting.ts",
-    contents: "export function greet(name: string) {\\n  return \\"Hello, \\" + name + \\"!\\";\\n}\\n\\nconsole.log(greet(\\"Lavish\\"));\\n",
-  };
-
-  new File(options).render({
-    containerWrapper: document.querySelector("#file"),
-    file: newFile,
-  });
-
-  new FileDiff({ ...options, diffStyle: "split" }).render({
-    containerWrapper: document.querySelector("#diff"),
-    oldFile,
-    newFile,
-  });
-
+  const rows = [
+    { n: 1, mark: " ", text: "export function greet(name) {" },
+    { n: 2, mark: "-", text: '  return "Hello " + name;' },
+    { n: 2, mark: "+", text: '  return "Hello, " + name + "!";' },
+    { n: 3, mark: " ", text: "}" },
+  ];
+  document.querySelector("#diff").append(
+    ...rows.map((r) => {
+      const row = document.createElement("div");
+      row.className = "row" + (r.mark === "+" ? " add" : r.mark === "-" ? " del" : "");
+      const ln = document.createElement("span");
+      ln.className = "ln";
+      ln.textContent = r.n;
+      const mk = document.createElement("span");
+      mk.textContent = r.mark;
+      const tx = document.createElement("span");
+      tx.textContent = r.text;
+      row.append(ln, mk, tx);
+      return row;
+    }),
+  );
 </script>
 \`\`\``,
-      "Pick a Shiki theme pair that matches the artifact's DaisyUI or Tailwind direction and light or dark mode; replace the GitHub pair above when the page is not GitHub-like.",
-      'Use FileDiff diffStyle: "split" for side-by-side review and diffStyle: "unified" for stacked reading; keep overflow: "wrap" unless horizontal alignment is essential.',
-      "Use @pierre/diffs line annotations, selections, and headers when calling out specific lines so notes stay attached to code.",
+      "Take the added/removed tints and the code foreground from the artifact's own DaisyUI or Tailwind palette, and define both light and dark values; the GitHub-like pair above is a starting point, not a default to ship unchanged.",
+      "Use a two-column grid for side-by-side review and a single stacked column for unified reading; wrap long lines unless horizontal alignment carries meaning, and let the block scroll inside its own container rather than widening the page.",
+      "Attach a note to specific lines with an annotation row inserted directly beneath them, so a comment never drifts away from the code it discusses.",
     ],
     pitfalls: [
-      "Do not render code as static screenshots, plain <pre> blocks, or markdown pasted into HTML.",
-      "Do not choose an arbitrary default Shiki theme that clashes with the page palette or dark mode.",
+      "Do not render code as static screenshots, as an unstyled single <pre> blob with no per-line structure, or as markdown pasted into HTML.",
+      "Do not paste in an arbitrary syntax-highlighting palette that clashes with the page or is unreadable in one of the two colour schemes.",
       "Do not show huge unrelated files when a focused render range, parsed patch file, or grouped summary would be clearer.",
       "Do not separate a claim from the code lines that prove it.",
     ],
     lavish_notes: [
       "A Lavish code artifact should make each file, hunk, and relevant line easy to annotate precisely.",
       "When a user action should trigger a fix, queue prompts that name the file path, line range, and desired change.",
-      "If the artifact combines code with a plan, table, or comparison, read those playbooks too and keep @pierre/diffs responsible for the code surface.",
+      "If the artifact combines code with a plan, table, or comparison, read those playbooks too and keep the code surface rendered by the per-line structure above.",
     ],
   },
   {

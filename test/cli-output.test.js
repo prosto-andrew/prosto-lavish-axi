@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -15,9 +15,6 @@ process.env.LAVISH_AXI_LINK_HOST = "127.0.0.1";
 
 import {
   collapseHomeDirectory,
-  computeCopilotCliHookUpdate,
-  createCopilotCliAmbientContextScript,
-  createCopilotCliSessionStartHook,
   createDesignOutput,
   createExportOutput,
   createHomeOutput,
@@ -37,8 +34,6 @@ import {
   pollInterruptedText,
   pollWaitBannerText,
   pollWaitTickText,
-  resolveCopilotHookDir,
-  resolveHookHomeDir,
   resolveServerEntry,
   serverReplacementReason,
   shareCommand,
@@ -54,7 +49,6 @@ import {
   VERSION,
 } from "../src/cli.js";
 import { DESIGN_PRIORITY_RULE, DESIGN_SYSTEM_HINT } from "../src/design-reference.js";
-import { resolveVsCodeSettingsFile } from "../src/plugin.js";
 import { createSkillMarkdown } from "../src/skill.js";
 import { SELF_PAINT_WARNING } from "../src/self-paint.js";
 import { serve } from "../src/server.js";
@@ -95,13 +89,6 @@ async function waitForPollListening(base, key, timeoutMs = 10_000) {
   } finally {
     controller.abort();
   }
-}
-
-/** @returns {NodeJS.ProcessEnv} */
-function setupHooksEnv(homeDir, stateDir) {
-  // eslint-disable-next-line no-unused-vars
-  const { COPILOT_HOME, ...env } = process.env;
-  return { ...env, HOME: homeDir, LAVISH_AXI_STATE_DIR: stateDir };
 }
 
 function assertObservablePollWakePath(text) {
@@ -367,66 +354,25 @@ test("top-level help renders static home output without dynamic sessions", async
   }
 });
 
-test("design output prints copy-pasteable CDN URLs so agents can opt in to DaisyUI", () => {
+test("design output prints local asset URLs, never a CDN", () => {
+  // LAVISH-HARDENED: the stock output handed agents jsdelivr URLs to paste into an
+  // artifact. Tailwind, DaisyUI and its themes are vendored and served by this machine,
+  // so the snippet points at the local server - and under the artifact policy a CDN URL
+  // pasted here would be refused anyway.
   const output = createDesignOutput();
+  const snippet = output.design.cdn_snippet;
 
-  assert.match(output.playbook_router.instruction, /MUST open each matching playbook before writing HTML/);
-  assert.equal(output.playbook_router.playbooks.length, 7);
-  assert.equal(
-    output.playbook_router.playbooks.find((playbook) => playbook.id === "diagram")?.use_when,
-    "Explain relationships, flows, state, architecture, and concepts with illustrations",
-  );
-  assert.ok(output.design.summary.includes(DESIGN_PRIORITY_RULE), "design summary embeds the single-sourced rule");
-  assert.match(output.design.summary, /does not auto-inject/);
-  assert.match(output.design.summary, /^Use this .*fallback only if/i);
-  assert.match(output.design.summary, /no design direction/i);
-  assert.match(output.design.summary, /check first/i);
-  assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/daisyui@/);
-  assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/daisyui@.*\/themes\.css/);
-  assert.match(output.design.cdn_snippet, /cdn\.jsdelivr\.net\/npm\/@tailwindcss\/browser@/);
-  assert.match(output.design.layout_safety_snippet, /min-width: 0/);
-  assert.match(output.design.layout_safety_snippet, /overflow-wrap: anywhere/);
-  assert.match(output.design.layout_safety_snippet, /max-width: 100%/);
-  assert.match(output.design.layout_safety_note, /Optional copy-paste CSS/);
-  assert.match(output.design.layout_safety_note, /never auto-injects/);
-  assert.match(
-    output.design.cdn_urls.daisyui,
-    /^https:\/\/cdn\.jsdelivr\.net\/npm\/daisyui@\d+\.\d+\.\d+\/daisyui\.css$/,
-  );
-  assert.match(
-    output.design.cdn_urls.daisyuiThemes,
-    /^https:\/\/cdn\.jsdelivr\.net\/npm\/daisyui@\d+\.\d+\.\d+\/themes\.css$/,
-  );
-  assert.match(
-    output.design.cdn_urls.tailwind,
-    /^https:\/\/cdn\.jsdelivr\.net\/npm\/@tailwindcss\/browser@\d+\.\d+\.\d+\/dist\/index\.global\.js$/,
-  );
-  assert.match(output.design.other_design_systems, /different design system|other design system/i);
-  assert.match(output.whiteboard_tooling.use_when, /^Opt-in only/);
-  assert.match(output.whiteboard_tooling.use_when, /asks for an editable whiteboard/);
-  assert.match(output.whiteboard_tooling.use_when, /hand-authored inline SVG per the diagram playbook/);
-  assert.match(output.whiteboard_tooling.mermaid_cdn_snippet, /cdn\.jsdelivr\.net\/npm\/mermaid@\d+\.\d+\.\d+/);
-  assert.match(output.whiteboard_tooling.mermaid_cdn_snippet, /mermaid\.initialize/);
-  assert.match(
-    output.whiteboard_tooling.cdn_urls.mermaid,
-    /^https:\/\/cdn\.jsdelivr\.net\/npm\/mermaid@\d+\.\d+\.\d+\/dist\/mermaid\.esm\.min\.mjs$/,
-  );
-  assert.equal(output.whiteboard_tooling.versions.mermaid, "11.15.0");
-  assert.equal("opt_out" in output.design, false);
-  assert.equal("rule" in output.design, false);
-  assert.equal(output.design.latest_docs, "https://daisyui.com/components/");
-  assert.equal(output.themes.length, 35);
-  assert.ok(output.themes.includes("luxury"));
-  assert.ok(output.themes.includes("silk"));
-  assert.ok(output.components.actions.includes("button"));
-  assert.ok(output.components.data_display.includes("card"));
-  assert.ok(output.components.feedback.includes("alert"));
-  assert.ok(output.reference.button.classes.includes("btn-primary"));
-  assert.match(output.reference.modal.syntax, /<dialog/);
-  assert.ok(output.reference.table.notes.some((item) => item.includes("overflow-x-auto")));
-  assert.ok(output.reference.drawer.notes.some((item) => item.includes("drawer-toggle")));
-  assert.ok(output.reference.mockup.notes.some((item) => item.includes("Keep `data-prefix` short")));
-  assert.ok(output.reference.mockup.notes.some((item) => item.includes("line numbers")));
+  assert.match(snippet, /<link rel="stylesheet" href="\/design\/daisyui\.css">/);
+  assert.match(snippet, /<link rel="stylesheet" href="\/design\/daisyui-themes\.css">/);
+  assert.match(snippet, /<script src="\/design\/tailwindcss-browser\.js"><\/script>/);
+  assert.deepEqual(output.design.cdn_urls, {
+    tailwind: "/design/tailwindcss-browser.js",
+    daisyui: "/design/daisyui.css",
+    daisyuiThemes: "/design/daisyui-themes.css",
+  });
+  assert.equal(output.whiteboard_tooling.cdn_urls.mermaid, "/design/mermaid/mermaid.esm.min.mjs");
+  assert.doesNotMatch(snippet, /https?:\/\//);
+  assert.doesNotMatch(JSON.stringify(output), /cdn\.jsdelivr\.net|unpkg\.com|esm\.sh/);
 });
 
 test("design output recommends luxury as the default theme and warns against @apply on DaisyUI classes", () => {
@@ -771,18 +717,28 @@ test("playbook detail output returns focused Lavish-native guidance", () => {
   assert.ok(output.playbook.lavish_notes.some((item) => item.includes("Lavish")));
 });
 
-test("code playbook detail output requires verified @pierre/diffs rendering", () => {
+// LAVISH-HARDENED: the stock rule made a CDN-loaded diff library mandatory. Under
+// this build's artifact policy that import is refused and the block renders empty,
+// so the playbook now demands self-contained rendering - and this test guards that
+// no playbook can hand the agent an off-machine URL again.
+test("code playbook demands self-contained rendering and names no external host", () => {
   const output = createPlaybookOutput(["code"]);
 
   assert.equal(output.playbook.id, "code");
   assert.match(output.playbook.use_when, /source code/);
-  assert.ok(output.playbook.choose.some((item) => item.includes("FileDiff")));
-  assert.ok(output.playbook.choose.some((item) => item.includes("split") && item.includes("unified")));
-  assert.ok(output.playbook.design_rules.some((item) => item.includes("@pierre/diffs")));
-  assert.ok(output.playbook.design_rules.some((item) => item.includes("https://esm.sh/@pierre/diffs@1.2.10?bundle")));
-  assert.ok(output.playbook.design_rules.some((item) => item.includes("new FileDiff")));
-  assert.ok(output.playbook.design_rules.some((item) => item.includes("Shiki theme")));
+  assert.ok(output.playbook.choose.some((item) => item.includes("diff")));
+  assert.ok(output.playbook.choose.some((item) => item.includes("side-by-side") || item.includes("unified")));
+  assert.ok(output.playbook.design_rules.some((item) => item.includes("self-contained")));
+  assert.ok(output.playbook.design_rules.some((item) => item.includes("one row per line")));
   assert.ok(output.playbook.pitfalls.some((item) => item.includes("<pre>")));
+
+  // Match URL forms, not mentions: the rule itself names the common CDNs in order to
+  // forbid them, and a bare-name check would fire on its own prohibition.
+  const everyString = JSON.stringify(output.playbook);
+  for (const url of ["https://esm.sh", "https://cdn.", "https://unpkg.com", "https://cdn.jsdelivr.net"]) {
+    assert.ok(!everyString.includes(url), `the code playbook still points at ${url}`);
+  }
+  assert.doesNotMatch(everyString, /(import|src=|href=)[^"']*https?:\/\//);
 });
 
 test("plan playbook detail output has polished guidance copy", () => {
@@ -991,683 +947,32 @@ test("export command treats --out value as an option operand, not the source fil
   }
 });
 
-test("share output reports the public url and the secret update key", () => {
-  const output = createShareOutput({
-    source: "/tmp/report.html",
-    site: { url: "https://x.ht-ml.app/", site_id: "x", update_key: "uk_secret", status: "active" },
-    warnings: [],
-  });
-
-  assert.equal(output.share.source, "/tmp/report.html");
-  assert.equal(output.share.url, "https://x.ht-ml.app/");
-  assert.equal(output.share.update_key, "uk_secret");
-  assert.equal(output.share.public, true);
-  assert.equal(output.share.visibility, "public");
-  assert.match(output.next_step, /PUBLIC/);
-  assert.match(output.next_step, /update_key/);
-  assert.match(output.next_step, /x\.ht-ml\.app/);
-  assert.match(output.next_step, /ht-ml\.app \(https:\/\/ht-ml\.app\), a third-party host not part of Lavish/);
-});
-
-test("password-protected share output tells viewers they also need the password", () => {
-  const output = createShareOutput({
-    source: "/tmp/report.html",
-    site: { url: "https://x.ht-ml.app/", site_id: "x", update_key: "uk_secret", status: "active" },
-    warnings: [],
-    passwordProtected: true,
-  });
-
-  assert.equal(output.share.password_protected, true);
-  assert.equal(output.share.public, false);
-  assert.equal(output.share.visibility, "private");
-  assert.match(output.next_step, /PASSWORD-PROTECTED/);
-  assert.match(output.next_step, /viewers also need the password/);
-  assert.match(output.next_step, /ht-ml\.app \(https:\/\/ht-ml\.app\), a third-party host not part of Lavish/);
-  assert.doesNotMatch(output.next_step, /anyone with the link can view/);
-});
-
-test("share output surfaces local assets that could not be inlined", () => {
-  const output = createShareOutput({
-    source: "/tmp/report.html",
-    site: { url: "https://x.ht-ml.app/", site_id: "x", update_key: "uk_secret", status: "active" },
-    warnings: [{ kind: "load-failed", ref: "./missing.png" }],
-  });
-
-  assert.equal(output.share.unresolved_local_assets, 1);
-  assert.deepEqual(output.unresolved_local_assets, [{ kind: "load-failed", ref: "./missing.png" }]);
-  assert.match(output.next_step, /LOCAL assets could not be inlined/);
-  assert.match(output.next_step, /ht-ml\.app \(https:\/\/ht-ml\.app\), a third-party host not part of Lavish/);
-  assert.doesNotMatch(output.next_step, /share this URL/);
-});
-
-test("share output separates unresolved assets from notices", () => {
-  const output = createShareOutput({
-    source: "/tmp/report.html",
-    site: { url: "https://x.ht-ml.app/", site_id: "x", update_key: "uk_secret", status: "active" },
-    warnings: [
-      { kind: "module-external", ref: "./main.js" },
-      { kind: "file-url-redacted", ref: "file:///Users/kun/secret.png" },
-      { kind: "csp-meta", ref: "script-src 'self'" },
-    ],
-  });
-
-  assert.equal(output.share.unresolved_local_assets, 1);
-  assert.equal(output.share.notices, 2);
-  assert.deepEqual(output.unresolved_local_assets, [{ kind: "module-external", ref: "./main.js" }]);
-  assert.deepEqual(output.notices, [
-    { kind: "file-url-redacted", ref: "file:///Users/kun/secret.png" },
-    { kind: "csp-meta", ref: "script-src 'self'" },
-  ]);
-  assert.equal(output.warnings.length, 3);
-  assert.match(output.next_step, /Export notices are available in notices/);
-});
-
-test("password-protected share output with unresolved assets still mentions the password", () => {
-  const output = createShareOutput({
-    source: "/tmp/report.html",
-    site: { url: "https://x.ht-ml.app/", site_id: "x", update_key: "uk_secret", status: "active" },
-    warnings: [{ kind: "load-failed", ref: "./missing.png" }],
-    passwordProtected: true,
-  });
-
-  assert.equal(output.share.public, false);
-  assert.equal(output.share.visibility, "private");
-  assert.match(output.next_step, /PASSWORD-PROTECTED/);
-  assert.match(output.next_step, /viewers also need the password/);
-  assert.match(output.next_step, /ht-ml\.app \(https:\/\/ht-ml\.app\), a third-party host not part of Lavish/);
-  assert.doesNotMatch(output.next_step, /anyone with the link can view/);
-});
-
-test("share dispatches create, republish, and unpublish to the right host request", async () => {
-  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-dispatch-`);
-  const artifact = `${dir}/report.html`;
-  const marker = "SECRET-ARTIFACT-BODY";
-  await writeFile(artifact, `<!doctype html><html><body><h1>${marker}</h1></body></html>`, "utf8");
-
-  const requests = [];
-  const htmlApp = await startFakeHtmlApp(requests);
-  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
-  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${htmlApp.port}`;
-  try {
-    await shareCommand([artifact]);
-    await shareCommand([artifact, "--site", "abc123", "--update-key", "uk_secret"]);
-    await shareCommand([artifact, "--site", "abc123", "--update-key", "uk_secret", "--private"]);
-    await shareCommand(["--unpublish", "--site", "abc123", "--update-key", "uk_secret"]);
-
-    const [create, republish, locked, unpublish] = requests;
-
-    assert.equal(create.method, "POST");
-    assert.equal(create.url, "/v1/sites");
-    assert.match(create.body.html_content, new RegExp(marker));
-    assert.equal("password" in create.body, false, "a plain publish stays public");
-
-    assert.equal(republish.method, "PUT");
-    assert.equal(republish.url, "/v1/sites/abc123");
-    assert.equal(republish.headers.authorization, "Bearer uk_secret");
-    assert.match(republish.body.html_content, new RegExp(marker), "a republish sends the artifact");
-    assert.equal("password" in republish.body, false, "a plain republish must not touch the password");
-
-    assert.equal(locked.method, "PUT");
-    assert.match(String(locked.body.password), /^[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}$/, "--private rotates");
-
-    assert.equal(unpublish.method, "PUT");
-    assert.equal(unpublish.url, "/v1/sites/abc123");
-    assert.equal(unpublish.headers.authorization, "Bearer uk_secret");
-    // The regression this guards: sending the artifact instead of the placeholder would republish
-    // the very content the user asked to take down.
-    assert.doesNotMatch(unpublish.body.html_content, new RegExp(marker));
-    assert.match(unpublish.body.html_content, /has been unpublished/);
-    assert.ok(unpublish.body.password, "the placeholder must be locked behind a password");
-  } finally {
-    await htmlApp.close();
-    if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
-    else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-async function startFailingHtmlApp(status, detail) {
-  const server = createServer((req, res) => {
-    req.resume();
-    req.on("end", () => {
-      res.writeHead(status, { "content-type": "application/json" });
-      res.end(JSON.stringify({ detail }));
-    });
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
-  const address = server.address();
-  return {
-    port: typeof address === "object" && address ? address.port : 0,
-    close: () => new Promise((resolve) => server.close(() => resolve())),
-  };
-}
-
-const PASSWORD_SHAPE = /[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}/;
-
-// A recovery hint is only recovery if the CLI accepts it. Pull the command Lavish printed out of
-// the text it printed and run it back through the real argument parser, so a hint that drifts into
-// a usage error - `--site`/`--update-key` with no HTML file was one - fails here instead of on the
-// user's next paste.
-function parseSuggestedShareCommand(text) {
-  const match = /`lavish-axi share ([^`]+)`/.exec(String(text));
-  assert.ok(match, `expected a suggested share command in: ${text}`);
-  const argv = match[1].trim().split(/\s+/);
-  const request = resolveShareRequest(argv);
-  // `<html-file>` and `<key>` fail loudly when pasted literally - one is not a file, the other
-  // earns a 401 - but ANY non-empty string is a valid password, so a placeholder that reaches the
-  // parser as a password value would be accepted and would rotate a live page to a secret nobody
-  // was told, which ht-ml.app cannot clear. A suggested command must never carry one.
-  assert.ok(
-    request.generatedPassword || request.password === undefined,
-    `a suggested command must not dictate a password value, got ${request.password} from: ${argv.join(" ")}`,
+// LAVISH-HARDENED: publishing is removed from this build. The block that stood here
+// drove create, republish and unpublish against a fake host and asserted the wording of
+// every partial-failure outcome - indeterminate, incomplete 200, host rejection, echoed
+// site id. None of those paths exist any more. What is asserted instead is that the two
+// removed commands refuse, and that the refusal explains itself well enough that an
+// agent does not go looking for another route.
+test("the removed commands refuse and say why", async () => {
+  await assert.rejects(
+    () => shareCommand(),
+    (error) => {
+      assert.ok(error instanceof AxiError);
+      assert.match(error.message, /removed in this hardened build/);
+      assert.match(error.message, /export/, "the refusal must name the local alternative");
+      return true;
+    },
   );
-  return request;
-}
-
-test("an indeterminate republish failure reads as unknown, with the generated password only when there is one", async () => {
-  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-rotate-fail-`);
-  const artifact = `${dir}/report.html`;
-  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>", "utf8");
-
-  // A 5xx can come back after the origin already committed the PUT, so the rotation may have
-  // landed and a generated password that dies with the error leaves the page gated by a secret
-  // nobody holds.
-  const failing = await startFailingHtmlApp(503, "upstream exploded");
-  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
-  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${failing.port}`;
-  try {
-    await assert.rejects(
-      () => shareCommand([artifact, "--site", "abc123", "--update-key", "uk_secret", "--private"]),
-      (error) => {
-        assert.ok(error instanceof AxiError);
-        assert.match(error.message, /upstream exploded/, "the original failure must survive");
-        const hints = (error.suggestions || []).join(" ");
-        assert.match(hints, PASSWORD_SHAPE, "the generated password must be recoverable");
-        assert.match(hints, /may or may not have applied/i, "the outcome must read as unknown");
-        assert.match(hints, /--private/);
-        const suggested = parseSuggestedShareCommand(hints);
-        assert.equal(suggested.mode, "update", "the suggested recovery command must be a republish");
-        assert.equal(suggested.generatedPassword, true, "it must be the shape that mints a visible password");
-        return true;
-      },
-    );
-
-    // A plain republish mints no password, but the outcome is just as unknown: the page may
-    // already show the new HTML, so reporting a flat failure tells the user the old version is
-    // still up when it may not be. The password hint is the only part that is conditional.
-    await assert.rejects(
-      () => shareCommand([artifact, "--site", "abc123", "--update-key", "uk_secret"]),
-      (error) => {
-        assert.ok(error instanceof AxiError);
-        assert.match(error.message, /upstream exploded/, "the original failure must survive");
-        const hints = (error.suggestions || []).join(" ");
-        assert.match(hints, /may or may not have applied/i, "the outcome must read as unknown");
-        assert.match(hints, /may already show the new content/i);
-        assert.match(hints, /safe and converges/i, "re-running must be described as safe");
-        assert.doesNotMatch(`${error.message} ${hints}`, PASSWORD_SHAPE, "there is no password to hand back");
-        const suggested = parseSuggestedShareCommand(hints);
-        assert.equal(suggested.mode, "update");
-        assert.equal(suggested.generatedPassword, false, "a plain republish must not be told to rotate");
-        assert.equal(suggested.password, undefined);
-        return true;
-      },
-    );
-
-    // An explicit --password republish is the same: no generated secret to recover, but the retry
-    // has to carry the flag or it would converge on a different page state than the one asked for.
-    await assert.rejects(
-      () => shareCommand([artifact, "--site", "abc123", "--update-key", "uk_secret", "--password", "hunter2"]),
-      (error) => {
-        assert.ok(error instanceof AxiError);
-        const hints = (error.suggestions || []).join(" ");
-        assert.match(hints, /may or may not have applied/i);
-        assert.doesNotMatch(hints, /hunter2/, "a password the user chose is never echoed back");
-        // The retry still has to set the same password, but the command may not spell a value:
-        // pasted literally, a `<pw>` placeholder is accepted and locks the page to that string.
-        assert.match(hints, /same --password value you supplied/i);
-        const suggested = parseSuggestedShareCommand(hints);
-        assert.equal(suggested.mode, "update");
-        assert.equal(suggested.generatedPassword, false);
-        assert.equal(suggested.password, undefined, "no password value may appear in the command");
-        return true;
-      },
-    );
-  } finally {
-    await failing.close();
-    if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
-    else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
-    await rm(dir, { recursive: true, force: true });
-  }
 });
 
-test("a republish the host rejected never offers the generated password as if it applied", async () => {
-  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-rejected-`);
-  const artifact = `${dir}/report.html`;
-  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>", "utf8");
+test("share and setup help announce the removal instead of documenting a feature", () => {
+  const shareHelp = getCommandHelp("share");
+  assert.match(shareHelp, /REMOVED from this hardened build/);
+  assert.match(shareHelp, /No flag re-enables it/);
 
-  // A mistyped update_key is the likeliest failure here. The host wrote nothing, so the generated
-  // password gates nothing, and relaying it would send the user chasing a page that never changed.
-  const rejecting = await startFailingHtmlApp(401, "");
-  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
-  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${rejecting.port}`;
-  try {
-    await assert.rejects(
-      () => shareCommand([artifact, "--site", "abc123", "--update-key", "WRONG", "--private"]),
-      (error) => {
-        assert.ok(error instanceof Error);
-        assert.match(error.message, /unauthorized/i, "the host's reason must survive");
-        const suggestions = error instanceof AxiError ? error.suggestions || [] : [];
-        const reported = `${error.message} ${suggestions.join(" ")}`;
-        assert.doesNotMatch(reported, PASSWORD_SHAPE, "a rejected republish must not surface the password");
-        assert.doesNotMatch(reported, /may or may not have applied/i);
-        return true;
-      },
-    );
-  } finally {
-    await rejecting.close();
-    if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
-    else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("an indeterminate --unpublish failure says the takedown may already have landed", async () => {
-  // Same window as a republish: a 5xx can follow a PUT the origin already committed, so reporting
-  // a flat failure tells the user the old content is still readable when it may already be gone.
-  const failing = await startFailingHtmlApp(503, "upstream exploded");
-  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
-  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${failing.port}`;
-  try {
-    await assert.rejects(
-      () => shareCommand(["--unpublish", "--site", "abc123", "--update-key", "uk_secret"]),
-      (error) => {
-        assert.ok(error instanceof AxiError);
-        assert.match(error.message, /upstream exploded/, "the original failure must survive");
-        const hints = (error.suggestions || []).join(" ");
-        assert.match(hints, /may or may not have applied/i, "the outcome must read as unknown");
-        assert.match(hints, /safe and converges/i, "re-running must be described as safe");
-        // The lock password is discarded by design, so there is nothing to hand back and echoing
-        // one would suggest the user could still open the page.
-        assert.doesNotMatch(hints, PASSWORD_SHAPE);
-        assert.equal(parseSuggestedShareCommand(hints).mode, "unpublish");
-        return true;
-      },
-    );
-  } finally {
-    await failing.close();
-    if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
-    else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
-  }
-});
-
-test("an --unpublish the host rejected reports a plain failure, not an unknown outcome", async () => {
-  const rejecting = await startFailingHtmlApp(401, "");
-  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
-  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${rejecting.port}`;
-  try {
-    await assert.rejects(
-      () => shareCommand(["--unpublish", "--site", "abc123", "--update-key", "WRONG"]),
-      (error) => {
-        assert.ok(error instanceof Error);
-        assert.match(error.message, /unauthorized/i, "the host's reason must survive");
-        const suggestions = error instanceof AxiError ? error.suggestions || [] : [];
-        assert.doesNotMatch(`${error.message} ${suggestions.join(" ")}`, /may or may not have applied/i);
-        return true;
-      },
-    );
-  } finally {
-    await rejecting.close();
-    if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
-    else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
-  }
-});
-
-test("a literal password placeholder would be accepted, which is why no suggestion prints one", () => {
-  // The hazard `parseSuggestedShareCommand` guards against, proven against the real parser: unlike
-  // `<html-file>` and `<key>`, a `<pw>` left literal does not fail - it is a valid password, so it
-  // would reach the host and gate a live page behind that string with no way to clear it.
-  const parsed = resolveShareRequest(["report.html", "--site", "abc123", "--update-key", "k", "--password", "<pw>"]);
-  assert.equal(parsed.password, "<pw>", "a bracketed placeholder is a perfectly valid password value");
-  assert.equal(parsed.generatedPassword, false);
-});
-
-test("an indeterminate create failure says the page may be live and unreclaimable", async () => {
-  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-create-fail-`);
-  const artifact = `${dir}/report.html`;
-  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>", "utf8");
-
-  // The worst window in the feature: a 5xx after the origin committed the POST leaves the artifact
-  // publicly hosted while the only copy of its update_key dies with the response, so the page can
-  // never be republished or unpublished. Reporting a flat failure hides a permanent public page.
-  const failing = await startFailingHtmlApp(503, "upstream exploded");
-  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
-  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${failing.port}`;
-  try {
-    await assert.rejects(
-      () => shareCommand([artifact]),
-      (error) => {
-        assert.ok(error instanceof AxiError);
-        assert.equal(error.code, "UNKNOWN");
-        assert.match(error.message, /upstream exploded/, "the original failure must survive");
-        const hints = (error.suggestions || []).join(" ");
-        assert.match(hints, /may or may not have published/i, "the outcome must read as unknown");
-        assert.match(hints, /PUBLICLY/, "a default share that landed is readable by anyone");
-        assert.match(hints, /update_key/, "the lost credential must be named");
-        assert.match(hints, /no recovery/i, "and the absence of a way back stated plainly");
-        assert.match(hints, /SECOND page/, "re-running must not read as a retry that replaces it");
-        return true;
-      },
-    );
-
-    // --private mints a password that also dies with the response, so it is worth handing back.
-    await assert.rejects(
-      () => shareCommand([artifact, "--private"]),
-      (error) => {
-        assert.ok(error instanceof AxiError);
-        const hints = (error.suggestions || []).join(" ");
-        assert.match(hints, PASSWORD_SHAPE, "the generated password must be recoverable");
-        assert.doesNotMatch(hints, /PUBLICLY/, "a --private page that landed is not public");
-        return true;
-      },
-    );
-  } finally {
-    await failing.close();
-    if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
-    else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-async function startIncompleteHtmlApp(body) {
-  const server = createServer((req, res) => {
-    req.resume();
-    req.on("end", () => {
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify(body));
-    });
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
-  const address = server.address();
-  return {
-    port: typeof address === "object" && address ? address.port : 0,
-    close: () => new Promise((resolve) => server.close(() => resolve())),
-  };
-}
-
-test("a 200 with a malformed body is reported as published, not as an unknown outcome", async () => {
-  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-incomplete-`);
-  const artifact = `${dir}/report.html`;
-  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>", "utf8");
-
-  // The host answered 200, so the page definitely landed. Hedging that into "may or may not have
-  // published" throws away the one thing worth saying: here is the live URL, and its write
-  // credential is gone forever.
-  const noKey = await startIncompleteHtmlApp({ site_id: "abc123", url: "https://abc123.ht-ml.app/" });
-  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
-  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${noKey.port}`;
-  try {
-    await assert.rejects(
-      () => shareCommand([artifact]),
-      (error) => {
-        assert.ok(error instanceof AxiError);
-        const hints = (error.suggestions || []).join(" ");
-        assert.doesNotMatch(hints, /may or may not have published/i, "a 200 is not an unknown outcome");
-        assert.match(hints, /the page IS live/i);
-        assert.match(hints, /https:\/\/abc123\.ht-ml\.app\//, "the URL Lavish knows must be handed over");
-        assert.match(hints, /no recovery/i, "the lost update_key has none");
-        assert.match(hints, /SECOND page/);
-        return true;
-      },
-    );
-  } finally {
-    await noKey.close();
-    if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
-    else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
-  }
-
-  // The mirror case: no url came back, but the update_key did, so the page IS still changeable and
-  // saying "no recovery" would be the opposite error.
-  const noUrl = await startIncompleteHtmlApp({ site_id: "abc123", update_key: "uk_secret" });
-  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${noUrl.port}`;
-  try {
-    await assert.rejects(
-      () => shareCommand([artifact, "--private"]),
-      (error) => {
-        assert.ok(error instanceof AxiError);
-        const hints = (error.suggestions || []).join(" ");
-        assert.match(hints, /uk_secret/, "a surviving update_key must reach the user");
-        assert.match(hints, /carried no url/i);
-        assert.doesNotMatch(hints, /no recovery/i, "the page is still changeable with that key");
-        assert.match(hints, PASSWORD_SHAPE, "the generated password still gates it");
-        return true;
-      },
-    );
-  } finally {
-    await noUrl.close();
-    if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
-    else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("a create whose host returns no usable site_id says the page can never be republished", async () => {
-  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-nosite-`);
-  const artifact = `${dir}/report.html`;
-  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>", "utf8");
-
-  // A site_id that fails validation must never be propagated - that is the injection boundary -
-  // but an empty field beside "keep it to republish later" is worse than useless: --site is half
-  // the republish credential, so the user needs to learn now, not when --site rejects the value.
-  const hostile = await startIncompleteHtmlApp({
-    site_id: "abc123 --password evil",
-    url: "https://abc123.ht-ml.app/",
-    update_key: "uk_secret",
-    status: "active",
-  });
-  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
-  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${hostile.port}`;
-  try {
-    const output = await shareCommand([artifact]);
-    const share = /** @type {any} */ (output.share);
-
-    assert.equal("site_id" in share, false, "an unusable id is omitted, never emitted empty");
-    assert.equal(share.update_key, "uk_secret", "the page still published");
-    assert.match(output.next_step, /never be republished or unpublished/i);
-    assert.doesNotMatch(output.next_step, /--password/, "and no flag may ride in through the echo");
-  } finally {
-    await hostile.close();
-    if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
-    else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("a site_id the host echoes cannot inject flags into the suggested republish command", async () => {
-  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-echo-`);
-  try {
-    // next_step is text an agent may run. A backend reached through LAVISH_AXI_HTML_APP_API_URL
-    // answering with `abc123 --password evil` would otherwise append a flag that gates the page
-    // behind a value nobody chose, and ht-ml.app cannot clear a password.
-    const hostile = await startIncompleteHtmlApp({
-      site_id: "abc123 --password evil",
-      url: "https://abc123.ht-ml.app/",
-      update_key: "uk_secret",
-      status: "active",
-    });
-    const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
-    process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${hostile.port}`;
-    try {
-      const output = await shareCommand(["--unpublish", "--site", "abc123", "--update-key", "uk_secret"]);
-
-      assert.doesNotMatch(output.next_step, /--password/, "no flag may be smuggled in through the echo");
-      const suggested = parseSuggestedShareCommand(output.next_step);
-      assert.equal(suggested.siteId, "abc123", "the command names the id the request was addressed to");
-      assert.equal(suggested.generatedPassword, true, "only --private, whose password Lavish mints and reports");
-    } finally {
-      await hostile.close();
-      if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
-      else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
-    }
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("a create the host rejected reports a plain failure, not an unknown outcome", async () => {
-  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-create-rejected-`);
-  const artifact = `${dir}/report.html`;
-  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>", "utf8");
-
-  // A 400 is an answer: nothing was published, so claiming a page might be live would send the
-  // user hunting for a URL that does not exist.
-  const rejecting = await startFailingHtmlApp(400, "bad request");
-  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
-  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${rejecting.port}`;
-  try {
-    await assert.rejects(
-      () => shareCommand([artifact, "--private"]),
-      (error) => {
-        assert.ok(error instanceof Error);
-        const suggestions = error instanceof AxiError ? error.suggestions || [] : [];
-        const reported = `${error.message} ${suggestions.join(" ")}`;
-        assert.doesNotMatch(reported, /may or may not have published/i);
-        assert.doesNotMatch(reported, PASSWORD_SHAPE, "a rejected create gates nothing");
-        return true;
-      },
-    );
-  } finally {
-    await rejecting.close();
-    if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
-    else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("share reports a bad --site as a usage error before reading the artifact", async () => {
-  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-siteid-`);
-  const artifact = `${dir}/report.html`;
-  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>", "utf8");
-
-  const requests = [];
-  const htmlApp = await startFakeHtmlApp(requests);
-  const previousApiUrl = process.env.LAVISH_AXI_HTML_APP_API_URL;
-  process.env.LAVISH_AXI_HTML_APP_API_URL = `http://127.0.0.1:${htmlApp.port}`;
-  try {
-    // Pasting the share URL is the likeliest mistake here, since the URL is what the user holds.
-    for (const site of ["https://abc123.ht-ml.app/", "not a site id", ".."]) {
-      await assert.rejects(
-        () => shareCommand([artifact, "--site", site, "--update-key", "k"]),
-        (error) => {
-          assert.ok(error instanceof AxiError, `${site} must raise an AxiError`);
-          assert.equal(error.code, "VALIDATION_ERROR", `${site} must read as bad usage`);
-          assert.match(error.message, /site_id/);
-          return true;
-        },
-      );
-    }
-    assert.equal(requests.length, 0, "a rejected site id must never reach the host");
-  } finally {
-    await htmlApp.close();
-    if (previousApiUrl === undefined) delete process.env.LAVISH_AXI_HTML_APP_API_URL;
-    else process.env.LAVISH_AXI_HTML_APP_API_URL = previousApiUrl;
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("share command publishes the artifact to ht-ml.app and returns the public url", async () => {
-  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-test-`);
-  const artifact = `${dir}/report.html`;
-  await writeFile(`${dir}/theme.css`, ".btn{color:teal}", "utf8");
-  await writeFile(
-    artifact,
-    '<!doctype html><html><head><link rel="stylesheet" href="theme.css"></head><body><h1>Hi</h1></body></html>',
-    "utf8",
-  );
-
-  const requests = [];
-  const htmlApp = await startFakeHtmlApp(requests);
-  try {
-    // Use async spawn (not spawnSync): the child publishes to the fake ht-ml.app server hosted
-    // on this process's event loop, which spawnSync would block, deadlocking the request.
-    const child = spawn(
-      process.execPath,
-      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "share", "--password", "pw", artifact],
-      {
-        cwd: fileURLToPath(new URL("..", import.meta.url)),
-        env: {
-          ...process.env,
-          LAVISH_AXI_STATE_DIR: dir,
-          LAVISH_AXI_TELEMETRY: "0",
-          LAVISH_AXI_HTML_APP_API_URL: `http://127.0.0.1:${htmlApp.port}`,
-        },
-      },
-    );
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    const code = await new Promise((resolve) => child.on("close", resolve));
-
-    assert.equal(code, 0, stderr);
-    assert.match(stdout, /abc123\.ht-ml\.app/);
-    assert.match(stdout, /PASSWORD-PROTECTED/);
-    assert.match(stdout, /viewers also need the password/);
-    assert.equal(requests.length, 1);
-    assert.equal(requests[0].url, "/v1/sites");
-    assert.match(requests[0].body.html_content, /<style>\.btn\{color:teal\}<\/style>/);
-    assert.equal(requests[0].body.password, "pw");
-  } finally {
-    await htmlApp.close();
-    await rm(dir, { force: true, recursive: true });
-  }
-});
-
-test("share command refuses a whitespace-only password instead of quietly publishing a public page", async () => {
-  const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-share-test-`);
-  const artifact = `${dir}/report.html`;
-  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>", "utf8");
-
-  const requests = [];
-  const htmlApp = await startFakeHtmlApp(requests);
-  try {
-    const child = spawn(
-      process.execPath,
-      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "share", "--password", "   ", artifact],
-      {
-        cwd: fileURLToPath(new URL("..", import.meta.url)),
-        env: {
-          ...process.env,
-          LAVISH_AXI_STATE_DIR: dir,
-          LAVISH_AXI_TELEMETRY: "0",
-          LAVISH_AXI_HTML_APP_API_URL: `http://127.0.0.1:${htmlApp.port}`,
-        },
-      },
-    );
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    const code = await new Promise((resolve) => child.on("close", resolve));
-
-    // Asking for a password and getting an unprotected page is the surprise worth refusing: the
-    // user meant to gate the artifact, and nothing downstream can tell that intent was dropped.
-    assert.notEqual(code, 0);
-    const output = `${stdout}${stderr}`;
-    assert.match(output, /--password was given an empty value/);
-    assert.match(output, /--private/);
-    assert.equal(requests.length, 0, "nothing may be published when the arguments are refused");
-  } finally {
-    await htmlApp.close();
-    await rm(dir, { force: true, recursive: true });
-  }
+  const setupHelp = getCommandHelp("setup");
+  assert.match(setupHelp, /REMOVED from this hardened build/);
+  assert.match(setupHelp, /Nothing needs to be installed/);
 });
 
 test("poll help requires an observable wake path", () => {
@@ -1692,60 +997,6 @@ test("poll help is Codex-aware when requested", () => {
   assertObservablePollWakePath(help);
   assert.match(help, /Codex detected/);
   assert.match(help, /keep the poll attached to the active turn/);
-});
-
-test("share help distinguishes public default from password-protected shares", () => {
-  const help = getCommandHelp("share");
-  const home = createHomeOutput({ bin: "lavish-axi", sessions: [] });
-  const homeShareHelp = home.help.find((item) => item.includes("lavish-axi share <html-file>"));
-
-  assert.match(help, /PUBLIC by default/);
-  assert.match(help, /Pass --private to publish a PRIVATE page behind a generated password/);
-  assert.match(help, /--password <pw> instead when the user chose the password/);
-  assert.match(help, /shared secret/);
-  assert.match(help, /not blocked by CSP on ht-ml\.app/);
-  assert.match(help, /load over the viewer's network/);
-  assert.doesNotMatch(help, /EVERYTHING PUBLISHED IS PUBLIC/);
-  assert.doesNotMatch(help, /load fine/);
-  assert.match(homeShareHelp, /PUBLIC by default/);
-  assert.match(homeShareHelp, /Pass --private to publish a PRIVATE page behind a password Lavish generates/);
-  assert.match(homeShareHelp, /shared secret/);
-  assert.doesNotMatch(homeShareHelp, /Everything published is public/);
-});
-
-test("share help announces that an empty password value is refused rather than published public", () => {
-  // Deliberate behavior change: `--password "$PW"` with an unset $PW used to publish a PUBLIC page.
-  // The help is where an agent or user learns that before hitting the error.
-  const help = getCommandHelp("share");
-  assert.match(help, /empty or whitespace-only value is REFUSED/);
-  assert.match(help, /PUBLIC page/);
-
-  assert.throws(
-    () => resolveShareRequest(["report.html", "--password", ""]),
-    (error) => {
-      assert.ok(error instanceof AxiError);
-      assert.equal(error.code, "VALIDATION_ERROR");
-      assert.match(error.message, /PUBLIC page/, "the error must name what it prevented");
-      assert.match((error.suggestions || []).join(" "), /--private/, "and how to get a generated password");
-      return true;
-    },
-  );
-});
-
-test("home share guidance defers republish and unpublish mechanics to share --help", () => {
-  // Home output is paid on every no-argument invocation, so it may name the update_key and point
-  // at the command that owns it, but must not restate that command's flag mechanics.
-  const help = getCommandHelp("share");
-  const home = createHomeOutput({ bin: "lavish-axi", sessions: [] });
-  const homeShareHelp = home.help.find((item) => item.includes("lavish-axi share <html-file>"));
-
-  assert.match(homeShareHelp, /run `lavish-axi share --help` before using it/);
-  assert.doesNotMatch(homeShareHelp, /--site/);
-  assert.doesNotMatch(homeShareHelp, /--update-key/);
-  assert.doesNotMatch(homeShareHelp, /--unpublish/);
-  assert.match(help, /--site <site_id> with --update-key <key> republishes an existing page in place/);
-  assert.match(help, /--unpublish takes the same credentials and no file/);
-  assert.match(help, /NO delete endpoint/);
 });
 
 test("feedback next step keeps the next poll completion observable", () => {
@@ -2262,440 +1513,11 @@ test("SDK reserved commands pass through instead of normalizing to open", () => 
   assert.deepEqual(normalizeArgv(["update", "--help"]), ["update", "--help"]);
 });
 
-test("setup hooks resolves HOME before platform-specific user profile variables", () => {
-  assert.equal(
-    resolveHookHomeDir({ HOME: "/tmp/lavish-home", USERPROFILE: "C:\\Users\\runneradmin" }, "/fallback"),
-    "/tmp/lavish-home",
-  );
-});
-
-test("setup hooks resolves Copilot hook directory from COPILOT_HOME first", () => {
-  assert.equal(
-    resolveCopilotHookDir({ COPILOT_HOME: "/tmp/copilot-home", HOME: "/tmp/home" }),
-    path.join("/tmp/copilot-home", "hooks"),
-  );
-  assert.equal(resolveCopilotHookDir({ HOME: "/tmp/home" }), path.join("/tmp/home", ".copilot", "hooks"));
-});
-
-test("setup hooks creates a Copilot CLI hook that injects additional context", () => {
-  const hook = createCopilotCliSessionStartHook();
-  const [updated, changed] = computeCopilotCliHookUpdate(
-    {
-      version: 1,
-      hooks: {
-        sessionStart: [{ type: "command", bash: "echo keep-me" }],
-      },
-    },
-    hook,
-  );
-
-  assert.equal(changed, true);
-  assert.equal(updated.version, 1);
-  assert.equal(updated.hooks.sessionStart.length, 2);
-  assert.equal(updated.hooks.sessionStart[0].bash, "echo keep-me");
-  assert.match(updated.hooks.sessionStart[1].bash, /additionalContext/);
-  assert.match(updated.hooks.sessionStart[1].powershell, /additionalContext/);
-  assert.match(updated.hooks.sessionStart[1].bash, /lavish-axi/);
-  assert.equal(updated.hooks.sessionStart[1].timeoutSec, 10);
-
-  const [unchanged, unchangedFlag] = computeCopilotCliHookUpdate(updated, hook);
-  assert.equal(unchangedFlag, false);
-  assert.equal(unchanged, updated);
-});
-
-test("Copilot CLI ambient context script wraps lavish output as hook JSON", async () => {
-  const tempDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-copilot-hook-`);
-  try {
-    const fakeCli = path.join(tempDir, "fake-lavish.js");
-    await writeFile(fakeCli, 'console.log("sessions: []");\n', "utf8");
-    const command = `"${process.execPath}" "${fakeCli}"`;
-    const result = spawnSync(process.execPath, ["-e", createCopilotCliAmbientContextScript(command)], {
-      encoding: "utf8",
-    });
-
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    const output = JSON.parse(result.stdout);
-    assert.match(output.additionalContext, /## AXI ambient context: lavish-axi/);
-    assert.match(output.additionalContext, /sessions: \[\]/);
-  } finally {
-    await rm(tempDir, { force: true, recursive: true });
-  }
-});
-
-test("setup hooks installs agent session hooks explicitly", async () => {
-  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-setup-state-`);
-  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-setup-home-`);
-  try {
-    const result = spawnSync(
-      process.execPath,
-      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "setup", "hooks"],
-      {
-        cwd: fileURLToPath(new URL("..", import.meta.url)),
-        encoding: "utf8",
-        env: setupHooksEnv(homeDir, stateDir),
-      },
-    );
-
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /hooks:/);
-    assert.match(result.stdout, /status: installed/);
-    assert.match(result.stdout, /GitHub Copilot CLI/);
-    assert.match(result.stdout, /Restart your agent session/);
-    assert.ok(existsSync(`${homeDir}/.claude/settings.json`));
-    assert.ok(existsSync(`${homeDir}/.copilot/hooks/lavish-axi.json`));
-
-    const copilotHook = JSON.parse(await readFile(`${homeDir}/.copilot/hooks/lavish-axi.json`, "utf8"));
-    assert.equal(copilotHook.version, 1);
-    assert.equal(copilotHook.hooks.sessionStart.length, 1);
-    assert.match(copilotHook.hooks.sessionStart[0].bash, /additionalContext/);
-    assert.match(copilotHook.hooks.sessionStart[0].powershell, /additionalContext/);
-  } finally {
-    await rm(stateDir, { force: true, recursive: true });
-    await rm(homeDir, { force: true, recursive: true });
-  }
-});
-
-test("setup hooks exits with an error when hook installation fails", async () => {
-  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-setup-fail-state-`);
-  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-setup-fail-home-`);
-  try {
-    await mkdir(`${homeDir}/.claude`, { recursive: true });
-    await writeFile(`${homeDir}/.claude/settings.json`, "{ invalid json", "utf8");
-
-    const result = spawnSync(
-      process.execPath,
-      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "setup", "hooks"],
-      {
-        cwd: fileURLToPath(new URL("..", import.meta.url)),
-        encoding: "utf8",
-        env: setupHooksEnv(homeDir, stateDir),
-      },
-    );
-
-    const output = `${result.stdout}\n${result.stderr}`;
-    assert.notEqual(result.status, 0, result.stdout);
-    assert.match(output, /hook/i);
-    assert.doesNotMatch(result.stdout, /status: installed/);
-  } finally {
-    await rm(stateDir, { force: true, recursive: true });
-    await rm(homeDir, { force: true, recursive: true });
-  }
-});
-
-// `copilot` is a real binary on developer machines; an empty PATH keeps `setup plugin`
-// from registering the plugin into the tester's own Copilot CLI.
-function setupPluginEnv(homeDir, stateDir, pathDir) {
-  const env = setupHooksEnv(homeDir, stateDir);
-  delete env.APPDATA;
-  delete env.XDG_CONFIG_HOME;
-  return { ...env, PATH: pathDir, Path: pathDir };
-}
-
-function runSetupPlugin(homeDir, stateDir, pathDir) {
-  return spawnSync(
-    process.execPath,
-    [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "setup", "plugin"],
-    {
-      cwd: fileURLToPath(new URL("..", import.meta.url)),
-      encoding: "utf8",
-      env: setupPluginEnv(homeDir, stateDir, pathDir),
-    },
-  );
-}
-
-async function writeCopilotCommandStub(pathDir, options) {
-  const source = `
-const fs = require("node:fs");
-const options = ${JSON.stringify(options)};
-const args = process.argv.slice(2);
-const command = args.slice(0, 2).join(" ");
-if (command === "plugins list") {
-  if (options.invalidList) {
-    process.stdout.write("not json\\n");
-  } else {
-    const records = [{ kind: "plugin", name: "lavish-axi-tools", source: "direct" }];
-    if (options.installedSource && fs.existsSync(options.installedSource)) {
-      records.push(options.listSourcePath
-        ? { kind: "plugin", name: "lavish-axi", sourcePath: fs.readFileSync(options.installedSource, "utf8") }
-        : { kind: "plugin", name: "lavish-axi", source: "direct" });
-    }
-    process.stdout.write(JSON.stringify(records));
-  }
-  process.exit(0);
-}
-if (command === "plugin install") {
-  if (options.installFails) {
-    process.stderr.write("replacement failed\\n");
-    process.exit(1);
-  }
-  const pluginRoot = args[2];
-  if (options.installedSource) fs.writeFileSync(options.installedSource, pluginRoot);
-  if (options.copilotConfig) {
-    fs.writeFileSync(options.copilotConfig, JSON.stringify({
-      installedPlugins: [{ name: "lavish-axi", source: { source: "local", path: pluginRoot } }],
-    }));
-  }
-  if (options.installLog) fs.appendFileSync(options.installLog, "install\\n");
-  process.exit(0);
-}
-process.exit(1);
-`;
-  if (process.platform === "win32") {
-    const script = path.join(pathDir, "copilot-stub.cjs");
-    await writeFile(script, source, "utf8");
-    await writeFile(path.join(pathDir, "copilot.cmd"), `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`, "utf8");
-    return;
-  }
-  await writeFile(path.join(pathDir, "copilot"), `#!${process.execPath}\n${source}`, {
-    encoding: "utf8",
-    mode: 0o755,
-  });
-}
-
-test("setup plugin registers the installed package in the clients that are present", async () => {
-  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-state-`);
-  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-home-`);
-  const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-path-`);
-  try {
-    await mkdir(`${homeDir}/.cursor`, { recursive: true });
-
-    const result = runSetupPlugin(homeDir, stateDir, pathDir);
-
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /name: lavish-axi/);
-    assert.match(result.stdout, /cursor,registered/);
-    // No VS Code settings and no copilot binary in this environment.
-    assert.match(result.stdout, /vscode,absent/);
-    assert.match(result.stdout, /copilot,absent/);
-
-    // The registered slot points at the package root, which is where plugin.json lives.
-    const linked = await realpath(`${homeDir}/.cursor/plugins/local/lavish-axi`);
-    assert.equal(linked, await realpath(fileURLToPath(new URL("..", import.meta.url))));
-    assert.ok(existsSync(`${linked}/plugin.json`));
-    assert.ok(existsSync(`${linked}/skills/lavish/SKILL.md`));
-  } finally {
-    await rm(stateDir, { force: true, recursive: true });
-    await rm(homeDir, { force: true, recursive: true });
-    await rm(pathDir, { force: true, recursive: true });
-  }
-});
-
-test("setup plugin registers VS Code without disturbing existing settings", async () => {
-  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-vs-state-`);
-  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-vs-home-`);
-  const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-vs-path-`);
-  const settingsFile = resolveVsCodeSettingsFile({}, homeDir);
-  try {
-    await mkdir(path.dirname(settingsFile), { recursive: true });
-    await writeFile(settingsFile, JSON.stringify({ "editor.fontSize": 13 }), "utf8");
-
-    const first = runSetupPlugin(homeDir, stateDir, pathDir);
-    assert.equal(first.status, 0, first.stderr || first.stdout);
-    assert.match(first.stdout, /vscode,registered/);
-
-    const settings = JSON.parse(await readFile(settingsFile, "utf8"));
-    assert.equal(settings["editor.fontSize"], 13, "unrelated settings survive");
-    const registered = Object.keys(settings["chat.pluginLocations"]);
-    assert.equal(registered.length, 1);
-    assert.ok(existsSync(`${registered[0]}/plugin.json`));
-
-    // Re-running is a no-op rather than a duplicate registration.
-    const second = runSetupPlugin(homeDir, stateDir, pathDir);
-    assert.equal(second.status, 0, second.stderr || second.stdout);
-    assert.match(second.stdout, /vscode,current/);
-    assert.deepEqual(JSON.parse(await readFile(settingsFile, "utf8")), settings);
-  } finally {
-    await rm(stateDir, { force: true, recursive: true });
-    await rm(homeDir, { force: true, recursive: true });
-    await rm(pathDir, { force: true, recursive: true });
-  }
-});
-
-test("setup plugin creates VS Code settings for a fresh installation", async () => {
-  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-vs-fresh-state-`);
-  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-vs-fresh-home-`);
-  const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-vs-fresh-path-`);
-  const settingsFile = resolveVsCodeSettingsFile({}, homeDir);
-  try {
-    await mkdir(path.dirname(settingsFile), { recursive: true });
-
-    const result = runSetupPlugin(homeDir, stateDir, pathDir);
-
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /vscode,registered/);
-    const settings = JSON.parse(await readFile(settingsFile, "utf8"));
-    const registered = Object.keys(settings["chat.pluginLocations"]);
-    assert.equal(registered.length, 1);
-    assert.ok(existsSync(`${registered[0]}/plugin.json`));
-  } finally {
-    await rm(stateDir, { force: true, recursive: true });
-    await rm(homeDir, { force: true, recursive: true });
-    await rm(pathDir, { force: true, recursive: true });
-  }
-});
-
-test("setup plugin leaves unparseable VS Code settings alone", async () => {
-  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-jsonc-state-`);
-  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-jsonc-home-`);
-  const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-jsonc-path-`);
-  const settingsFile = resolveVsCodeSettingsFile({}, homeDir);
-  const original = '{\n  // VS Code settings allow comments\n  "editor.fontSize": 13,\n}\n';
-  try {
-    await mkdir(path.dirname(settingsFile), { recursive: true });
-    await writeFile(settingsFile, original, "utf8");
-
-    const result = runSetupPlugin(homeDir, stateDir, pathDir);
-
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /vscode,manual/);
-    assert.equal(await readFile(settingsFile, "utf8"), original, "settings are not rewritten");
-  } finally {
-    await rm(stateDir, { force: true, recursive: true });
-    await rm(homeDir, { force: true, recursive: true });
-    await rm(pathDir, { force: true, recursive: true });
-  }
-});
-
-test("setup plugin repairs Copilot registration without trusting list text", async () => {
-  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-state-`);
-  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-home-`);
-  const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-path-`);
-  const installedSource = path.join(homeDir, "copilot-installed-source");
-  const installLog = path.join(homeDir, "copilot-install-log");
-  const copilotConfig = path.join(homeDir, ".copilot", "config.json");
-  try {
-    await mkdir(path.dirname(copilotConfig), { recursive: true });
-    await writeFile(copilotConfig, '{"installedPlugins":[]}');
-    await writeCopilotCommandStub(pathDir, { installedSource, installLog, copilotConfig });
-
-    const first = runSetupPlugin(homeDir, stateDir, pathDir);
-
-    assert.equal(first.status, 0, first.stderr || first.stdout);
-    assert.match(first.stdout, /copilot,registered/);
-    const pluginRoot = await realpath(fileURLToPath(new URL("..", import.meta.url)));
-    assert.equal(await realpath(await readFile(installedSource, "utf8")), pluginRoot);
-
-    const second = runSetupPlugin(homeDir, stateDir, pathDir);
-
-    assert.equal(second.status, 0, second.stderr || second.stdout);
-    assert.match(second.stdout, /copilot,current/);
-    assert.equal(await realpath(await readFile(installedSource, "utf8")), pluginRoot);
-    assert.equal(await readFile(installLog, "utf8"), "install\n");
-
-    await writeFile(installedSource, "/stale/lavish-axi");
-    await writeFile(
-      copilotConfig,
-      '{"installedPlugins":[{"name":"lavish-axi","source":{"source":"local","path":"/stale/lavish-axi"}}]}',
-    );
-    const repaired = runSetupPlugin(homeDir, stateDir, pathDir);
-
-    assert.equal(repaired.status, 0, repaired.stderr || repaired.stdout);
-    assert.match(repaired.stdout, /copilot,registered/);
-    assert.equal(await realpath(await readFile(installedSource, "utf8")), pluginRoot);
-    assert.equal(await readFile(installLog, "utf8"), "install\ninstall\n");
-  } finally {
-    await rm(stateDir, { force: true, recursive: true });
-    await rm(homeDir, { force: true, recursive: true });
-    await rm(pathDir, { force: true, recursive: true });
-  }
-});
-
-test("setup plugin preserves Copilot registration when replacement fails", async () => {
-  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-failure-state-`);
-  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-failure-home-`);
-  const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-failure-path-`);
-  const installedSource = path.join(homeDir, "copilot-installed-source");
-  const originalSource = "/working/lavish-axi";
-  try {
-    await writeFile(installedSource, originalSource);
-    await writeCopilotCommandStub(pathDir, { installedSource, listSourcePath: true, installFails: true });
-
-    const result = runSetupPlugin(homeDir, stateDir, pathDir);
-
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /copilot,failed/);
-    assert.equal(await readFile(installedSource, "utf8"), originalSource);
-  } finally {
-    await rm(stateDir, { force: true, recursive: true });
-    await rm(homeDir, { force: true, recursive: true });
-    await rm(pathDir, { force: true, recursive: true });
-  }
-});
-
-test("setup plugin does not install when Copilot records are invalid", async () => {
-  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-invalid-state-`);
-  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-invalid-home-`);
-  const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-copilot-invalid-path-`);
-  const installLog = path.join(homeDir, "copilot-install-log");
-  try {
-    await writeCopilotCommandStub(pathDir, { invalidList: true, installLog });
-
-    const result = runSetupPlugin(homeDir, stateDir, pathDir);
-
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /copilot,manual/);
-    assert.equal(existsSync(installLog), false);
-  } finally {
-    await rm(stateDir, { force: true, recursive: true });
-    await rm(homeDir, { force: true, recursive: true });
-    await rm(pathDir, { force: true, recursive: true });
-  }
-});
-
-test("setup plugin isolates a client it cannot register from the ones it can", async () => {
-  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-iso-state-`);
-  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-iso-home-`);
-  const pathDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-plugin-iso-path-`);
-  const settingsFile = resolveVsCodeSettingsFile({}, homeDir);
-  try {
-    // A real directory in Cursor's slot is unregisterable - the same reported (not thrown)
-    // path a Windows box without Developer Mode takes when link creation is refused.
-    const occupied = `${homeDir}/.cursor/plugins/local/lavish-axi`;
-    await mkdir(occupied, { recursive: true });
-    await writeFile(`${occupied}/keep.txt`, "user content", "utf8");
-    await mkdir(path.dirname(settingsFile), { recursive: true });
-    await writeFile(settingsFile, JSON.stringify({ "editor.fontSize": 13 }), "utf8");
-
-    const result = runSetupPlugin(homeDir, stateDir, pathDir);
-
-    assert.equal(result.status, 0, "an unregisterable client never fails the command");
-    assert.match(result.stdout, /cursor,manual/);
-    assert.match(result.stdout, /vscode,registered/, "the other client is still registered");
-
-    const settings = JSON.parse(await readFile(settingsFile, "utf8"));
-    assert.equal(Object.keys(settings["chat.pluginLocations"]).length, 1);
-    assert.equal(await readFile(`${occupied}/keep.txt`, "utf8"), "user content", "user content survives");
-  } finally {
-    await rm(stateDir, { force: true, recursive: true });
-    await rm(homeDir, { force: true, recursive: true });
-    await rm(pathDir, { force: true, recursive: true });
-  }
-});
-
-test("setup rejects an unknown action and names both supported ones", async () => {
-  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-setup-unknown-state-`);
-  const homeDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-setup-unknown-home-`);
-  try {
-    const result = spawnSync(
-      process.execPath,
-      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "setup", "everything"],
-      {
-        cwd: fileURLToPath(new URL("..", import.meta.url)),
-        encoding: "utf8",
-        env: setupHooksEnv(homeDir, stateDir),
-      },
-    );
-
-    assert.notEqual(result.status, 0);
-    const output = `${result.stdout}\n${result.stderr}`;
-    assert.match(output, /setup hooks/);
-    assert.match(output, /setup plugin/);
-  } finally {
-    await rm(stateDir, { force: true, recursive: true });
-    await rm(homeDir, { force: true, recursive: true });
-  }
-});
-
+// LAVISH-HARDENED: `setup` is removed, and so is everything it called - the hook
+// directory resolvers, the ambient-context script, the settings merge, the writer and
+// the per-client plugin registration. The fifteen tests that stood here exercised all
+// of it against temporary HOME and COPILOT_HOME directories. The refusal itself is
+// asserted above, in "the removed commands refuse and say why".
 test("telemetry command names are anonymous and do not include file paths", () => {
   assert.equal(telemetryCommandName(["report.html"]), "open");
   assert.equal(telemetryCommandName(["poll", "/tmp/secret/report.html"]), "poll");
@@ -2984,34 +1806,6 @@ test("stop command reports when no server is running", async () => {
     await rm(dir, { force: true, recursive: true });
   }
 });
-
-async function startFakeHtmlApp(requests) {
-  const server = createServer((req, res) => {
-    let raw = "";
-    req.setEncoding("utf8");
-    req.on("data", (chunk) => {
-      raw += chunk;
-    });
-    req.on("end", () => {
-      requests.push({ method: req.method, url: req.url, headers: req.headers, body: raw ? JSON.parse(raw) : null });
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(
-        JSON.stringify({
-          site_id: "abc123",
-          url: "https://abc123.ht-ml.app/",
-          update_key: "uk_secret",
-          status: "active",
-        }),
-      );
-    });
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
-  const address = server.address();
-  return {
-    port: typeof address === "object" && address ? address.port : 0,
-    close: () => new Promise((resolve) => server.close(() => resolve())),
-  };
-}
 
 // A stand-in for a running server of another version: it answers /health, records what the CLI
 // actually puts on the wire at /shutdown, and then frees the port like a real one.
@@ -3337,6 +2131,26 @@ test("createShareUnpublishOutput says the host reported no URL rather than namin
   assert.match(output.next_step, /did not report a URL/i);
   assert.doesNotMatch(output.next_step, /Replaced the page at /);
 });
+
+// A recovery hint is only recovery if the CLI accepts it. Pull the command Lavish printed out of
+// the text it printed and run it back through the real argument parser, so a hint that drifts into
+// a usage error - `--site`/`--update-key` with no HTML file was one - fails here instead of on the
+// user's next paste.
+function parseSuggestedShareCommand(text) {
+  const match = /`lavish-axi share ([^`]+)`/.exec(String(text));
+  assert.ok(match, `expected a suggested share command in: ${text}`);
+  const argv = match[1].trim().split(/\s+/);
+  const request = resolveShareRequest(argv);
+  // `<html-file>` and `<key>` fail loudly when pasted literally - one is not a file, the other
+  // earns a 401 - but ANY non-empty string is a valid password, so a placeholder that reaches the
+  // parser as a password value would be accepted and would rotate a live page to a secret nobody
+  // was told, which ht-ml.app cannot clear. A suggested command must never carry one.
+  assert.ok(
+    request.generatedPassword || request.password === undefined,
+    `a suggested command must not dictate a password value, got ${request.password} from: ${argv.join(" ")}`,
+  );
+  return request;
+}
 
 test("createShareUnpublishOutput says the page still exists and how to bring it back", () => {
   const output = createShareUnpublishOutput({

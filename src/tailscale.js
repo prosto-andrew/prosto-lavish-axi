@@ -1,26 +1,11 @@
-import { execFile } from "node:child_process";
 import { isIP } from "node:net";
-import { promisify } from "node:util";
 
-const execFileAsync = promisify(execFile);
-
-export function tailscaleCommandCandidates(platform = process.platform, env = process.env) {
-  const candidates = ["tailscale"];
-  if (platform === "darwin") {
-    candidates.push(
-      "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
-      "/Applications/Tailscale.app/Contents/MacOS/tailscale",
-      "/opt/homebrew/bin/tailscale",
-      "/usr/local/bin/tailscale",
-    );
-  } else if (platform === "win32") {
-    const programFiles = env.ProgramFiles || "C:\\Program Files";
-    candidates.push(`${programFiles}\\Tailscale\\tailscale.exe`);
-  } else {
-    candidates.push("/usr/bin/tailscale", "/usr/local/bin/tailscale");
-  }
-  return [...new Set(candidates)];
-}
+// LAVISH-HARDENED: tailnet detection is removed. The stock module shelled out to the
+// `tailscale` binary to find this machine's tailnet IPv4 so the review server could
+// bind to it as well. The candidate list, the subprocess call and the incomplete-status
+// handling are DELETED from this source, so no probe can run and the server has no
+// address to bind beyond loopback. parseTailscaleStatus is kept because it is a pure
+// parser with no I/O, and its tests document the shape that is no longer consumed.
 
 /**
  * @typedef {{ ipv4: string, magicDnsName: string }} TailscaleNet
@@ -28,7 +13,7 @@ export function tailscaleCommandCandidates(platform = process.platform, env = pr
  */
 
 /**
- * Parse `tailscale status --json` into this machine's Tailscale IPv4 and MagicDNS
+ * Parse a `tailscale status --json` document into this machine's Tailscale IPv4 and MagicDNS
  * name, or null when Tailscale is not up. Never throws.
  * @param {string} raw
  * @returns {TailscaleNet | null}
@@ -67,64 +52,11 @@ export function parseTailscaleStatus(raw) {
 }
 
 /**
- * Detect a running Tailscale node on this machine. Missing binary, a stopped
- * tailnet, or any error returns null - never throws.
- * @param {{ execFile?: typeof execFileAsync, timeoutMs?: number, commands?: string[], now?: () => number }} [options]
+ * Always null in this build. Callers still pass the stock options object; every
+ * argument is ignored and no subprocess is started.
+ * @param {...unknown} _ignored
  * @returns {Promise<TailscaleNet | IncompleteTailscaleNet | null>}
  */
-export async function detectTailscale() {
-  // LAVISH-HARDENED: Tailscale detection removed. The `tailscale` binary is never
-  // executed, so this build starts no subprocess to probe the tailnet.
+export async function detectTailscale(..._ignored) {
   return null;
-}
-
-async function detectTailscaleDisabled({
-  execFile = execFileAsync,
-  timeoutMs = 2000,
-  commands = tailscaleCommandCandidates(),
-  now = Date.now,
-} = {}) {
-  const deadline = now() + timeoutMs;
-  let incompleteRunningStatus = false;
-  for (const command of commands) {
-    const remainingMs = deadline - now();
-    if (remainingMs <= 0) break;
-    try {
-      const { stdout } = await execFile(command, ["status", "--json"], {
-        timeout: remainingMs,
-        maxBuffer: 2_000_000,
-        encoding: "utf8",
-      });
-      const raw = String(stdout || "");
-      const status = parseTailscaleStatus(raw);
-      if (status) return status;
-      incompleteRunningStatus ||= isIncompleteRunningTailscaleStatus(raw);
-    } catch {
-      continue;
-    }
-  }
-  if (incompleteRunningStatus) {
-    return {
-      ipv4: null,
-      magicDnsName: null,
-      warning:
-        "Tailscale is running but MagicDNS is unavailable; there is no phone access. Lavish remains available on loopback.",
-    };
-  }
-  return null;
-}
-
-function isIncompleteRunningTailscaleStatus(raw) {
-  let data;
-  try {
-    data = JSON.parse(raw);
-  } catch {
-    return false;
-  }
-  if (!data || typeof data !== "object" || String(data.BackendState || "") !== "Running") return false;
-  const addresses = [
-    ...(Array.isArray(data.Self?.TailscaleIPs) ? data.Self.TailscaleIPs : []),
-    ...(Array.isArray(data.TailscaleIPs) ? data.TailscaleIPs : []),
-  ];
-  return addresses.some((address) => typeof address === "string" && isIP(address.trim()) === 4);
 }

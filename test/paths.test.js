@@ -1,25 +1,43 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { bindHost, clientHost, extraAllowedHosts, hostForUrl, LOOPBACK_HOST, linkHost } from "../src/paths.js";
+import {
+  bindHost,
+  clientHost,
+  extraAllowedHosts,
+  hostForUrl,
+  LOOPBACK_HOST,
+  linkHost,
+  resolveListenHosts,
+} from "../src/paths.js";
 
-test("bindHost defaults to loopback and honors LAVISH_AXI_HOST", () => {
-  assert.equal(bindHost({}), LOOPBACK_HOST);
-  assert.equal(bindHost({ LAVISH_AXI_HOST: "" }), LOOPBACK_HOST);
-  assert.equal(bindHost({ LAVISH_AXI_HOST: "  " }), LOOPBACK_HOST);
-  assert.equal(bindHost({ LAVISH_AXI_HOST: "100.64.0.1" }), "100.64.0.1");
-  assert.equal(bindHost({ LAVISH_AXI_HOST: " 0.0.0.0 " }), "0.0.0.0");
+// LAVISH-HARDENED: LAVISH_AXI_HOST is ignored. The stock build let it name any
+// interface to bind to - a LAN address, a VPN address, a wildcard - and these three
+// tests asserted exactly that. Here the value is read by nothing, so what is pinned is
+// that no environment can move the server off loopback.
+test("no environment value can move the bind address off loopback", () => {
+  const attempts = [
+    {},
+    { LAVISH_AXI_HOST: "" },
+    { LAVISH_AXI_HOST: "  " },
+    { LAVISH_AXI_HOST: "100.64.0.1" },
+    { LAVISH_AXI_HOST: " 0.0.0.0 " },
+    { LAVISH_AXI_HOST: "::" },
+    { LAVISH_AXI_HOST: "192.168.1.10" },
+  ];
+  for (const env of attempts) {
+    assert.equal(bindHost(env), LOOPBACK_HOST, JSON.stringify(env));
+    assert.equal(clientHost(env), LOOPBACK_HOST, JSON.stringify(env));
+  }
 });
 
-test("clientHost dials the concrete primary listener for wildcard binds", () => {
-  assert.equal(clientHost({}), LOOPBACK_HOST);
-  assert.equal(clientHost({ LAVISH_AXI_HOST: "100.64.0.1" }), "100.64.0.1");
-  assert.equal(clientHost({ LAVISH_AXI_HOST: "0.0.0.0" }), LOOPBACK_HOST);
-  assert.equal(clientHost({ LAVISH_AXI_HOST: "::" }), LOOPBACK_HOST);
-  assert.equal(clientHost({ LAVISH_AXI_HOST: "[::]" }), LOOPBACK_HOST);
-  assert.equal(clientHost({ LAVISH_AXI_HOST: "0:0:0:0:0:0:0:0" }), LOOPBACK_HOST);
-  assert.equal(clientHost({ LAVISH_AXI_HOST: "[0:0:0:0:0:0:0:0]" }), LOOPBACK_HOST);
-  assert.equal(clientHost({ LAVISH_AXI_HOST: "::ffff:0.0.0.0" }), LOOPBACK_HOST);
+test("the listen set is loopback and nothing else", () => {
+  for (const env of [{}, { LAVISH_AXI_HOST: "100.64.0.1" }]) {
+    assert.deepEqual(resolveListenHosts({ env }), [LOOPBACK_HOST]);
+  }
+  // A detected tailnet used to be appended here; nothing detects one any more, and an
+  // injected one is ignored too.
+  assert.deepEqual(resolveListenHosts({ tailscale: { ipv4: "100.64.0.1" } }), [LOOPBACK_HOST]);
 });
 
 test("extraAllowedHosts parses the whitespace-separated opt-in list", () => {
@@ -35,16 +53,17 @@ test("extraAllowedHosts parses the whitespace-separated opt-in list", () => {
   assert.deepEqual(extraAllowedHosts({ LAVISH_AXI_ALLOWED_HOSTS: "*" }), ["*"]);
 });
 
-test("linkHost prefers LAVISH_AXI_LINK_HOST, then falls back to the dial host", () => {
+test("linkHost still names a hostname for the URL, but never a second bind address", () => {
+  // LAVISH_AXI_LINK_HOST is cosmetic: it only changes the hostname written into session
+  // URLs (a reverse proxy in front of loopback). It cannot widen what the server listens
+  // on, so the bind address stays loopback whatever it says.
   assert.equal(linkHost({}), LOOPBACK_HOST);
   assert.equal(linkHost({ LAVISH_AXI_LINK_HOST: "host.example" }), "host.example");
   assert.equal(linkHost({ LAVISH_AXI_LINK_HOST: "  " }), LOOPBACK_HOST);
-  // Non-wildcard bind with no explicit link host -> links reuse the bind address.
-  assert.equal(linkHost({ LAVISH_AXI_HOST: "100.64.0.1" }), "100.64.0.1");
-  // Wildcard bind with an explicit link host -> links use the hostname, not 0.0.0.0.
-  assert.equal(linkHost({ LAVISH_AXI_HOST: "0.0.0.0", LAVISH_AXI_LINK_HOST: "host.example" }), "host.example");
-  // IPv6 wildcard bind with no explicit link host -> links use the concrete loopback listener.
+  // The stock build fell back to the bind address here; that address is now always loopback.
+  assert.equal(linkHost({ LAVISH_AXI_HOST: "100.64.0.1" }), LOOPBACK_HOST);
   assert.equal(linkHost({ LAVISH_AXI_HOST: "::" }), LOOPBACK_HOST);
+  assert.equal(bindHost({ LAVISH_AXI_LINK_HOST: "host.example" }), LOOPBACK_HOST);
 });
 
 test("hostForUrl brackets IPv6 literals but leaves IPv4 and hostnames alone", () => {

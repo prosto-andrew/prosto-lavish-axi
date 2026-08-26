@@ -2031,312 +2031,21 @@ test("chrome client includes export notices alongside unresolved assets", async 
   );
 });
 
-test("chrome client surfaces share warnings from the server response", async () => {
-  const chrome = await createChromeHarness({
-    fetchImpl: async () => ({
-      ok: true,
-      json: async () => ({
-        url: "https://abc123.ht-ml.app/",
-        site_id: "abc123",
-        update_key: "uk_secret",
-        warnings: [
-          { kind: "load-failed", ref: "missing.png" },
-          { kind: "csp-meta", ref: "script-src 'self'" },
-        ],
-        unresolved_local_assets: [{ kind: "load-failed", ref: "missing.png" }],
-        notices: [{ kind: "csp-meta", ref: "script-src 'self'" }],
-      }),
-    }),
-  });
-  const submit = chrome.element("shareForm").listeners.get("submit");
-  assert.equal(typeof submit, "function");
-
-  await submit({ preventDefault() {} });
-  await flushPromises();
-
-  assert.equal(chrome.element("shareStatus").textContent, "Published with 1 unresolved local asset and 1 notice.");
-  assert.equal(chrome.element("shareResult").hidden, false);
-});
-
-test("chrome client does not count share notices as unresolved assets", async () => {
-  const chrome = await createChromeHarness({
-    fetchImpl: async () => ({
-      ok: true,
-      json: async () => ({
-        url: "https://abc123.ht-ml.app/",
-        site_id: "abc123",
-        update_key: "uk_secret",
-        warnings: [{ kind: "csp-meta", ref: "script-src 'self'" }],
-        notices: [{ kind: "csp-meta", ref: "script-src 'self'" }],
-      }),
-    }),
-  });
-  const submit = chrome.element("shareForm").listeners.get("submit");
-  assert.equal(typeof submit, "function");
-
-  await submit({ preventDefault() {} });
-  await flushPromises();
-
-  assert.equal(chrome.element("shareStatus").textContent, "Published with 1 notice.");
-  assert.equal(chrome.element("shareResult").hidden, false);
-});
-
-test("a publish that succeeds after a failed one still shows the url and the once-only update key", async () => {
-  // The regression: an indeterminate failure hid the url/update-key rows, only the dialog-open
-  // path un-hid them, and the natural retry is a second Publish click without reopening. The
-  // update_key is issued once and ht-ml.app has no delete, so a "Published" panel with that row
-  // still hidden leaves a live, public-by-default page nobody can ever change or take down.
-  let attempt = 0;
-  const chrome = await createChromeHarness({
-    fetchImpl: async () => {
-      attempt += 1;
-      if (attempt === 1) {
-        return {
-          ok: false,
-          json: async () => ({ error: "upstream exploded", outcome: "indeterminate", public: true }),
-        };
-      }
-      return {
-        ok: true,
-        json: async () => ({
-          url: "https://abc123.ht-ml.app/",
-          site_id: "abc123",
-          update_key: "uk_secret",
-        }),
-      };
-    },
-  });
-  const submit = chrome.element("shareForm").listeners.get("submit");
-
-  await submit({ preventDefault() {} });
-  await flushPromises();
-  assert.match(chrome.element("shareStatus").textContent, /may or may not have published/i);
-  assert.equal(chrome.element("shareUrlResult").hidden, true, "there is no url to show yet");
-
-  await submit({ preventDefault() {} });
-  await flushPromises();
-
-  assert.equal(chrome.element("shareStatus").textContent, "Published. Anyone with the link can view this page.");
-  assert.equal(chrome.element("shareResult").hidden, false);
-  assert.equal(chrome.element("shareUrlResult").hidden, false, "the URL of the page that landed");
-  assert.equal(chrome.element("shareUrl").value, "https://abc123.ht-ml.app/");
-  assert.equal(chrome.element("shareUpdateKeyResult").hidden, false, "the update key is issued once");
-  assert.equal(chrome.element("shareUpdateKey").value, "uk_secret");
-  assert.equal(chrome.element("shareUpdateKeyNote").hidden, false);
-  assert.equal(chrome.element("shareSiteIdResult").hidden, false);
-});
-
-test("an indeterminate publish keeps the password it minted and shows no credentials it does not have", async () => {
-  const chrome = await createChromeHarness({
-    fetchImpl: async () => ({
-      ok: false,
-      json: async () => ({
-        error: "upstream exploded",
-        outcome: "indeterminate",
-        public: false,
-        password: "xk4t-9rmb-2wqz",
-      }),
-    }),
-  });
-  const submit = chrome.element("shareForm").listeners.get("submit");
-
-  await submit({ preventDefault() {} });
-  await flushPromises();
-
-  assert.equal(chrome.element("sharePasswordOut").value, "xk4t-9rmb-2wqz", "minted here, so shown here");
-  assert.equal(chrome.element("sharePasswordResult").hidden, false);
-  assert.equal(chrome.element("shareResult").hidden, false, "the panel opens for the password alone");
-  assert.equal(chrome.element("shareUrlResult").hidden, true, "no url came back");
-  assert.equal(chrome.element("shareUpdateKeyResult").hidden, true, "no update key came back");
-  assert.equal(chrome.element("shareUpdateKeyNote").hidden, true, "and no advice about keeping one");
-  assert.match(chrome.element("shareStatus").textContent, /SECOND page/);
-});
-
-test("an incomplete 200 reports a landed publish and shows the fields the host did return", async () => {
-  // The host answered 200, so the page IS live. Hedging that as "may or may not have published"
-  // also threw away the url Lavish was holding for a page that is public by default.
-  const chrome = await createChromeHarness({
-    fetchImpl: async () => ({
-      ok: false,
-      json: async () => ({
-        error: "ht-ml.app published the page but its response did not include an update_key",
-        outcome: "published-incomplete",
-        public: true,
-        url: "https://abc123.ht-ml.app/",
-        site_id: "abc123",
-      }),
-    }),
-  });
-  const submit = chrome.element("shareForm").listeners.get("submit");
-
-  await submit({ preventDefault() {} });
-  await flushPromises();
-
-  const status = chrome.element("shareStatus").textContent;
-  assert.match(status, /the page IS live/i);
-  assert.doesNotMatch(status, /may or may not/i, "a 200 is not an unknown outcome");
-  assert.match(status, /never be republished or unpublished/i, "the update key is gone for good");
-  assert.equal(chrome.element("shareUrlResult").hidden, false, "the address must reach the user");
-  assert.equal(chrome.element("shareUrl").value, "https://abc123.ht-ml.app/");
-  assert.equal(chrome.element("shareUpdateKeyResult").hidden, true, "there is no key to show");
-  assert.equal(chrome.element("shareUpdateKeyNote").hidden, true);
-});
-
-test("a throw after a successful render leaves the url and update key on screen", async () => {
-  // The panel is already cleared before the fetch, so a clear in the catch could only ever reach a
-  // result the success path had already rendered. The update_key is issued once and ht-ml.app has
-  // no delete, so wiping it on a late throw is unrecoverable.
-  const chrome = await createChromeHarness({
-    fetchImpl: async () => ({
-      ok: true,
-      json: async () => ({
-        url: "https://abc123.ht-ml.app/",
-        site_id: "abc123",
-        update_key: "uk_secret",
-        // Read after the result is rendered, so this models any late failure in the status-text
-        // work that follows it.
-        get notices() {
-          throw new Error("boom after render");
-        },
-      }),
-    }),
-  });
-  const submit = chrome.element("shareForm").listeners.get("submit");
-
-  await submit({ preventDefault() {} });
-  await flushPromises();
-
-  assert.match(chrome.element("shareStatus").textContent, /boom after render/, "the failure is still reported");
-  assert.equal(chrome.element("shareResult").hidden, false, "but the credentials survive it");
-  assert.equal(chrome.element("shareUrl").value, "https://abc123.ht-ml.app/");
-  assert.equal(chrome.element("shareUpdateKey").value, "uk_secret");
-  assert.equal(chrome.element("shareUpdateKeyResult").hidden, false);
-});
-
-test("a failed publish of a user-typed password never points at a password row it did not render", async () => {
-  // The server echoes a password only when it minted one, so a typed password never comes back.
-  // "behind the password below" then named a row - and, on the indeterminate path, a whole panel -
-  // that was not on screen.
-  const chrome = await createChromeHarness({
-    fetchImpl: async () => ({
-      ok: false,
-      json: async () => ({ error: "upstream exploded", outcome: "indeterminate", public: false }),
-    }),
-  });
-  chrome.element("sharePassword").value = "hunter2";
-  const submit = chrome.element("shareForm").listeners.get("submit");
-
-  await submit({ preventDefault() {} });
-  await flushPromises();
-
-  const status = chrome.element("shareStatus").textContent;
-  assert.equal(chrome.element("shareResult").hidden, true, "nothing came back, so no panel");
-  assert.match(status, /behind the password you supplied/, "the user's own password, not a row");
-  assert.doesNotMatch(status, /password below/, "there is no password below");
-  assert.doesNotMatch(status, /hunter2/, "and it is never echoed back");
-});
-
-test("a publish with no usable site id says the page can never be republished", async () => {
-  // --site is half the republish credential, so an update key without one updates nothing. The
-  // dialog is where that key is actually being copied, so it has to carry the CLI's warning.
-  const chrome = await createChromeHarness({
-    fetchImpl: async () => ({
-      ok: true,
-      json: async () => ({ url: "https://abc123.ht-ml.app/", update_key: "uk_secret" }),
-    }),
-  });
-  const submit = chrome.element("shareForm").listeners.get("submit");
-
-  await submit({ preventDefault() {} });
-  await flushPromises();
-
-  assert.match(chrome.element("shareStatus").textContent, /NEVER be republished or unpublished/);
-  assert.equal(chrome.element("shareSiteIdResult").hidden, true);
-  assert.equal(
-    chrome.element("shareUpdateKeyNote").hidden,
-    true,
-    "the note tells the user to republish with --site, which is exactly what is impossible",
-  );
-  assert.equal(chrome.element("shareUpdateKeyResult").hidden, false, "the key itself is still shown");
-});
-
-test("chrome client clears stale share passwords when opening a fresh dialog", async () => {
-  const chrome = await createChromeHarness();
-
-  chrome.element("sharePassword").value = "old-password";
-  chrome.element("shareArtifact").onclick();
-
-  assert.equal(chrome.element("sharePassword").value, "");
-});
-
-test("chrome client preserves share passwords during an in-dialog retry", async () => {
-  const chrome = await createChromeHarness({
-    fetchImpl: async () => ({
-      ok: false,
-      json: async () => ({ error: "publish failed" }),
-    }),
-  });
-
-  chrome.element("shareArtifact").onclick();
-  chrome.element("sharePassword").value = "pw";
-  const submit = chrome.element("shareForm").listeners.get("submit");
-  assert.equal(typeof submit, "function");
-
-  await submit({ preventDefault() {} });
-  await flushPromises();
-
-  assert.equal(chrome.element("sharePassword").value, "pw");
-  assert.equal(chrome.element("shareStatus").textContent, "publish failed");
-});
-
-test("chrome client says password-protected shares also require the password", async () => {
-  const chrome = await createChromeHarness({
-    fetchImpl: async () => ({
-      ok: true,
-      json: async () => ({
-        url: "https://abc123.ht-ml.app/",
-        site_id: "abc123",
-        update_key: "uk_secret",
-      }),
-    }),
-  });
-  chrome.element("sharePassword").value = "pw";
-  const submit = chrome.element("shareForm").listeners.get("submit");
-  assert.equal(typeof submit, "function");
-
-  await submit({ preventDefault() {} });
-  await flushPromises();
-
-  assert.equal(
-    chrome.element("shareStatus").textContent,
-    "Published. This page is PASSWORD-PROTECTED; viewers also need the password.",
-  );
-});
-
-test("chrome client treats a whitespace-only share password as public", async () => {
-  const posts = [];
-  const chrome = await createChromeHarness({
-    fetchImpl: async (_url, init) => {
-      posts.push(JSON.parse(init.body));
-      return {
-        ok: true,
-        json: async () => ({
-          url: "https://abc123.ht-ml.app/",
-          site_id: "abc123",
-          update_key: "uk_secret",
-        }),
-      };
-    },
-  });
-  chrome.element("sharePassword").value = "   ";
-  const submit = chrome.element("shareForm").listeners.get("submit");
-  assert.equal(typeof submit, "function");
-
-  await submit({ preventDefault() {} });
-  await flushPromises();
-
-  assert.deepEqual(posts, [{}]);
-  assert.equal(chrome.element("shareStatus").textContent, "Published. Anyone with the link can view this page.");
+// LAVISH-HARDENED: publishing is removed from this build. There is no dialog, no
+// form submit handler and no POST to /api/<key>/share left to drive, so what the
+// suite asserts is their absence - in the page the server serves and in the client
+// that scripts it. The eleven tests that used to exercise the publish outcomes are
+// gone with the feature they covered.
+test("neither the served chrome nor its client carries a publish path", async () => {
+  for (const id of ["shareArtifact", "shareDialog", "shareForm", "sharePublish", "shareUrl", "shareUpdateKey"]) {
+    assert.ok(!servedChromeIds.has(id), `the served chrome still declares #${id}`);
+  }
+  const source = await readFile(sourceUrl, "utf8");
+  // The quoted form is the call the client used to build ("/api/" + key + "/share"),
+  // so a hardening comment that names the route in prose does not trip this.
+  for (const symbol of ["shareDialog", "shareForm", "publishShare", "openShareDialog", '"/share"']) {
+    assert.ok(!source.includes(symbol), `chrome-client.js still references ${symbol}`);
+  }
 });
 
 test("chrome client registers message listener before loading the artifact iframe", async () => {
@@ -4161,8 +3870,8 @@ test("chrome goes read-only when the server forwards an ended SSE event (#171)",
   assert.equal(chrome.element("chatInput").disabled, false);
   assert.equal(chrome.element("panelScroll").inert, false);
   assert.equal(chrome.element("chatComposer").inert, false);
-  chrome.element("shareArtifact").onclick();
-  assert.equal(chrome.element("shareDialog").hidden, false);
+  // LAVISH-HARDENED: this test used to open the publish dialog here and assert that
+  // ending the session closed it. There is no dialog to open.
 
   chrome.eventSource().listeners.get("ended")({ data: JSON.stringify({ ended_by: "agent" }) });
 
@@ -4173,7 +3882,6 @@ test("chrome goes read-only when the server forwards an ended SSE event (#171)",
   assert.equal(chrome.element("sendAndEnd").disabled, true);
   assert.equal(chrome.element("panelScroll").inert, true);
   assert.equal(chrome.element("chatComposer").inert, true);
-  assert.equal(chrome.element("shareDialog").hidden, true);
   assert.equal(chrome.element("endedOverlay").hidden, false);
 
   chrome.setMobile(false);

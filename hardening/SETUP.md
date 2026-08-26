@@ -3,13 +3,13 @@
 This checkout is lavish-axi **0.1.62** with five capabilities removed **at source level**
 (not merely switched off by an environment variable):
 
-| Removed | How |
-|---|---|
-| Telemetry | `resolveTelemetryConfig()` always returns disabled and the analytics host string is gone from the source. No env var, build define, or config re-enables it. |
-| Publishing to a third-party host | The `share` command, the `POST /api/:key/share` route, the browser "Publish link" menu action, and the `ht-ml.app` network calls are all removed. |
-| Tailnet / LAN exposure | `resolveListenHosts()` returns `127.0.0.1` and nothing else; `detectTailscale()` returns `null` without ever executing the `tailscale` binary. `LAVISH_AXI_HOST` is ignored. |
-| `setup hooks` / `setup plugin` | Removed — no persistent SessionStart hooks, no agent-plugin registration outside this directory. |
-| CDN asset loading | Tailwind, DaisyUI and Mermaid are served from this machine's own Lavish server. Mermaid is vendored into `dist/design/mermaid/` at build time. |
+| Removed                          | How                                                                                                                                                                          |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Telemetry                        | `resolveTelemetryConfig()` always returns disabled and the analytics host string is gone from the source. No env var, build define, or config re-enables it.                 |
+| Publishing to a third-party host | The `share` command, the `POST /api/:key/share` route, the browser "Publish link" menu action, and the `ht-ml.app` network calls are all removed.                            |
+| Tailnet / LAN exposure           | `resolveListenHosts()` returns `127.0.0.1` and nothing else; `detectTailscale()` returns `null` without ever executing the `tailscale` binary. `LAVISH_AXI_HOST` is ignored. |
+| `setup hooks` / `setup plugin`   | Removed — no persistent SessionStart hooks, no agent-plugin registration outside this directory.                                                                             |
+| CDN asset loading                | Tailwind, DaisyUI and Mermaid are served from this machine's own Lavish server. Mermaid is vendored into `dist/design/mermaid/` at build time.                               |
 
 The agent-facing help text (`--help`, `design`, `playbook`) was rewritten to match, so
 nothing tells an agent to publish, install hooks, or fetch from a CDN.
@@ -26,7 +26,7 @@ That is all — the package's `prepare` script runs the build automatically.
 The build needs Node 22+.
 
 Note on running from both WSL and Windows: the runtime dependencies are pure
-JavaScript, so a `node_modules/` installed under one will still *run* under the
+JavaScript, so a `node_modules/` installed under one will still _run_ under the
 other. Only rebuilding (`npm run build`) needs the platform's own esbuild binary —
 if you want to rebuild from the other environment, run `npm install` there once.
 

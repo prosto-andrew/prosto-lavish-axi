@@ -45,13 +45,7 @@ import {
   saveWhiteboard,
   writeWhiteboardFeedbackFiles,
 } from "./whiteboard-store.js";
-import {
-  buildSelfContainedHtml,
-  exportFileName,
-  exportWarningSummaries,
-  splitExportWarnings,
-} from "./export-bundle.js";
-import { hostRejectedShareWrite, publishedDespiteError, publishToHtmlApp } from "./html-app.js";
+import { buildSelfContainedHtml, exportFileName, splitExportWarnings } from "./export-bundle.js";
 import { injectLavishSdk } from "./html-transform.js";
 import {
   bindHost,
@@ -67,7 +61,6 @@ import {
 } from "./paths.js";
 import { detectTailscale } from "./tailscale.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
-import { generateSharePassword } from "./share-password.js";
 import {
   ACCEPTED_IMAGE_MIME,
   isValidAttachmentKey,
@@ -106,8 +99,54 @@ const TAILSCALE_BIND_RETRY_DELAYS_MS = [100, 250, 500];
 // An escaped popup can navigate to an artifact-owned HTML or SVG asset on the
 // server origin. Keep every artifact response sandboxed at the response layer
 // so active documents stay opaque-origin even when they are top-level.
-const ARTIFACT_CONTENT_SECURITY_POLICY =
+const ARTIFACT_SANDBOX_DIRECTIVE =
   "sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads";
+
+// LAVISH-HARDENED: the sandbox directive alone only makes the document an opaque
+// origin - it places no limit on where the page may send data. Everything this
+// server hands to a browser therefore also carries source directives pinned to
+// this machine's loopback origin, so an artifact (or the vendored Excalidraw
+// bundle, which still has upstream collaboration, library and AI endpoints baked
+// into it) cannot reach any host but this one.
+//
+// The sources must be spelled out rather than written as 'self': with the sandbox
+// directive and no allow-same-origin, the document's origin is opaque, and 'self'
+// would match nothing at all - it would block the page's own assets. All three
+// loopback spellings are listed because the source list is compared against the
+// document URL the user actually opened, not against the address we bound to.
+function artifactLoopbackSources(port) {
+  return `http://127.0.0.1:${port} http://localhost:${port} http://[::1]:${port}`;
+}
+
+// Source directives only. The whiteboard frame reuses these WITHOUT the sandbox
+// directive: its iframe element already carries a narrower sandbox attribute
+// (allow-scripts allow-popups), and the two intersect, so repeating a wider one
+// here would say nothing while inviting confusion about which list is in force.
+function artifactSourceDirectives(port) {
+  const local = artifactLoopbackSources(port);
+  return [
+    "default-src 'none'",
+    `connect-src ${local} blob:`,
+    `script-src ${local} 'unsafe-inline' 'unsafe-eval' data: blob:`,
+    `style-src ${local} 'unsafe-inline' data:`,
+    `img-src ${local} data: blob:`,
+    `font-src ${local} data:`,
+    `media-src ${local} data: blob:`,
+    `frame-src ${local} data: blob:`,
+    `child-src ${local} data: blob:`,
+    `worker-src ${local} blob:`,
+    `form-action ${local}`,
+    "base-uri 'none'",
+  ];
+}
+
+export function artifactContentSecurityPolicy(port) {
+  return [ARTIFACT_SANDBOX_DIRECTIVE, ...artifactSourceDirectives(port)].join("; ");
+}
+
+export function whiteboardContentSecurityPolicy(port) {
+  return artifactSourceDirectives(port).join("; ");
+}
 // Sweep orphaned/expired attachments periodically, not just at startup: a
 // detached server can run for days, and an upload whose /prompts follow-up never
 // arrived would otherwise linger until the next restart.
@@ -927,7 +966,7 @@ export async function serve({
       // Although this response downloads in normal chrome usage, an escaped artifact popup can
       // navigate to it directly. Preserve the artifact's opaque-origin boundary if the browser
       // renders the exported HTML instead of saving it.
-      res.setHeader("content-security-policy", ARTIFACT_CONTENT_SECURITY_POLICY);
+      res.setHeader("content-security-policy", artifactContentSecurityPolicy(publicPort));
       res.setHeader("content-disposition", exportContentDisposition(session.file));
       res.setHeader("x-lavish-export-warning-count", String(unresolved.length));
       res.setHeader("x-lavish-export-notice-count", String(notices.length));
@@ -937,93 +976,12 @@ export async function serve({
     }
   });
 
-  // Hosted share: build the local-inlined artifact and publish it to ht-ml.app, a third-party
-  // hosting service not part of Lavish, returning the share URL. Publishing sends the artifact
-  // to ht-ml.app's servers. Remote CDN/font references are left intact for the viewer's browser
-  // to load.
-  // Publishing creates a public third-party page unless a password is supplied, so this is gated
-  // behind a same-origin check - a cross-origin page must not be able to drive a publish via the
-  // loopback server.
-  app.post("/api/:key/share", async (req, res, next) => {
-    try {
-      // LAVISH-HARDENED: publishing is removed. The route stays so the browser gets a
-      // clear refusal rather than a confusing 404.
-      res.status(403).json({ error: "publishing is disabled in this hardened build" });
-      return;
-      // eslint-disable-next-line no-unreachable
-      if (!isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
-        res.status(403).json({ error: "cross-origin share request rejected" });
-        return;
-      }
-      const session = await store.findByKey(req.params.key);
-      if (!session) {
-        res.status(404).json({ error: "session not found" });
-        return;
-      }
-      const body = req.body || {};
-      // The password is generated here rather than in the chrome because chrome-client.js is
-      // served raw and cannot import modules: a browser-side generator would be a second copy of
-      // the alphabet and length rules, free to drift from the one the CLI uses.
-      const generatePassword = body.generate_password === true;
-      const password = generatePassword ? generateSharePassword() : optionalBodyString(body.password);
-      const source = await readFile(session.file, "utf8");
-      const root = path.dirname(session.file);
-      const { html, warnings } = await buildSelfContainedHtml(source, {
-        baseDir: root,
-        confineDir: root,
-        resolveAbsolute: resolveDesignAssetPath,
-      });
-      let site;
-      try {
-        site = await publishToHtmlApp(html, { password });
-      } catch (error) {
-        // Same three-way split the CLI makes, from the same shared classifiers, and the stakes
-        // here are higher: the password was minted in this request, so a failure that discards it
-        // can leave the page live behind a secret nobody was ever shown.
-        const message = error instanceof Error ? error.message : String(error);
-        // A 200 the host answered with an unreadable body is not an unknown outcome - the page
-        // landed - so whatever fields did arrive go back rather than being hedged away.
-        const landed = publishedDespiteError(error);
-        if (landed) {
-          res.status(502).json({
-            error: message,
-            outcome: "published-incomplete",
-            public: !password,
-            ...(landed.url ? { url: landed.url } : {}),
-            ...(landed.siteId ? { site_id: landed.siteId } : {}),
-            ...(landed.updateKey ? { update_key: landed.updateKey } : {}),
-            ...(generatePassword ? { password } : {}),
-          });
-          return;
-        }
-        // Only a 4xx proves nothing was published.
-        const rejected = hostRejectedShareWrite(error);
-        res.status(502).json({
-          error: message,
-          outcome: rejected ? "rejected" : "indeterminate",
-          ...(rejected
-            ? {}
-            : {
-                public: !password,
-                // A rejection gates nothing, so it must never carry the password.
-                ...(generatePassword ? { password } : {}),
-              }),
-        });
-        return;
-      }
-      const { unresolved, notices } = splitExportWarnings(warnings);
-      res.json({
-        ...site,
-        // Only a password Lavish minted goes back to the browser; one the user typed is already
-        // theirs, and echoing it would put it in a field they did not ask to have filled.
-        ...(generatePassword ? { password } : {}),
-        ...(warnings.length ? { warnings: exportWarningSummaries(warnings) } : {}),
-        ...(unresolved.length ? { unresolved_local_assets: exportWarningSummaries(unresolved) } : {}),
-        ...(notices.length ? { notices: exportWarningSummaries(notices) } : {}),
-      });
-    } catch (error) {
-      next(error);
-    }
+  // LAVISH-HARDENED: publishing to a third-party host is removed. The route is kept
+  // only so a stale browser tab gets an explicit refusal instead of a confusing 404;
+  // the build, the password mint and the upload that used to follow are gone from the
+  // source, so nothing here can reach the network.
+  app.post("/api/:key/share", async (req, res) => {
+    res.status(403).json({ error: "publishing is disabled in this hardened build" });
   });
 
   app.post("/api/end", async (req, res, next) => {
@@ -1127,7 +1085,7 @@ export async function serve({
 
   app.get(/^\/artifact\/([^/]+)\/index\.html$/, async (req, res, next) => {
     try {
-      res.setHeader("content-security-policy", ARTIFACT_CONTENT_SECURITY_POLICY);
+      res.setHeader("content-security-policy", artifactContentSecurityPolicy(publicPort));
       const key = req.params[0];
       const token = String(req.query.artifact_load_token || "");
       const revision = req.query.artifact_revision;
@@ -1164,7 +1122,7 @@ export async function serve({
 
   app.get(/^\/artifact\/([^/]+)\/(.+)$/, async (req, res, next) => {
     try {
-      res.setHeader("content-security-policy", ARTIFACT_CONTENT_SECURITY_POLICY);
+      res.setHeader("content-security-policy", artifactContentSecurityPolicy(publicPort));
       const key = req.params[0];
       const assetPath = req.params[1];
       const session = await store.findByKey(key);
@@ -1340,6 +1298,10 @@ export async function serve({
   // reports ready.
   app.get("/whiteboard-frame", (req, res) => {
     res.setHeader("cache-control", "no-store");
+    // LAVISH-HARDENED: the vendored Excalidraw bundle still carries upstream
+    // collaboration, library, AI and Firebase endpoints in its baked-in config.
+    // Pin every source to loopback so none of them is reachable from this frame.
+    res.setHeader("content-security-policy", whiteboardContentSecurityPolicy(publicPort));
     // The frame's channel token is minted for one session, so the caller must
     // name it. Both call sites (the chrome overlay and the artifact SDK's
     // inline embed) know their own key; a request without one could only
@@ -2030,11 +1992,6 @@ function normalizeOrigin(value) {
   }
 }
 
-function optionalBodyString(value) {
-  const trimmed = String(value ?? "").trim();
-  return trimmed || undefined;
-}
-
 // Confines an asset request lexically first, then - like export-bundle.js's guardedRead -
 // resolves the real (symlink-followed) path and refuses anything that escapes the artifact
 // directory, so a symlink placed beside the artifact can't make this route serve an outside
@@ -2421,9 +2378,8 @@ ${faviconTag}
 <link rel="stylesheet" href="/chrome.css">
 </head>
 <body class="${bodyClass}">
-<div class="bar"><div class="brand"><span class="brand-mark">Lavish</span><span class="brand-support">Editor</span></div><div class="spacer" aria-hidden="true"></div><div class="warnings-wrap" id="warningsWrap" hidden><button class="warnings-button" id="warningsButton" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="warningsDrawer">${chromeIcons.warning}<span class="warnings-count" id="warningsCount">0</span></button><div class="menu warnings-drawer" id="warningsDrawer" role="dialog" aria-labelledby="warningsTitle" aria-describedby="warningsSummary" hidden><div class="warnings-head"><h2 class="warnings-title" id="warningsTitle">Layout issues</h2><p class="warnings-summary" id="warningsSummary"></p></div><div class="warnings-toolbar"><label class="warnings-selectall"><input type="checkbox" id="warningsSelectAll"><span>Select all</span></label><span class="warnings-selected" id="warningsSelected" role="status" aria-live="polite"></span></div><div class="warnings-list" id="warningsList"></div><div class="warnings-foot"><p class="warnings-note">Queueing sends a repair request with your next feedback. An issue is marked resolved only after a newer artifact load and a complete check at the same viewport no longer finds it.</p><button class="button" id="warningsQueueButton" type="button" disabled>Queue selected fixes</button></div></div></div><button class="annotate-switch" id="annotation" type="button" aria-pressed="true" title="${escapeHtml(modeToggleHint)}"><span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span><span>Annotate</span></button><div class="more-wrap" id="moreWrap"><button class="more-button" id="moreButton" type="button" title="More" aria-haspopup="menu" aria-expanded="false">${chromeIcons.more}</button><div class="menu more-menu" id="moreMenu" hidden><div class="menu-head"><div class="menu-label">Editing</div><button class="menu-file" id="copyPath" type="button" title="Copy path · ${escapeHtml(session.file)}">${chromeIcons.file}<span class="menu-file-text"><span class="path-head">${escapeHtml(pathHead)}</span><span class="path-tail">${escapeHtml(pathTail)}</span></span><span class="copy-hint" id="copyHint"><span class="icon-copy">${chromeIcons.copy}</span><span class="icon-check">${chromeIcons.check}</span><span id="copyHintText">Copy</span></span></button></div><div class="menu-rule"></div><button class="menu-item" id="reloadArtifact" type="button">${chromeIcons.refresh}<span>Reload artifact</span></button><button class="menu-item" id="copySnapshot" type="button">${chromeIcons.camera}<span>Copy DOM snapshot</span></button><button class="menu-item" id="exportArtifact" type="button">${chromeIcons.download}<span>Export standalone HTML</span></button><button class="menu-item" id="shareArtifact" type="button">${chromeIcons.globe}<span>Publish link</span></button><div class="menu-rule"></div><button class="menu-item danger" id="end" type="button">${chromeIcons.exit}<span>End session</span></button></div></div></div>
+<div class="bar"><div class="brand"><span class="brand-mark">Lavish</span><span class="brand-support">Editor</span></div><div class="spacer" aria-hidden="true"></div><div class="warnings-wrap" id="warningsWrap" hidden><button class="warnings-button" id="warningsButton" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="warningsDrawer">${chromeIcons.warning}<span class="warnings-count" id="warningsCount">0</span></button><div class="menu warnings-drawer" id="warningsDrawer" role="dialog" aria-labelledby="warningsTitle" aria-describedby="warningsSummary" hidden><div class="warnings-head"><h2 class="warnings-title" id="warningsTitle">Layout issues</h2><p class="warnings-summary" id="warningsSummary"></p></div><div class="warnings-toolbar"><label class="warnings-selectall"><input type="checkbox" id="warningsSelectAll"><span>Select all</span></label><span class="warnings-selected" id="warningsSelected" role="status" aria-live="polite"></span></div><div class="warnings-list" id="warningsList"></div><div class="warnings-foot"><p class="warnings-note">Queueing sends a repair request with your next feedback. An issue is marked resolved only after a newer artifact load and a complete check at the same viewport no longer finds it.</p><button class="button" id="warningsQueueButton" type="button" disabled>Queue selected fixes</button></div></div></div><button class="annotate-switch" id="annotation" type="button" aria-pressed="true" title="${escapeHtml(modeToggleHint)}"><span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span><span>Annotate</span></button><div class="more-wrap" id="moreWrap"><button class="more-button" id="moreButton" type="button" title="More" aria-haspopup="menu" aria-expanded="false">${chromeIcons.more}</button><div class="menu more-menu" id="moreMenu" hidden><div class="menu-head"><div class="menu-label">Editing</div><button class="menu-file" id="copyPath" type="button" title="Copy path · ${escapeHtml(session.file)}">${chromeIcons.file}<span class="menu-file-text"><span class="path-head">${escapeHtml(pathHead)}</span><span class="path-tail">${escapeHtml(pathTail)}</span></span><span class="copy-hint" id="copyHint"><span class="icon-copy">${chromeIcons.copy}</span><span class="icon-check">${chromeIcons.check}</span><span id="copyHintText">Copy</span></span></button></div><div class="menu-rule"></div><button class="menu-item" id="reloadArtifact" type="button">${chromeIcons.refresh}<span>Reload artifact</span></button><button class="menu-item" id="copySnapshot" type="button">${chromeIcons.camera}<span>Copy DOM snapshot</span></button><button class="menu-item" id="exportArtifact" type="button">${chromeIcons.download}<span>Export standalone HTML</span></button><div class="menu-rule"></div><button class="menu-item danger" id="end" type="button">${chromeIcons.exit}<span>End session</span></button></div></div></div>
 <div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads" data-artifact-src="/artifact/${session.key}/index.html"></iframe></div><div class="panel-scrim" id="panelScrim"></div><aside class="panel" id="panel"><div class="panel-head" id="panelHead"><span class="panel-handle" aria-hidden="true"></span><div class="panel-head-row"><h2>Conversation</h2><span class="panel-summary" id="panelSummary" role="status" aria-live="polite"></span><button class="panel-toggle" id="panelToggle" type="button" aria-expanded="false" aria-controls="panel" aria-label="Show conversation">${chromeIcons.chevronUp}</button></div></div><div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"></div><div class="annotation-pills" id="annotationPills"></div></div><div class="composer" id="chatComposer"><div class="presence-banner handoff-banner" id="handoffBanner" hidden><span>This review is open in another Lavish tab.</span><button class="handoff-takeover" id="handoffTakeover" type="button">Take over here</button></div><div class="presence-banner handoff-banner" id="outdatedBanner" hidden><span id="outdatedText">The Lavish server this page was connected to is no longer running. Reloading will work once it is running again.</span><span class="outdated-actions"><button class="handoff-takeover" id="outdatedReload" type="button">Check and reload</button><button class="handoff-takeover" id="outdatedDismiss" type="button">Dismiss</button></span></div><div class="presence-banner" id="presenceBanner" hidden>Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish.</div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="chat-attachments" id="chatAttachments"></div><div class="chat-attachment-toolbar"><button class="chat-attach" id="chatAttach" type="button">Attach images</button><input id="chatAttachInput" type="file" accept="${escapeHtml(acceptedMime.join(","))}" multiple hidden><span class="chat-attachment-notice" id="chatAttachmentNotice" role="status"></span></div><div class="send-hint" id="sendHint" hidden>Write a message or annotate an element first.</div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">${chromeIcons.exit}<span>Send &amp; End</span></button><button class="button" id="send">Send to Agent</button></div></div></aside></div>
-<div class="share-overlay" id="shareDialog" role="dialog" aria-modal="true" aria-labelledby="shareTitleText" hidden><form class="share-card" id="shareForm"><div class="share-head"><div><div class="share-kicker">Publish to <a class="share-link" href="https://ht-ml.app" target="_blank" rel="noopener noreferrer">ht-ml.app</a></div><h2 id="shareTitleText">Publish artifact</h2></div><button class="share-close" id="shareClose" type="button" aria-label="Close publish dialog"><svg width="14" height="14" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button></div><p class="share-note">ht-ml.app is a separate, third-party hosting service, not part of Lavish. Publishing sends this artifact to its servers.</p><p class="share-copy">This uploads this artifact to ht-ml.app with local assets inlined. Without a password, the page is PUBLIC and anyone with the link can open it. With a password, the page is PRIVATE and viewers must supply the password to view.</p><p class="share-note">Do not publish secrets. The Lavish annotation SDK is not included.</p><div class="share-grid"><label class="share-check"><input id="shareGenerate" type="checkbox"><span>Generate a password (makes this page private)</span></label><label>Password (optional)<input id="sharePassword" name="password" type="password" autocomplete="new-password" placeholder="Leave blank for a public page"></label></div><div class="share-status" id="shareStatus" role="status"></div><div class="share-result" id="shareResult" hidden><label id="shareUrlResult">Share URL<div class="share-copy-row"><input id="shareUrl" readonly><button class="share-copy-btn" id="copyShareUrl" type="button">Copy URL</button></div></label><label id="sharePasswordResult" hidden>Password (shared secret)<div class="share-copy-row"><input id="sharePasswordOut" readonly><button class="share-copy-btn" id="copySharePassword" type="button">Copy password</button></div></label><label id="shareSiteIdResult" hidden>Site ID<div class="share-copy-row"><input id="shareSiteId" readonly><button class="share-copy-btn" id="copyShareSiteId" type="button">Copy site ID</button></div></label><label id="shareUpdateKeyResult">Update key (secret)<div class="share-copy-row"><input id="shareUpdateKey" readonly><button class="share-copy-btn" id="copyUpdateKey" type="button">Copy key</button></div></label><p class="share-note" id="shareUpdateKeyNote">Keep the update key private. ht-ml.app returns it once and it is the only way to update this page later; the service has no delete. Republish this page&#39;s HTML with <code>lavish-axi share &lt;file&gt; --site &lt;site id&gt; --update-key &lt;key&gt;</code>, and add <code>--private</code> to also lock it behind a new generated password.</p></div><div class="share-actions"><button class="share-cancel" id="shareCancel" type="button">Cancel</button><button class="button" id="sharePublish" type="submit">Publish</button></div></form></div>
 <div class="ended-overlay layout-gate-overlay" id="layoutGateOverlay"${layoutGateHidden}><div class="ended-card"><div class="ended-title" id="layoutGateTitle">Checking layout.<br>One moment.</div><p class="ended-copy" id="layoutGateCopy">Lavish is waiting for fonts and final geometry before revealing this artifact.</p><button class="button ended-action" id="layoutGateAction" type="button">Show anyway</button><button class="button ended-action layout-gate-bypass" id="layoutGateBypass" type="button" hidden>Show anyway</button></div></div>
 <div class="ended-overlay" id="endedOverlay" hidden><div class="ended-card"><div class="ended-title">Session ended.<br>Return to your agent to continue.</div><p class="ended-copy">${escapeHtml(session.file)}</p></div></div>
 <div class="whiteboard-overlay" id="whiteboardOverlay" hidden><div class="whiteboard-shell"><div class="whiteboard-error" id="whiteboardError" hidden></div><button class="whiteboard-close" id="whiteboardClose" type="button" aria-label="Close whiteboard"><svg width="14" height="14" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button><iframe id="whiteboardFrame" title="Excalidraw whiteboard" sandbox="allow-scripts allow-popups"></iframe></div></div>

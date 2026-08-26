@@ -1,136 +1,75 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createTelemetryClient, resolveTelemetryConfig } from "../src/telemetry.js";
+import { readFile } from "node:fs/promises";
 
-function createFetchSpy(options = {}) {
-  const requests = [];
-  let release = () => {};
-  const fetch = async (url, init = {}) => {
-    if (options.throws) throw options.throws;
-    const headers = {};
-    for (const [key, value] of Object.entries(init.headers || {})) {
-      headers[key] = value;
-    }
-    requests.push({
-      url: String(url),
-      method: init.method || "GET",
-      headers,
-      body: init.body ? JSON.parse(init.body) : undefined,
-    });
-    if (options.delayMs !== undefined) {
-      await new Promise((resolve) => {
-        const timer = setTimeout(resolve, options.delayMs);
-        timer.unref?.();
-        release = () => {
-          clearTimeout(timer);
-          resolve();
-        };
-      });
-    }
-    return new Response(null, { status: 200 });
-  };
-  return { fetch, requests, release };
-}
+import {
+  createTelemetryClient,
+  getDefaultTelemetry,
+  initDefaultTelemetry,
+  resetDefaultTelemetryForTests,
+  resolveTelemetryConfig,
+} from "../src/telemetry.js";
 
-test("telemetry can be disabled by environment", () => {
-  const config = resolveTelemetryConfig({
-    env: { LAVISH_AXI_TELEMETRY: "0" },
-    buildHost: "https://build.example",
-    buildWebsiteID: "build-id",
-  });
+// LAVISH-HARDENED: the stock suite drove a real Umami client through a fetch spy and
+// asserted the shape of the event payloads it sent. That client is deleted from this
+// build, so what is asserted now is that nothing can send anything - including through
+// the argument shapes the stock code used to honour.
 
-  assert.equal(config.enabled, false);
-});
-
-test("telemetry uses env values before build-time defaults", () => {
-  const config = resolveTelemetryConfig({
-    env: {
-      LAVISH_AXI_UMAMI_HOST: " https://env.example ",
-      LAVISH_AXI_UMAMI_WEBSITE_ID: " env-id ",
+test("no argument shape can turn telemetry on", () => {
+  const attempts = [
+    undefined,
+    {},
+    { env: { LAVISH_AXI_TELEMETRY: "1" } },
+    { env: { LAVISH_AXI_UMAMI_HOST: "https://env.example", LAVISH_AXI_UMAMI_WEBSITE_ID: "env-id" } },
+    { buildHost: "https://build.example", buildWebsiteID: "build-id" },
+    {
+      env: { LAVISH_AXI_TELEMETRY: "1", LAVISH_AXI_UMAMI_HOST: "https://env.example" },
+      buildHost: "https://build.example",
+      buildWebsiteID: "build-id",
     },
-    buildHost: "https://build.example",
-    buildWebsiteID: "build-id",
-  });
-
-  assert.deepEqual(config, {
-    enabled: true,
-    host: "https://env.example",
-    websiteID: "env-id",
-  });
+  ];
+  for (const attempt of attempts) {
+    assert.deepEqual(resolveTelemetryConfig(attempt), { enabled: false, host: "", websiteID: "" });
+  }
 });
 
-test("telemetry disables when no website id is configured", () => {
-  const config = resolveTelemetryConfig({
-    env: {},
-    buildHost: "https://build.example",
-    buildWebsiteID: "",
-  });
-
-  assert.equal(config.enabled, false);
-});
-
-test("telemetry sends anonymous Umami event payloads", async () => {
-  const { fetch, requests } = createFetchSpy();
+test("the client is a no-op and never calls the fetch it is handed", async () => {
+  let called = 0;
   const client = createTelemetryClient({
     enabled: true,
     host: "https://a.example.com/umami/",
     websiteID: "site-1",
-    app: "lavish-axi",
+    app: "axi",
     version: "1.2.3",
-    platform: "darwin",
-    arch: "arm64",
-    fetch,
+    fetch: async () => {
+      called += 1;
+      return new Response(null, { status: 200 });
+    },
   });
 
   client.track("command", { command: "poll", status: "success" });
+  client.pageview("/poll", { command: "poll" });
   await client.close(500);
 
-  assert.equal(requests.length, 1);
-  assert.equal(requests[0].url, "https://a.example.com/umami/api/send");
-  assert.equal(requests[0].method, "POST");
-  assert.equal(requests[0].headers["Content-Type"], "application/json");
-  assert.match(requests[0].headers["User-Agent"], /^lavish-axi\/1\.2\.3 telemetry$/);
-  assert.deepEqual(requests[0].body.payload.website, "site-1");
-  assert.deepEqual(requests[0].body.payload.hostname, "cli");
-  assert.deepEqual(requests[0].body.payload.title, "Lavish Editor CLI");
-  assert.deepEqual(requests[0].body.payload.url, "app://lavish-axi/command");
-  assert.deepEqual(requests[0].body.payload.name, "command");
-  assert.deepEqual(requests[0].body.payload.data.command, "poll");
-  assert.deepEqual(requests[0].body.payload.data.status, "success");
-  assert.deepEqual(requests[0].body.payload.data.platform, "darwin");
-  assert.deepEqual(requests[0].body.payload.data.arch, "arm64");
-  assert.deepEqual(requests[0].body.payload.data.version, "1.2.3");
-  assert.equal(typeof requests[0].body.payload.timestamp, "number");
+  assert.equal(called, 0, "the no-op client used the fetch it was given");
 });
 
-test("telemetry is best effort and never throws fetch failures", async () => {
-  const client = createTelemetryClient({
-    enabled: true,
-    host: "https://a.example.com",
-    websiteID: "site-1",
-    app: "lavish-axi",
-    version: "1.0.0",
-    fetch: createFetchSpy({ throws: new Error("network down") }).fetch,
-  });
+test("the default client is the same no-op", async () => {
+  resetDefaultTelemetryForTests();
+  assert.doesNotThrow(() => getDefaultTelemetry().track("command", {}));
 
+  const client = initDefaultTelemetry({ app: "axi", version: "1.2.3" });
   assert.doesNotThrow(() => client.track("command", {}));
-  await assert.doesNotReject(() => client.close(500));
+  await assert.doesNotReject(() => client.close(10));
+  assert.equal(getDefaultTelemetry(), client);
+
+  resetDefaultTelemetryForTests();
 });
 
-test("telemetry close waits only up to the requested timeout", async () => {
-  const { fetch, requests, release } = createFetchSpy({ delayMs: 10_000 });
-  const client = createTelemetryClient({
-    enabled: true,
-    host: "https://a.example.com",
-    websiteID: "site-1",
-    app: "lavish-axi",
-    version: "1.0.0",
-    fetch,
-  });
-
-  client.track("command", {});
-  await client.close(20);
-  assert.equal(requests.length, 1);
-  release();
+test("the module carries no transport at all", async () => {
+  const source = await readFile(new URL("../src/telemetry.js", import.meta.url), "utf8");
+  for (const symbol of ["fetch", "HttpTelemetryClient", "api/send", "kunchenguid", "http://", "https://"]) {
+    assert.ok(!source.includes(symbol), `src/telemetry.js still references ${symbol}`);
+  }
 });

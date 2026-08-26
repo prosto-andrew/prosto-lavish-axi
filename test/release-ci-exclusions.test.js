@@ -13,6 +13,17 @@ const workflowsDir = join(root, ".github", "workflows");
  * report: node -> package.json (+ package-lock.json if present), changelog,
  * extra-files, and the manifest path.
  */
+/** True when .gitignore lists this exact path, so it can never be a release output. */
+function isGitIgnored(relativePath) {
+  const gitignore = join(root, ".gitignore");
+  if (!existsSync(gitignore)) return false;
+  return readFileSync(gitignore, "utf8")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"))
+    .some((line) => line === relativePath || line === `/${relativePath}`);
+}
+
 function expectedReleaseOutputs() {
   const config = JSON.parse(readFileSync(join(root, "release-please-config.json"), "utf8"));
   const pkg = config.packages?.["."] ?? {};
@@ -26,7 +37,11 @@ function expectedReleaseOutputs() {
       break;
     case "node":
       expected.push("package.json");
-      if (existsSync(join(root, "package-lock.json"))) {
+      // Only a COMMITTED lockfile is release output. This repo is pnpm-managed and
+      // gitignores package-lock.json, but a local `npm install` (which is how the
+      // hardened build is compiled) leaves one on disk - and a bare existsSync would
+      // then demand CI path filters for a file that is never released.
+      if (existsSync(join(root, "package-lock.json")) && !isGitIgnored("package-lock.json")) {
         expected.push("package-lock.json");
       }
       break;

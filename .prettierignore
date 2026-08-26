@@ -11,3 +11,5 @@ plugin.json
 .claude/settings.local.json
 # Canonical two-line @AGENTS.md pointer; prettier would add a blank line.
 CLAUDE.md
+# Test inputs whose exact bytes are what the assertions measure.
+test/fixtures

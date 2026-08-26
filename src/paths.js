@@ -25,20 +25,20 @@ export function isWildcardHost(host) {
 
 // Address the server binds to (LAVISH_AXI_HOST). Defaults to loopback. A wildcard value
 // (0.0.0.0 or ::) is never listened on; resolveListenHosts maps it to loopback.
-export function bindHost() {
+export function bindHost(..._ignored) {
   // LAVISH-HARDENED: always loopback. LAVISH_AXI_HOST is ignored so the review server
   // can never be published onto a LAN, a VPN, or a tailnet.
   return LOOPBACK_HOST;
 }
 
 /**
- * Concrete listen addresses. Never includes 0.0.0.0 / ::.
- * When LAVISH_AXI_HOST is unset, bind loopback plus Tailscale IPv4 if present.
- * An explicit LAVISH_AXI_HOST stays that single safe concrete address.
- * @param {{ host?: string, env?: NodeJS.ProcessEnv, tailscale?: { ipv4?: string } | null }} [options]
+ * The concrete listen addresses, which in this build is loopback and nothing else.
+ * The stock options - an explicit host, an env bag, a detected tailnet - are accepted
+ * and ignored so existing call sites keep type-checking.
+ * @param {...unknown} _ignored
  * @returns {string[]}
  */
-export function resolveListenHosts() {
+export function resolveListenHosts(..._ignored) {
   // LAVISH-HARDENED: the only listen address is loopback. The Tailscale IPv4 that the
   // stock build appended here is never added.
   return [LOOPBACK_HOST];

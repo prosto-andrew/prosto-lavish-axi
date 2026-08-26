@@ -1,20 +1,14 @@
-// Hosted sharing transport: publish a self-contained HTML page to ht-ml.app
-// (https://ht-ml.app), a third-party hosting service not part of Lavish, and return a visitable
-// share URL. Creation needs no account or API key - `POST /v1/sites` sends the HTML to
-// ht-ml.app's servers with an optional password, then returns a `url` plus a secret
-// `update_key` (the only credential, returned once, used later to update the page).
-// Shares are public by default; when a password is supplied, viewers must enter it before viewing.
-// An optional bearer token is supported for callers who have one but is never required.
-//
-// `PUT /v1/sites/{site_id}` republishes an existing page and authenticates with that secret
-// `update_key` as the bearer credential. Omitting `password` there preserves whatever the page
-// already had, so setting or rotating one is deliberate rather than implied by every update. The
-// service has no delete endpoint at all, which is why unpublishing is a republish of a placeholder
-// page rather than a removal.
+// LAVISH-HARDENED: what remains of the hosted-sharing module. The stock version
+// POSTed a self-contained artifact to a third-party host and PUT updates back to it
+// with a once-issued secret; that host, its two request builders and the whole HTTP
+// transport are DELETED from this source. `publishToHtmlApp` and `updateHtmlApp` are
+// kept as exports that throw, because the CLI and the server still import them and a
+// missing export would be a crash rather than a refusal. The payload shapers and
+// error classifiers below are pure functions with no I/O, kept so the refusal paths
+// and their tests still describe the contract that was removed.
 
 // LAVISH-HARDENED: third-party publishing host removed; no default endpoint remains.
 const DEFAULT_API_URL = "";
-const PUBLISH_TIMEOUT_MS = 30_000;
 const SITE_ID_RE = /^[A-Za-z0-9._-]+$/;
 
 export function htmlAppApiUrl(env = process.env) {
@@ -109,117 +103,26 @@ export function createUnpublishedPageHtml() {
 }
 
 /**
- * Publish HTML to the third-party ht-ml.app service and return the live site.
- * @param {string} html The (ideally self-contained) HTML to send to the host.
- * @param {object} [options]
- * @param {string} [options.password] Make the site private behind this password.
- * @param {string} [options.token] Optional bearer token (never required to create a site).
- * @param {string} [options.apiUrl] Override the API base (defaults to LAVISH_AXI_HTML_APP_API_URL or ht-ml.app).
- * @param {typeof fetch} [options.fetch] Injected fetch for testing.
- * @param {NodeJS.ProcessEnv} [options.env]
- * @param {number} [options.timeoutMs]
+ * Always throws in this build. Every argument the stock signature took - the HTML, a
+ * password, a bearer token, an API base override - is accepted and ignored, so callers
+ * written against the old shape still type-check and still get a refusal.
+ * @param {...unknown} _ignored
  * @returns {Promise<{ url: string, site_id: string, update_key: string, status: string }>}
  */
-export async function publishToHtmlApp() {
+export async function publishToHtmlApp(..._ignored) {
   // LAVISH-HARDENED: publishing to a third-party host is removed from this build.
   throw new Error("publishing is disabled in this hardened build of lavish-axi");
 }
 
-async function publishToHtmlAppDisabled(html, options = {}) {
-  const env = options.env || process.env;
-  const token = optionalString(options.token ?? env.LAVISH_AXI_HTML_APP_TOKEN);
-  const data = await requestHtmlApp({
-    method: "POST",
-    path: "/v1/sites",
-    body: createHtmlAppPayload(html, options),
-    bearer: token,
-    options,
-    env,
-  });
-
-  const url = optionalString(data.url);
-  const updateKey = optionalString(data.update_key);
-  const siteId = echoedSiteId(data.site_id, "");
-  if (!url || !updateKey) {
-    const missing = [!url && "a url", !updateKey && "an update_key"].filter(Boolean).join(" or ");
-    throw htmlAppIncompleteResponseError(`ht-ml.app published the page but its response did not include ${missing}`, {
-      url,
-      siteId,
-      updateKey,
-      status: String(data.status || ""),
-    });
-  }
-  return {
-    url,
-    site_id: siteId,
-    update_key: updateKey,
-    status: String(data.status || ""),
-  };
-}
-
 /**
- * A site_id the HOST echoed is untrusted input: it reaches prose and, for a republish hint, a
- * backticked command an agent may run, where `abc123 --password evil` would parse as extra flags
- * and gate the page behind a value nobody chose. The id is a path segment, so anything
- * `normalizeSiteId` refuses could not have addressed a real site anyway; fall back to the locally
- * validated id the request was sent to.
- * @param {unknown} echoed
- * @param {string} fallback
- */
-function echoedSiteId(echoed, fallback) {
-  const value = optionalString(echoed);
-  if (!value) return fallback;
-  try {
-    return normalizeSiteId(value);
-  } catch {
-    return fallback;
-  }
-}
-
-/**
- * Republish an existing ht-ml.app page with new HTML. The secret update_key is the credential.
- * @param {string} siteId The site_id returned when the page was created.
- * @param {string} html The replacement HTML.
- * @param {object} [options]
- * @param {string} [options.updateKey] Required secret write credential for the site.
- * @param {string|null} [options.password] Set or rotate the password, or omit it to preserve the
- *   page's current one. The host has no way to remove a password (see createHtmlAppUpdatePayload).
- * @param {string} [options.url] The known site URL, used when the response omits one. When neither
- *   supplies one the returned `url` is empty rather than guessed: the API base is configurable, so
- *   a synthesized host would name somewhere the page was never published.
- * @param {string} [options.apiUrl]
- * @param {typeof fetch} [options.fetch]
- * @param {NodeJS.ProcessEnv} [options.env]
- * @param {number} [options.timeoutMs]
+ * Always throws in this build, for the same reason as publishToHtmlApp: the transport
+ * that would have carried a republish is gone from this source.
+ * @param {...unknown} _ignored
  * @returns {Promise<{ url: string, site_id: string, status: string }>}
  */
-export async function updateHtmlApp() {
+export async function updateHtmlApp(..._ignored) {
   // LAVISH-HARDENED: republishing to a third-party host is removed from this build.
   throw new Error("publishing is disabled in this hardened build of lavish-axi");
-}
-
-async function updateHtmlAppDisabled(siteId, html, options = {}) {
-  const env = options.env || process.env;
-  const site = normalizeSiteId(siteId);
-  const updateKey = optionalString(options.updateKey);
-  if (!updateKey) {
-    throw new Error("ht-ml.app update failed: an update_key is required to change a published page");
-  }
-  const data = await requestHtmlApp({
-    method: "PUT",
-    path: `/v1/sites/${encodeURIComponent(site)}`,
-    body: createHtmlAppUpdatePayload(html, options),
-    bearer: updateKey,
-    options,
-    env,
-    action: "update",
-  });
-
-  return {
-    url: optionalString(data.url) || optionalString(options.url),
-    site_id: echoedSiteId(data.site_id, site),
-    status: String(data.status || ""),
-  };
 }
 
 // A caller that changes a live page needs to tell "the host refused, nothing was written" from
@@ -259,73 +162,7 @@ export function publishedDespiteError(error) {
   if (!(error instanceof Error) || /** @type {any} */ (error).published !== true) return null;
   return /** @type {any} */ (error).received || {};
 }
-/**
- * @param {string} message
- * @param {{ status?: number, cause?: unknown }} [details]
- */
-function htmlAppRequestError(message, details = {}) {
-  const { status, cause } = details;
-  const error = new Error(message, cause ? { cause } : undefined);
-  if (status !== undefined) Object.defineProperty(error, "status", { value: status, enumerable: true });
-  return error;
-}
-
-async function requestHtmlApp({ method, path, body, bearer, options, env, action = "publish" }) {
-  const apiUrl = (options.apiUrl ? String(options.apiUrl).replace(/\/+$/, "") : "") || htmlAppApiUrl(env);
-  const fetchImpl = options.fetch || fetch;
-
-  const headers = { "content-type": "application/json", "user-agent": "lavish-axi" };
-  if (bearer) headers.authorization = `Bearer ${bearer}`;
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || PUBLISH_TIMEOUT_MS);
-  let response;
-  let text;
-  try {
-    response = await fetchImpl(`${apiUrl}${path}`, {
-      method,
-      headers,
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    text = await response.text();
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      throw htmlAppRequestError(`ht-ml.app ${action} timed out`, { cause: error });
-    }
-    throw htmlAppRequestError(`ht-ml.app ${action} failed: ${error instanceof Error ? error.message : String(error)}`, {
-      cause: error,
-    });
-  } finally {
-    clearTimeout(timeout);
-  }
-
-  const data = text ? parseJson(text) : {};
-  if (!response.ok) {
-    throw htmlAppRequestError(`ht-ml.app ${action} failed: ${describeError(response.status, data, text)}`, {
-      status: response.status,
-    });
-  }
-  return data;
-}
-
-function describeError(status, data, text) {
-  const detail = optionalString(data.detail || data.error || data.message);
-  if (detail) return detail;
-  if (status === 422) return "the HTML failed ht-ml.app's content safety scan";
-  if (status === 401) return "unauthorized (invalid update_key, or the site is password protected)";
-  if (status === 403) return "forbidden";
-  return text ? text.slice(0, 200) : `HTTP ${status}`;
-}
 
 function optionalString(value) {
   return String(value ?? "").trim();
-}
-
-function parseJson(text) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { detail: text };
-  }
 }

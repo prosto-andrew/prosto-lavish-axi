@@ -39,7 +39,7 @@ Create artifacts under `.lavish/` in the current working directory unless the us
 
 Styling comes from this machine's own Lavish server (`/design/...`), not a CDN, so artifacts render with no outbound request. `export` inlines those files, so a standalone copy stays styled offline.
 
-**Diagrams: prefer hand-authored inline SVG.** It is the skill's default anyway, and it survives `export` as a fully self-contained file. Reach for a Mermaid `.mermaid` container only when the user explicitly asks for an *editable whiteboard* — Mermaid loads from the local server, so an exported Mermaid artifact needs the Lavish server running to draw its diagrams. Say that when handing such a file over.
+**Diagrams: prefer hand-authored inline SVG.** It is the skill's default anyway, and it survives `export` as a fully self-contained file. Reach for a Mermaid `.mermaid` container only when the user explicitly asks for an _editable whiteboard_ — Mermaid loads from the local server, so an exported Mermaid artifact needs the Lavish server running to draw its diagrams. Say that when handing such a file over.
 
 ## Privacy hygiene
 
