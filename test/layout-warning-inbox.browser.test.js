@@ -8,7 +8,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 // The behavioral regression boundary for passive layout triage. Before this change the browser's
-// audit returned straight out of `lavish-axi poll` with no user action, so several individually
+// audit returned straight out of `lavish-safe poll` with no user action, so several individually
 // reasonable agent fixes produced repeated edit/reload cycles while the user was mid-review. Every
 // assertion here pins the replacement contract in a real browser: detection is passive, the user
 // decides what becomes work, and only a queued batch wakes the agent.

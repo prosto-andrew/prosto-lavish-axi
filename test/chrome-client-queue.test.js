@@ -2772,7 +2772,7 @@ test("the outdated banner's reload asks the server before navigating", async () 
     },
   });
 
-  // `lavish-axi stop` leaves no replacement behind, so this button must not navigate into a port
+  // `lavish-safe stop` leaves no replacement behind, so this button must not navigate into a port
   // nothing is listening on.
   sendChromeOutdated(chrome, "stop");
   await chrome.element("outdatedReload").click();
@@ -3860,7 +3860,7 @@ test("chrome send and end during an in-flight submit still ends after the submit
   assert.equal(chrome.element("chatInput").disabled, true);
 });
 
-// #171: a tab left open across `lavish-axi end` (or the browser's own End in another tab) must go
+// #171: a tab left open across `lavish-safe end` (or the browser's own End in another tab) must go
 // visibly read-only the moment the server tells it, instead of leaving Send enabled for feedback
 // nobody will ever poll for.
 test("chrome goes read-only when the server forwards an ended SSE event (#171)", async () => {

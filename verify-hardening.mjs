@@ -293,6 +293,23 @@ check("the skill generator cannot reinstate the upstream package", () => {
   return "the stub points only at the local launcher";
 });
 
+check("CLI guidance names the launcher, never the upstream binary", () => {
+  // Every next_step, help line and error hint the CLI emits is read by an agent as a
+  // command to run. While they named the upstream binary, following them verbatim meant
+  // invoking the package this build exists to avoid - and on a machine that blocks it,
+  // stalling the review loop at its first step.
+  const upstream = "lavish" + "-axi";
+  const runnable = new RegExp(upstream + "(?= (?:design|poll|playbook|end|export|stop|share|server|<|--))", "g");
+  for (const file of ["src/cli.js", "src/server.js", "src/design-reference.js", "src/playbooks.js", "dist/cli.mjs"]) {
+    const hits = read(file).match(runnable);
+    if (hits) throw new Error(`${file} still tells the agent to run the upstream binary (${hits.length}x)`);
+  }
+  // The home output advertises what to invoke; argv would name this build's dist entry,
+  // which runs without the launcher's version and marker checks.
+  mustContain(read("src/cli.js"), 'bin: "lavish-safe"', "src/cli.js");
+  return "help, next_step and hints all point at lavish-safe";
+});
+
 check("mermaid is vendored for offline rendering", () => {
   const mod = path.join(root, "dist/design/mermaid/mermaid.esm.min.mjs");
   const chunks = path.join(root, "dist/design/mermaid/chunks/mermaid.esm.min");

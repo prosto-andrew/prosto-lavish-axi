@@ -3952,7 +3952,7 @@ test("an agent-initiated end via the file-based route reopens normally without t
       body: JSON.stringify({ file: artifact }),
     });
 
-    // `lavish-axi end <file>` uses the file-based route - agent-initiated.
+    // `lavish-safe end <file>` uses the file-based route - agent-initiated.
     await fetch(`${base}/api/end`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -4899,7 +4899,7 @@ test("SSE agent-presence resets to waiting after ending and reopening a session"
   }
 });
 
-// #171: a browser tab left open across `lavish-axi end` must be told the session ended, instead
+// #171: a browser tab left open across `lavish-safe end` must be told the session ended, instead
 // of silently keeping Send enabled for feedback nobody will ever poll for.
 test("SSE forwards an ended event to an attached chrome when the agent ends the session (#171)", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));

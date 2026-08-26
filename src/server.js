@@ -275,7 +275,7 @@ export function isValidWhiteboardChannelToken(token, secret, sessionKey, now = D
 
 // A detached server should not live forever. When no browser chrome (SSE) and no agent poll
 // are connected for this long, the server shuts itself down so it stops dangling. The next
-// `lavish-axi <file>` invocation re-spawns a fresh server and adopts resumable sessions from
+// `lavish-safe <file>` invocation re-spawns a fresh server and adopts resumable sessions from
 // state.json. Browser-ended sessions still require the explicit --reopen opt-in. Set
 // LAVISH_AXI_IDLE_TIMEOUT_MS to 0/off to disable, or to a custom millisecond budget.
 export function resolveIdleTimeoutMs(env = process.env) {
@@ -614,9 +614,9 @@ export async function serve({
       const sessionUrl = `http://${hostForUrl(resolvedLinkHost)}:${publicPort}/session/${key}`;
       // A user-initiated end (ending or send-and-ending from the browser) means the human
       // deliberately closed the review surface. Silently reopening it on the next
-      // `lavish-axi <file>` is the exact behavior this route exists to prevent - require an
+      // `lavish-safe <file>` is the exact behavior this route exists to prevent - require an
       // explicit `reopen` opt-in instead of reviving it automatically. Agent-initiated ends
-      // (`lavish-axi end`) keep reviving on the next open, same as before this change.
+      // (`lavish-safe end`) keep reviving on the next open, same as before this change.
       if (existing?.status === "ended" && existing.ended_by === "user" && !reopen) {
         logEvent?.(`session open blocked (user-ended) key=${key} file=${file}`);
         res.json({
@@ -823,7 +823,7 @@ export async function serve({
   });
 
   // Passive detection. A diagnostic pass updates the warning inbox and notifies open browser
-  // chromes - it never emits "feedback", so it can never make `lavish-axi poll` return and can
+  // chromes - it never emits "feedback", so it can never make `lavish-safe poll` return and can
   // never wake an agent. Only the user's explicit "Queue selected fixes" does that, through the
   // ordinary prompt queue.
   app.post("/api/:key/layout-diagnostics", async (req, res, next) => {
@@ -1174,7 +1174,7 @@ export async function serve({
           res.write(`event: layout-warnings\ndata: ${JSON.stringify({ warnings })}\n\n`);
         }
       };
-      // A session end (`lavish-axi end` or the browser's own End/Send & End) must reach every
+      // A session end (`lavish-safe end` or the browser's own End/Send & End) must reach every
       // attached chrome, not just a poll waiter - otherwise a tab left open keeps accepting Sends
       // nobody will ever poll (#171).
       const sendEnded = (key, endedBy) => {
