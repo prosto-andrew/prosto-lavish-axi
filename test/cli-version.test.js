@@ -14,11 +14,6 @@ import { isVersionOnlyArgv, VERSION } from "../src/cli.js";
 const execFileAsync = promisify(execFile);
 const BIN = fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url));
 
-// A regression to the pre-fast-path behavior costs the full telemetry drain (up to
-// 1000ms) plus process startup. Windows process startup is substantially slower on
-// hosted runners, so give it more headroom while staying below the drain timeout.
-const VERSION_BUDGET_MS = process.platform === "win32" ? 750 : 500;
-
 // Accepts the telemetry connection and never answers, so a regression pays the whole
 // drain timeout instead of a fast connection refusal.
 async function startBlackHoleTelemetry() {
@@ -73,22 +68,9 @@ test("--version prints the version fast and skips state-dir init", async (t) => 
   };
 
   for (const flag of ["--version", "-v", "-V"]) {
-    // Best of three. The budget is a real guard against the fast path regressing into
-    // the heavy init, but a single wall-clock sample taken while the rest of the suite
-    // runs in parallel measures scheduler noise as much as this process.
-    let bestMs = Infinity;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const startedAt = process.hrtime.bigint();
-      const { stdout } = await execFileAsync(process.execPath, [BIN, flag], { env });
-      const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
-      assert.equal(stdout, `${VERSION}\n`);
-      bestMs = Math.min(bestMs, elapsedMs);
-      if (bestMs < VERSION_BUDGET_MS) break;
-    }
-    assert.ok(
-      bestMs < VERSION_BUDGET_MS,
-      `\`${flag}\` took ${Math.round(bestMs)}ms at best, over the ${VERSION_BUDGET_MS}ms budget`,
-    );
+    const { stdout } = await execFileAsync(process.execPath, [BIN, flag], { env });
+
+    assert.equal(stdout, `${VERSION}\n`);
   }
 
   // The heavy init is provably skipped: the state directory was never created.

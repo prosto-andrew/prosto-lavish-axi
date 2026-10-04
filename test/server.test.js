@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { on, once } from "node:events";
 import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { connect as netConnect } from "node:net";
@@ -7,6 +8,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
+import WebSocket from "ws";
 
 process.env.LAVISH_AXI_HOST = "127.0.0.1";
 process.env.LAVISH_AXI_LINK_HOST = "127.0.0.1";
@@ -90,71 +92,40 @@ function chromeSessionData(html) {
 }
 
 async function startPresenceStream(base, key) {
-  const controller = new AbortController();
-  const res = await fetch(`${base}/events/${key}`, { signal: controller.signal });
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
+  const stream = await startEventStream(base, key, "agent-presence");
 
   return {
     async next() {
-      const deadline = Date.now() + 500;
-      while (true) {
-        const match = buffer.match(/^event: agent-presence\ndata: (.+)\n\n/m);
-        if (match) {
-          buffer = buffer.replace(match[0], "");
-          return JSON.parse(match[1]).state;
-        }
-        const remaining = Math.max(1, deadline - Date.now());
-        const { value, done } = await Promise.race([
-          reader.read(),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("timed out waiting for agent presence event")), remaining),
-          ),
-        ]);
-        if (done) throw new Error("presence stream closed before an agent presence event");
-        buffer += decoder.decode(value, { stream: true });
-      }
+      return (await stream.next()).state;
     },
-    async close() {
-      controller.abort();
-      await reader.cancel().catch(() => {});
-    },
+    close: stream.close,
   };
 }
 
-// A generic version of startPresenceStream for events other than agent-presence, such as `ended`.
 async function startEventStream(base, key, eventName) {
-  const controller = new AbortController();
-  const res = await fetch(`${base}/events/${key}`, { signal: controller.signal });
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  const pattern = new RegExp(`^event: ${eventName}\\ndata: (.+)\\n\\n`, "m");
+  const socket = new WebSocket(`${base.replace(/^http/, "ws")}/events/${key}`, { origin: base });
+  const messages = on(socket, "message");
+  await once(socket, "open");
 
   return {
     async next() {
       const deadline = Date.now() + 2000;
       while (true) {
-        const match = buffer.match(pattern);
-        if (match) {
-          buffer = buffer.replace(match[0], "");
-          return JSON.parse(match[1]);
-        }
         const remaining = Math.max(1, deadline - Date.now());
-        const { value, done } = await Promise.race([
-          reader.read(),
+        const result = await Promise.race([
+          messages.next(),
           new Promise((_, reject) =>
             setTimeout(() => reject(new Error(`timed out waiting for a ${eventName} event`)), remaining),
           ),
         ]);
-        if (done) throw new Error(`${eventName} stream closed before the event arrived`);
-        buffer += decoder.decode(value, { stream: true });
+        if (result.done) throw new Error(`${eventName} stream closed before the event arrived`);
+        const message = JSON.parse(String(result.value[0]));
+        if (message.type === eventName) return message.data;
       }
     },
     async close() {
-      controller.abort();
-      await reader.cancel().catch(() => {});
+      await messages.return();
+      socket.close();
     },
   };
 }
@@ -666,7 +637,8 @@ test("artifact SDK injects every shared mermaid node helper as a same-scope cons
 test("shared SDK helper modules export only functions so serializeModuleHelpers can ship them", async () => {
   const mermaid = await import("../src/mermaid-node.js");
   const table = await import("../src/table-cell.js");
-  for (const [name, value] of [...Object.entries(mermaid), ...Object.entries(table)]) {
+  const revisions = await import("../src/artifact-revisions.js");
+  for (const [name, value] of [...Object.entries(mermaid), ...Object.entries(table), ...Object.entries(revisions)]) {
     assert.equal(typeof value, "function", `${name} must be a function`);
   }
 });
@@ -984,16 +956,6 @@ test("the served chrome offers no way to publish anywhere", async () => {
   assert.doesNotMatch(js, /"\/share"/);
 });
 
-test("copy DOM snapshot requests a fresh snapshot and copies it to the clipboard", async () => {
-  const js = await chromeClientSource();
-
-  assert.match(js, /const snapshotRequests = \[\]/);
-  assert.match(js, /requestSnapshot\("copy"\)/);
-  assert.match(js, /const snapshotAction = snapshotRequests\.shift\(\) \|\| "submit"/);
-  assert.match(js, /if \(snapshotAction === "copy"\)/);
-  assert.match(js, /copyText\(msg\.snapshot \|\| ""\)/);
-});
-
 test("clipboard copy falls back when navigator clipboard rejects", async () => {
   const js = await chromeClientSource();
 
@@ -1019,14 +981,6 @@ test("chrome chat bubbles follow the preview mock shades", async () => {
   assert.match(css, /\.bubble\.agent\{[^}]*background:transparent/);
   assert.match(css, /\.bubble\.agent\{[^}]*border-color:var\(--border-subtle\)/);
   assert.match(css, /border-top-color:var\(--accent\)/);
-});
-
-test("chrome queued-prompt pills use the preview mock steel treatment", async () => {
-  const css = await chromeCssSource();
-
-  assert.match(css, /\.pill\{[^}]*border:1px solid var\(--border-strong\)/);
-  assert.match(css, /\.pill\{[^}]*background:var\(--bg-elevated\)/);
-  assert.doesNotMatch(css, /\.pill\{[^}]*var\(--amber/);
 });
 
 test("chrome includes a chat-like prompt composer and agent reply listener", async () => {
@@ -1058,31 +1012,12 @@ test("chrome client renders persisted chat history", async () => {
   assert.match(js, /initialChat\.forEach/);
 });
 
-test("chrome can sync persisted chat after the event stream reconnects", async () => {
-  const js = await chromeClientSource();
-
-  assert.match(js, /chat-sync/);
-  assert.match(js, /function syncChat/);
-});
-
 test("chrome shows agent working state when a previous poll has released", async () => {
   const js = await chromeClientSource();
 
   assert.match(js, /agent-presence/);
   assert.match(js, /Working\.\.\./);
   assert.match(js, /spinner/);
-});
-
-test("sending with an empty composer nudges instead of blocking", async () => {
-  const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
-  const js = await chromeClientSource();
-  const css = await chromeCssSource();
-
-  assert.match(html, /class="send-hint" id="sendHint" hidden>Write a message or annotate an element first\.<\/div>/);
-  assert.match(js, /function showSendHint\(message = DEFAULT_SEND_HINT/);
-  assert.match(js, /sendHint\.hidden = false/);
-  assert.match(js, /chatInput\.focus\(\)/);
-  assert.match(css, /\.send-hint\{/);
 });
 
 test("composer offers two always-visible top-level send actions", async () => {
@@ -1100,17 +1035,6 @@ test("composer offers two always-visible top-level send actions", async () => {
   assert.doesNotMatch(html, /id="sendFromMenu"/);
   assert.match(css, /\.button-danger\{[^}]*color:var\(--danger\)/);
   assert.match(css, /\.actions\{[^}]*min-width:0/);
-});
-
-test("send and end submits queued prompts before ending the session", async () => {
-  const js = await chromeClientSource();
-
-  assert.match(js, /let endAfterSubmit = false/);
-  assert.match(js, /sendQueued\(true\)/);
-  assert.match(js, /if \(shouldEndSession\) body\.endSession = true/);
-  assert.match(js, /if \(shouldEndSession\) \{\n {4}endAfterSubmit = false;\n {4}markSessionEnded\(\)/);
-  assert.match(js, /if \(!succeeded\) \{\n {6}endAfterSubmit = false/);
-  assert.doesNotMatch(js, /await endSession\(\)/);
 });
 
 test("chrome only marks session ended after the end request succeeds", async () => {
@@ -1132,60 +1056,17 @@ test("chrome shows a waiting banner when no agent has attached", async () => {
   assert.match(css, /\.presence-banner\{/);
 });
 
-test("chrome puts queued annotations above the chat composer as preview pills", async () => {
+test("chrome keeps queued notes at the tail of the one conversation, above the sticky composer", async () => {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html" });
-  const js = await chromeClientSource();
-  const css = await chromeCssSource();
 
-  assert.match(html, /id="annotationPills"/);
+  // The queued log is the last child of the same scroll region as the transcript, so a queued
+  // note is the end of the conversation rather than a second region with its own grammar.
   assert.match(
     html,
-    /<div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"><\/div><div class="annotation-pills" id="annotationPills"><\/div><\/div><div class="composer" id="chatComposer">/,
+    /<div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"><\/div><div class="chat chat-queued" id="queuedLog"><\/div><\/div><div class="composer" id="chatComposer">/,
   );
-  assert.match(js, /class="pill/);
-  assert.match(js, /pill-preview/);
-  assert.match(js, /removeQueuedPrompt/);
-  assert.match(js, /pill-tooltip/);
-  assert.match(css, /text-overflow:ellipsis/);
-  assert.doesNotMatch(js, /togglePill/);
-  assert.doesNotMatch(js, /pill-detail/);
+  assert.doesNotMatch(html, /annotation-pills/);
   assert.doesNotMatch(html, /<h2>Queued Annotations<\/h2>/);
-});
-
-test("chrome scrolls queued prompts above a sticky composer footer", async () => {
-  const css = await chromeCssSource();
-
-  assert.match(css, /\.panel-scroll\{[^}]*flex:1 1 auto/);
-  assert.match(css, /\.panel-scroll\{[^}]*min-height:0/);
-  assert.match(css, /\.panel-scroll\{[^}]*overflow-y:auto/);
-  assert.match(css, /\.chat\{[^}]*overflow:visible/);
-  assert.match(css, /\.annotation-pills\{[^}]*flex:0 0 auto/);
-  assert.match(css, /\.composer\{[^}]*position:sticky/);
-  assert.match(css, /\.composer\{[^}]*bottom:0/);
-  assert.match(css, /\.composer\{[^}]*flex-shrink:0/);
-});
-
-test("chrome omits clear queue button because pills can be removed individually", async () => {
-  const js = await chromeClientSource();
-
-  assert.match(js, /removeQueuedPrompt/);
-  assert.doesNotMatch(js, /Clear Queue/);
-  assert.doesNotMatch(js, /id="clear"/);
-});
-
-test("annotation pill tooltip separates target and prompt details", async () => {
-  const js = await chromeClientSource();
-  const css = await chromeCssSource();
-
-  assert.match(js, /tooltip-label/);
-  assert.match(js, /Target/);
-  assert.match(js, /Prompt/);
-  assert.match(js, /pill-tooltip-target/);
-  assert.match(js, /pill-tooltip-prompt/);
-  assert.match(css, /\.pill-wrap\{[^}]*width:min\(320px,100%\)/);
-  assert.match(css, /\.pill-tooltip\{[^}]*position:static/);
-  assert.match(css, /\.pill-tooltip\{[^}]*width:100%/);
-  assert.doesNotMatch(css, /\.pill-tooltip\{[^}]*position:absolute/);
 });
 
 test("chrome client script is valid JavaScript", async () => {
@@ -1320,25 +1201,6 @@ test("chrome keeps queued prompts persisted until submit succeeds", async () => 
   assert.match(js, /for \(const prompt of prompts\) \{/);
   assert.match(js, /const index = queued\.indexOf\(prompt\)/);
   assert.match(js, /if \(index !== -1\) queued\.splice\(index, 1\)/);
-});
-
-test("chrome ignores concurrent queued prompt submits", async () => {
-  const js = await chromeClientSource();
-
-  assert.match(js, /let submitQueuedPromise = null/);
-  assert.match(js, /if \(submitQueuedPromise\) \{/);
-  assert.match(js, /return submitQueuedPromise/);
-  assert.match(js, /submitQueuedPromise = null/);
-});
-
-test("chrome submits prompts queued during an in-flight submit", async () => {
-  const js = await chromeClientSource();
-
-  assert.match(js, /let submitQueuedAgain = false/);
-  assert.match(js, /submitQueuedAgain = true/);
-  assert.match(js, /const shouldSubmitAgain = submitQueuedAgain/);
-  assert.match(js, /else if \(!ended && shouldSubmitAgain\) \{\n {6}if \(queued\.length\) \{\n {8}submitQueued\(\)/);
-  assert.match(js, /else if \(endAfterSubmit\) \{\n {8}endAfterSubmit = false;\n {8}endSession\(\)/);
 });
 
 test("/health reports the server version so clients can detect upgrades", async () => {
@@ -1918,6 +1780,47 @@ test("wildcard hosts accept proxied prompts but still reject malformed authoriti
       delivered.prompts.map((prompt) => prompt.prompt),
       ["wildcard proxied feedback"],
     );
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// VISION: the artifact stays the author's - serving it adds one script tag and
+// nothing else. The revision legend reads its registry from the artifact, so
+// this guards that reading it never became rewriting it: a parse-and-reserialize
+// pass would silently reflow the whitespace inside <pre>, changing what the
+// reviewer sees versus opening the saved file directly.
+test("serving an artifact with a revision registry adds one script tag and changes nothing else", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  const source = [
+    "<!doctype html>",
+    "<html><head><title>t</title></head><body>",
+    '<script type="application/json" data-lavish-revisions>',
+    '[{"id":"r1","label":"First pass","summary":"Tightened the pricing copy"}]',
+    "</script>",
+    '<section data-lavish-revision="r1" id="pricing">Pricing</section>',
+    "<pre>  indented\n\tand   spaced\n</pre>",
+    "</body></html>",
+  ].join("\n");
+  await writeFile(artifact, source);
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    const { key } = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((res) => res.json());
+
+    const load = await beginArtifactLoad(base, key);
+    const served = await fetch(artifactLoadUrl(base, key, load)).then((res) => res.text());
+
+    const injected = served.match(/<script src="\/sdk\.js\?[^"]*"><\/script>/g);
+    assert.equal(injected?.length, 1);
+    assert.equal(served.replace(injected[0], ""), source);
+    assert.ok(served.includes("<pre>  indented\n\tand   spaced\n</pre>"));
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -2873,8 +2776,11 @@ test("a refreshed chrome receives a new handoff and establishes the newest load"
     const restartedChrome = chromeSessionData(
       await fetch(`${restartedBase}/session/${key}`).then((response) => response.text()),
     );
-    assert.equal(restartedChrome.initialArtifactLoadToken, "");
-    assert.equal((await fetch(artifactLoadUrl(restartedBase, key, refreshedLoad))).status, 409);
+    // The replacement server adopts the live load from state.json, so a chrome that renders
+    // against it is handed the same token the previous server issued, and the artifact the
+    // reviewer already has open keeps answering.
+    assert.equal(restartedChrome.initialArtifactLoadToken, refreshedLoad.artifact_load_token);
+    assert.equal((await fetch(artifactLoadUrl(restartedBase, key, refreshedLoad))).status, 200);
     const restartedLoad = await fetch(`${restartedBase}/api/${key}/artifact-loads/begin`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -2886,6 +2792,50 @@ test("a refreshed chrome receives a new handoff and establishes the newest load"
     }).then((response) => response.json());
     assert.equal(restartedLoad.artifact_revision, refreshedLoad.artifact_revision + 1);
     assert.equal((await fetch(artifactLoadUrl(restartedBase, key, restartedLoad))).status, 200);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// Issue #369: an `npx -y lavish-axi ...` that resolves a newer CLI restarts the server under a
+// reviewer who never asked for it. Every open review then answered 409 "Artifact load expired"
+// and the chrome showed an empty middle, which reads as the page being gone.
+test("a live artifact load survives the server restart the reviewer never asked for", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const stateFile = path.join(dir, "state.json");
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  let server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const load = await beginArtifactLoad(base, key);
+    assert.equal((await fetch(artifactLoadUrl(base, key, load))).status, 200);
+
+    await server.close();
+    server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
+    const restartedBase = `http://127.0.0.1:${server.port}`;
+
+    // The open tab re-requests with the token it is already holding: the document, its probe,
+    // and the SDK the document boots all have to keep answering it.
+    assert.equal((await fetch(artifactLoadUrl(restartedBase, key, load))).status, 200);
+    assert.equal((await fetch(artifactLoadUrl(restartedBase, key, load, { probe: true }))).status, 200);
+    const sdk = await fetch(
+      `${restartedBase}/sdk.js?key=${key}&artifact_revision=${load.artifact_revision}&artifact_load_token=${encodeURIComponent(load.artifact_load_token)}`,
+    );
+    assert.equal(sdk.status, 200);
+
+    // Only the restart stopped fencing the old token. A newer begun load still does.
+    const newer = await beginArtifactLoad(restartedBase, key);
+    assert.notEqual(newer.artifact_load_token, load.artifact_load_token);
+    assert.equal((await fetch(artifactLoadUrl(restartedBase, key, newer))).status, 200);
+    assert.equal((await fetch(artifactLoadUrl(restartedBase, key, load))).status, 409);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -3201,6 +3151,8 @@ test("long-poll sends heartbeat bytes before feedback arrives", async () => {
       fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`, { signal: controller.signal }),
       new Promise((_, reject) => setTimeout(() => reject(new Error("poll did not send headers")), 500)),
     ]);
+    // LAVISH-HARDENED: no Lavish-Poll-State header - it only existed to drive the Herdr chime.
+    assert.equal(res.headers.get("lavish-poll-state"), null);
     const reader = res.body.getReader();
     try {
       const decoder = new TextDecoder();
@@ -3236,8 +3188,113 @@ test("/chrome-client.js serves the extracted chrome client script", async () => 
     assert.equal(res.status, 200);
     assert.match(res.headers.get("content-type") || "", /application\/javascript/);
     assert.match(body, /const sessionData/);
-    assert.match(body, /new EventSource\("\/events\/" \+ key\)/);
   } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("event WebSocket preserves initial state and named live-event semantics", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    const socket = new WebSocket(`ws://127.0.0.1:${server.port}/events/${opened.key}`, { origin: base });
+    const messages = on(socket, "message");
+    const nextMessage = async () => JSON.parse(String((await messages.next()).value[0]));
+    await once(socket, "open");
+    assert.deepEqual(await nextMessage(), {
+      type: "chat-sync",
+      data: { chat: [], ack_ids: [], chat_revision: 0 },
+    });
+    assert.deepEqual(await nextMessage(), { type: "agent-presence", data: { state: "waiting" } });
+
+    const reply = await fetch(`${base}/api/${opened.key}/agent-reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "live reply" }),
+    });
+    assert.equal(reply.status, 200);
+    const replyEvent = await nextMessage();
+    assert.equal(replyEvent.type, "agent-reply");
+    assert.deepEqual(
+      { ...replyEvent.data, at: undefined },
+      { role: "agent", text: "live reply", html: "<p>live reply</p>", at: undefined },
+    );
+    assert.ok(Number.isFinite(Date.parse(replyEvent.data.at)));
+    const replySync = await nextMessage();
+    assert.equal(replySync.type, "chat-sync");
+    assert.deepEqual(replySync.data.ack_ids, []);
+    assert.equal(replySync.data.chat_revision, 1);
+    assert.deepEqual(replySync.data.chat, [replyEvent.data]);
+    await messages.return();
+    socket.close();
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("event WebSocket rejects foreign and missing browser origins", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    for (const headers of [
+      { origin: "http://attacker.example" },
+      {},
+      { referer: base },
+      { origin: base, host: "attacker.example" },
+      { origin: base, "x-forwarded-host": "attacker.example" },
+    ]) {
+      const status = await new Promise((resolve, reject) => {
+        const socket = new WebSocket(`ws://127.0.0.1:${server.port}/events/0123456789abcdef`, { headers });
+        socket.once("unexpected-response", (_request, response) => resolve(response.statusCode));
+        socket.once("open", () => reject(new Error("untrusted WebSocket origin was accepted")));
+        socket.once("error", () => {});
+      });
+      assert.equal(status, 403);
+    }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("event WebSocket validates a reverse proxy's forwarded origin", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    allowedHosts: ["review.example"],
+  });
+  let socket;
+  try {
+    socket = new WebSocket(`ws://127.0.0.1:${server.port}/events/0123456789abcdef`, {
+      origin: "https://review.example",
+      headers: {
+        "x-forwarded-host": "review.example",
+        "x-forwarded-proto": "https",
+      },
+    });
+    await new Promise((resolve, reject) => {
+      socket.once("open", resolve);
+      socket.once("error", reject);
+      socket.once("unexpected-response", (_request, response) =>
+        reject(new Error(`proxied WebSocket was rejected with ${response.statusCode}`)),
+      );
+    });
+    assert.equal(socket.readyState, WebSocket.OPEN);
+  } finally {
+    socket?.close();
     await server.close();
     await rm(dir, { recursive: true, force: true });
   }
@@ -3508,20 +3565,69 @@ test("POST /shutdown stops the listener so the client can spawn a fresh server",
   }
 });
 
-// Collects a chrome's SSE stream until the server ends it, which is what a shutdown does.
+for (const initializeFailure of [false, true]) {
+  test(
+    `${initializeFailure ? "initialization failure" : "shutdown"} terminates an event WebSocket that ignores the close handshake`,
+    { timeout: 5000 },
+    async () => {
+      const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+      const stateFile = path.join(dir, "state.json");
+      if (initializeFailure) await writeFile(stateFile, "invalid json");
+      const server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
+      const socket = netConnect(server.port, "127.0.0.1");
+      try {
+        await once(socket, "connect");
+        socket.write(
+          [
+            "GET /events/0123456789abcdef HTTP/1.1",
+            `Host: 127.0.0.1:${server.port}`,
+            "Upgrade: websocket",
+            "Connection: Upgrade",
+            "Sec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAA==",
+            "Sec-WebSocket-Version: 13",
+            `Origin: http://127.0.0.1:${server.port}`,
+            "",
+            "",
+          ].join("\r\n"),
+        );
+        const response = await new Promise((resolve, reject) => {
+          let received = "";
+          const onData = (chunk) => {
+            received += chunk.toString("latin1");
+            if (!received.includes("\r\n\r\n")) return;
+            socket.off("data", onData);
+            resolve(received);
+          };
+          socket.on("data", onData);
+          socket.once("error", reject);
+        });
+        assert.match(response, /^HTTP\/1\.1 101 Switching Protocols\r\n/);
+
+        if (initializeFailure) {
+          await once(socket, "close", { signal: AbortSignal.timeout(1000) });
+        } else {
+          const closing = server.close();
+          await expectDoneWithin(server, 1000);
+          await closing;
+        }
+      } finally {
+        socket.destroy();
+        await server.close();
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+}
+
 async function collectEventStream(base, key) {
-  const controller = new AbortController();
-  const res = await fetch(`${base}/events/${key}`, { signal: controller.signal });
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
+  const socket = new WebSocket(`${base.replace(/^http/, "ws")}/events/${key}`, { origin: base });
   let text = "";
-  const finished = (async () => {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) return text;
-      text += decoder.decode(value, { stream: true });
-    }
-  })();
+  socket.on("message", (raw) => {
+    const message = JSON.parse(String(raw));
+    text += `event: ${message.type}\ndata: ${JSON.stringify(message.data)}\n\n`;
+  });
+  await once(socket, "open");
+  const finished = once(socket, "close").then(() => text);
   return {
     finished: () =>
       Promise.race([
@@ -3529,7 +3635,7 @@ async function collectEventStream(base, key) {
         new Promise((_, reject) => setTimeout(() => reject(new Error("event stream never closed")), 2000)),
       ]),
     close() {
-      controller.abort();
+      socket.close();
     },
   };
 }
@@ -3689,7 +3795,7 @@ test("server shuts itself down after the idle timeout with no connections", asyn
   }
 });
 
-test("an open SSE connection keeps the server alive past the idle timeout", async () => {
+test("the legacy event stream requests a full-chrome migration and closes", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
   await writeFile(artifact, "<!doctype html><html><body></body></html>");
@@ -3699,7 +3805,6 @@ test("an open SSE connection keeps the server alive past the idle timeout", asyn
     version: "9.9.9-test",
     idleTimeoutMs: 500,
   });
-  const controller = new AbortController();
   try {
     const base = `http://127.0.0.1:${server.port}`;
     const open = await fetch(`${base}/api/sessions`, {
@@ -3708,18 +3813,46 @@ test("an open SSE connection keeps the server alive past the idle timeout", asyn
       body: JSON.stringify({ file: artifact }),
     });
     const { key } = await open.json();
-    // Hold an SSE connection open so the server is never idle.
-    const sse = fetch(`${base}/events/${key}`, { signal: controller.signal });
-    sse.catch(() => {});
-    await sse;
-    await new Promise((resolve) => setTimeout(resolve, 750));
-    const health = await fetch(`${base}/health`);
-    assert.equal(health.status, 200);
-    // Dropping the connection lets the idle timer fire and shut the server down.
-    controller.abort();
+    const response = await fetch(`${base}/events/${key}`, { headers: { accept: "text/event-stream" } });
+    assert.equal(response.headers.get("connection"), "close");
+    assert.equal(await response.text(), 'event: chrome-reload\ndata: {"reason":"server-restarted"}\n\n');
     await expectDoneWithin(server, 2000);
   } finally {
-    controller.abort();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an open event WebSocket keeps the server alive past the idle timeout", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    idleTimeoutMs: 500,
+  });
+  let socket;
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    socket = new WebSocket(`ws://127.0.0.1:${server.port}/events/${opened.key}`, { origin: base });
+    await new Promise((resolve, reject) => {
+      socket.once("open", resolve);
+      socket.once("error", reject);
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 750));
+    assert.equal((await fetch(`${base}/health`)).status, 200);
+    socket.close();
+    await expectDoneWithin(server, 2000);
+  } finally {
+    socket?.close();
     await server.close();
     await rm(dir, { recursive: true, force: true });
   }
@@ -4045,6 +4178,7 @@ test("send-and-end prompt submissions wake active polls with ended attribution",
       assert.equal(feedback.session_ended, true);
       assert.equal(feedback.ended_by, "user");
       assert.equal(feedback.prompts.length, 1);
+      assert.equal(await presence.next(), "working");
       assert.equal(await presence.next(), "waiting");
 
       const ended = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
@@ -4098,7 +4232,121 @@ test("ending an active poll without final feedback leaves presence waiting", asy
   }
 });
 
-test("SSE agent-presence reflects waiting, listening, and working transitions", async () => {
+test("closing the last review WebSocket releases an active poll without ending the session", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    browserDisconnectGraceMs: 20,
+  });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    const firstBrowser = await startPresenceStream(base, opened.key);
+    const lastBrowser = await startPresenceStream(base, opened.key);
+    assert.equal(await firstBrowser.next(), "waiting");
+    assert.equal(await lastBrowser.next(), "waiting");
+
+    let pollSettled = false;
+    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`, { signal: AbortSignal.timeout(1000) })
+      .then((response) => response.json())
+      .finally(() => {
+        pollSettled = true;
+      });
+    assert.equal(await firstBrowser.next(), "listening");
+    assert.equal(await lastBrowser.next(), "listening");
+    await firstBrowser.close();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(pollSettled, false, "closing one of two review windows must not release the poll");
+    await lastBrowser.close();
+
+    assert.deepEqual(await poll, { status: "browser_disconnected" });
+    const stillOpen = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then(
+      (response) => response.json(),
+    );
+    assert.deepEqual(stillOpen, { status: "waiting" });
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a poll that starts after a browser disconnect receives its own full wait", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    browserDisconnectGraceMs: 120,
+  });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    const browser = await startPresenceStream(base, opened.key);
+    assert.equal(await browser.next(), "waiting");
+    await browser.close();
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=80`);
+    assert.deepEqual(await poll.json(), { status: "waiting" });
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a review WebSocket reconnect within the grace period keeps the active poll waiting", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    browserDisconnectGraceMs: 100,
+  });
+  let reconnected = null;
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    const browser = await startPresenceStream(base, opened.key);
+    assert.equal(await browser.next(), "waiting");
+
+    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=180`).then((response) =>
+      response.json(),
+    );
+    assert.equal(await browser.next(), "listening");
+    await browser.close();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    reconnected = await startPresenceStream(base, opened.key);
+    assert.equal(await reconnected.next(), "listening");
+
+    assert.deepEqual(await poll, { status: "waiting" });
+  } finally {
+    await reconnected?.close();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("event WebSocket agent-presence reflects waiting, listening, and working transitions", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
   await (await import("node:fs/promises")).writeFile(artifact, "<!doctype html><html><body></body></html>");
@@ -4112,48 +4360,12 @@ test("SSE agent-presence reflects waiting, listening, and working transitions", 
     });
     const { key } = await open.json();
 
-    const presenceEvents = [];
-    const presenceWaiters = [];
-    const presenceController = new AbortController();
-    const presenceFetch = fetch(`${base}/events/${key}`, { signal: presenceController.signal }).then(async (res) => {
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let lines;
-        while ((lines = buffer.match(/^event: agent-presence\ndata: (.+)\n\n/m))) {
-          const data = JSON.parse(lines[1]);
-          presenceEvents.push(data.state);
-          buffer = buffer.replace(lines[0], "");
-          const waiter = presenceWaiters.shift();
-          if (waiter) waiter(data.state);
-        }
-      }
-    });
-    presenceFetch.catch(() => {});
-
-    const waitForPresence = () =>
-      new Promise((resolve) => {
-        if (presenceEvents.length > waitForPresence.lastIndex) {
-          waitForPresence.lastIndex++;
-          resolve(presenceEvents[waitForPresence.lastIndex - 1]);
-          return;
-        }
-        presenceWaiters.push((state) => {
-          waitForPresence.lastIndex = presenceEvents.length;
-          resolve(state);
-        });
-      });
-    waitForPresence.lastIndex = 0;
-
-    const initial = await waitForPresence();
-    assert.equal(initial, "waiting", "first SSE handshake should report waiting before any poll");
+    const presence = await startPresenceStream(base, key);
+    const initial = await presence.next();
+    assert.equal(initial, "waiting", "first WebSocket handshake should report waiting before any poll");
 
     const pollPromise = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`).then((res) => res.json());
-    const listening = await waitForPresence();
+    const listening = await presence.next();
     assert.equal(listening, "listening", "should switch to listening when poll attaches");
 
     await fetch(`${base}/api/${key}/prompts`, {
@@ -4163,18 +4375,193 @@ test("SSE agent-presence reflects waiting, listening, and working transitions", 
     });
     await pollPromise;
 
-    const working = await waitForPresence();
+    const working = await presence.next();
     assert.equal(working, "working", "should switch to working when poll releases after at least one attach");
 
-    presenceController.abort();
-    await presenceFetch.catch(() => {});
+    await presence.close();
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("SSE handshake reports waiting on a fresh session that never had a poll", async () => {
+test("exclusive listener ownership rejects a loser and reports a takeover", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  const stateFile = path.join(dir, "state.json");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-7`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const health = await fetch(`${base}/health`).then((response) => response.json());
+    assert.deepEqual(
+      health.listeners.map((listener) => listener.label),
+      ["worker-7"],
+    );
+    const state = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.equal("listener" in state.sessions[key], false);
+    const refused = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-8`);
+    assert.equal(refused.status, 409);
+    const refusedBody = await refused.json();
+    assert.equal(refusedBody.code, "LISTENER_ACTIVE");
+    assert.equal(refusedBody.holder.label, "worker-7");
+    assert.equal(typeof refusedBody.holder.age_ms, "number");
+
+    const rejectedGet = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-8&takeover=1`);
+    assert.equal(rejectedGet.status, 405);
+    assert.deepEqual(await rejectedGet.json(), { error: "poll takeover requires POST" });
+    const stillHeld = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-9`);
+    assert.equal((await stillHeld.json()).holder.label, "worker-7");
+
+    const takeover = new AbortController();
+    const replacement = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-8&takeover=1`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+      signal: takeover.signal,
+    }).catch((error) => error);
+    const first = await poll;
+    const replaced = await first.json();
+    assert.equal(replaced.code, "LISTENER_REPLACED");
+    assert.equal(replaced.holder.label, "worker-7");
+    takeover.abort();
+    await replacement;
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("owner-labeled listeners publish external presence instead of an idle captain turn", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const stream = await startEventStream(base, key, "agent-presence");
+    try {
+      assert.deepEqual(await stream.next(), { state: "waiting" });
+      const controller = new AbortController();
+      const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-7`, {
+        signal: controller.signal,
+      }).catch((error) => error);
+      assert.deepEqual(await stream.next(), { state: "listening", mode: "external-listener" });
+      controller.abort();
+      await poll;
+    } finally {
+      await stream.close();
+    }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("bare polls have a visible agent listener identity and none is reserved", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const controller = new AbortController();
+    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`, { signal: controller.signal }).catch(
+      (error) => error,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const health = await fetch(`${base}/health`).then((response) => response.json());
+    assert.equal(health.listeners.find((listener) => listener.key === key).label, "agent-listener");
+    const conflict = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-8`);
+    assert.equal((await conflict.json()).holder.label, "agent-listener");
+    const reserved = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=none&timeoutMs=0`);
+    assert.equal(reserved.status, 400);
+    assert.equal((await reserved.json()).code, "VALIDATION_ERROR");
+    controller.abort();
+    await poll;
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a refused reply poll does not publish its reply before takeover", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  const stateFile = path.join(dir, "state.json");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const firstController = new AbortController();
+    const firstPoll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-7`, {
+      signal: firstController.signal,
+    }).catch((error) => error);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const refused = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-8`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent_reply: "must not publish" }),
+    });
+    assert.equal(refused.status, 409);
+    const stateAfterRefusal = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.equal(
+      stateAfterRefusal.sessions[key].chat?.some((entry) => entry.role === "agent"),
+      false,
+    );
+
+    const takeover = await fetch(
+      `${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-8&takeover=1&timeoutMs=1`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ agent_reply: "published once" }),
+      },
+    );
+    assert.deepEqual(await takeover.json(), { status: "waiting" });
+    const replaced = await (await firstPoll).json();
+    assert.equal(replaced.code, "LISTENER_REPLACED");
+    const stateAfterTakeover = JSON.parse(await readFile(stateFile, "utf8"));
+    assert.deepEqual(
+      stateAfterTakeover.sessions[key].chat.filter((entry) => entry.role === "agent").map((entry) => entry.text),
+      ["published once"],
+    );
+    firstController.abort();
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("event WebSocket handshake reports waiting on a fresh session that never had a poll", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
   await (await import("node:fs/promises")).writeFile(artifact, "<!doctype html><html><body></body></html>");
@@ -4188,28 +4575,16 @@ test("SSE handshake reports waiting on a fresh session that never had a poll", a
     });
     const { key } = await open.json();
 
-    const controller = new AbortController();
-    const res = await fetch(`${base}/events/${key}`, { signal: controller.signal });
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let state = null;
-    while (state === null) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const match = buffer.match(/^event: agent-presence\ndata: (.+)\n\n/m);
-      if (match) state = JSON.parse(match[1]).state;
-    }
-    controller.abort();
-    assert.equal(state, "waiting");
+    const presence = await startPresenceStream(base, key);
+    assert.equal(await presence.next(), "waiting");
+    await presence.close();
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("SSE agent-presence returns to waiting when a poll times out without feedback", async () => {
+test("event WebSocket agent-presence returns to waiting when a poll times out without feedback", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
   await writeFile(artifact, "<!doctype html><html><body></body></html>");
@@ -4407,6 +4782,7 @@ test("immediate poll delivery leaves presence working and preserves the next sen
       body: JSON.stringify({ prompts: [{ prompt: "hello", tag: "message" }] }),
     });
     const immediate = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`);
+    assert.equal(immediate.headers.get("lavish-poll-state"), null);
     assert.deepEqual(
       (await immediate.json()).prompts.map((prompt) => prompt.prompt),
       ["hello"],
@@ -4427,12 +4803,60 @@ test("immediate poll delivery leaves presence working and preserves the next sen
     assert.equal(submitted.status, 200);
 
     const nextPoll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+    assert.equal(nextPoll.headers.get("lavish-poll-state"), null);
     const nextFeedback = await nextPoll.json();
     assert.equal(nextFeedback.status, "feedback");
     assert.deepEqual(
       nextFeedback.prompts.map((prompt) => prompt.prompt),
       ["follow-up"],
     );
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a fresh poll attaching alone retires the previous round's working presence", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+
+    await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({ prompts: [{ prompt: "hello", tag: "message" }] }),
+    });
+    const delivered = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+    assert.equal((await delivered.json()).status, "feedback");
+
+    const presence = await startPresenceStream(base, key);
+    try {
+      assert.equal(await presence.next(), "working");
+
+      // The agent came back and attached with no other poll in flight: that starts a new round,
+      // so the poll ending without feedback has to leave presence waiting - not stuck on
+      // "working", which hides the "your agent is not listening" banner while nothing is attached.
+      const next = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=1`);
+      assert.deepEqual(await next.json(), { status: "waiting" });
+
+      const afterRound = await startPresenceStream(base, key);
+      try {
+        assert.equal(await afterRound.next(), "waiting");
+      } finally {
+        await afterRound.close();
+      }
+    } finally {
+      await presence.close();
+    }
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -4610,9 +5034,11 @@ test("a disconnect during event-driven feedback take requeues the batch without 
       await takePending;
       socket.on("error", () => {});
       socket.destroy();
-      assert.equal(await presence.next(), "waiting");
+      // Listener ownership is reserved before the first store read, so cleanup can finish only
+      // once the delayed take is released.
       releaseTake();
       await restorePending;
+      assert.equal(await presence.next(), "waiting");
 
       const afterRestorePresence = await startPresenceStream(base, key);
       try {
@@ -4630,130 +5056,6 @@ test("a disconnect during event-driven feedback take requeues the batch without 
       await presence.close();
     }
   } finally {
-    SessionStore.prototype.takeFeedback = originalTakeFeedback;
-    SessionStore.prototype.queuePrompts = originalQueuePrompts;
-    await server.close();
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("a restored batch wakes a poll that started listening during the restore", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
-  const artifact = path.join(dir, "artifact.html");
-  const stateFile = path.join(dir, "state.json");
-  await writeFile(artifact, "<!doctype html><html><body></body></html>");
-  const server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
-  const originalTakeFeedback = SessionStore.prototype.takeFeedback;
-  const originalQueuePrompts = SessionStore.prototype.queuePrompts;
-  const secondPoll = new AbortController();
-  try {
-    const base = `http://127.0.0.1:${server.port}`;
-    const open = await fetch(`${base}/api/sessions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ file: artifact }),
-    });
-    const { key } = await open.json();
-
-    /** @type {() => void} */
-    let releaseTake = () => {};
-    const takeReleased = new Promise((resolve) => {
-      releaseTake = () => resolve();
-    });
-    let takeStarted;
-    const takePending = new Promise((resolve) => {
-      takeStarted = resolve;
-    });
-    let takeCount = 0;
-    SessionStore.prototype.takeFeedback = async function (sessionKey) {
-      takeCount += 1;
-      if (takeCount === 2 && sessionKey === key) {
-        takeStarted();
-        await takeReleased;
-      }
-      return originalTakeFeedback.call(this, sessionKey);
-    };
-
-    /** @type {() => void} */
-    let releaseRestore = () => {};
-    const restoreReleased = new Promise((resolve) => {
-      releaseRestore = () => resolve();
-    });
-    let restoreStarted;
-    const restorePending = new Promise((resolve) => {
-      restoreStarted = resolve;
-    });
-    let restoreCompleted;
-    const restoreDone = new Promise((resolve) => {
-      restoreCompleted = resolve;
-    });
-    SessionStore.prototype.queuePrompts = async function (sessionKey, payload, options) {
-      if (sessionKey === key && options?.restore) {
-        restoreStarted();
-        await restoreReleased;
-        const restored = await originalQueuePrompts.call(this, sessionKey, payload, options);
-        restoreCompleted();
-        return restored;
-      }
-      return originalQueuePrompts.call(this, sessionKey, payload, options);
-    };
-
-    const presence = await startPresenceStream(base, key);
-    try {
-      assert.equal(await presence.next(), "waiting");
-      const socket = await new Promise((resolve, reject) => {
-        const client = netConnect(server.port, "127.0.0.1", () => {
-          client.write(
-            `GET /api/poll?file=${encodeURIComponent(artifact)} HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\n\r\n`,
-            () => resolve(client),
-          );
-        });
-        client.on("error", reject);
-      });
-      assert.equal(await presence.next(), "listening");
-
-      const submitted = await fetch(`${base}/api/${key}/prompts`, {
-        method: "POST",
-        headers: { "content-type": "application/json", origin: base },
-        body: JSON.stringify({
-          domSnapshot: 'uid=1 body "review"',
-          prompts: [{ prompt: "Looks good", tag: "message" }],
-        }),
-      });
-      assert.equal(submitted.status, 200);
-
-      await takePending;
-      socket.on("error", () => {});
-      socket.destroy();
-      assert.equal(await presence.next(), "waiting");
-      releaseTake();
-      // The first poll's take has now cleared the batch and its restore is held open, which is
-      // exactly the window a second poll can enter and find nothing waiting for it.
-      await restorePending;
-
-      const second = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`, { signal: secondPoll.signal });
-      assert.equal(await presence.next(), "listening");
-
-      releaseRestore();
-      await restoreDone;
-
-      const feedback = await Promise.race([
-        second.then((response) => response.json()),
-        new Promise((resolve) => {
-          setTimeout(() => resolve({ status: "never-woken" }), 2000).unref?.();
-        }),
-      ]);
-      assert.equal(feedback.status, "feedback");
-      assert.equal(feedback.dom_snapshot, 'uid=1 body "review"');
-      assert.deepEqual(
-        feedback.prompts.map((prompt) => prompt.prompt),
-        ["Looks good"],
-      );
-    } finally {
-      await presence.close();
-    }
-  } finally {
-    secondPoll.abort();
     SessionStore.prototype.takeFeedback = originalTakeFeedback;
     SessionStore.prototype.queuePrompts = originalQueuePrompts;
     await server.close();
@@ -4974,57 +5276,6 @@ test("SSE sends an immediate ended snapshot to a connection that attaches after 
       await stream.close();
     }
   } finally {
-    await server.close();
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("SSE disconnect during the initial session read releases the connection", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
-  const artifact = path.join(dir, "artifact.html");
-  await writeFile(artifact, "<!doctype html><html><body></body></html>");
-  const server = await serve({
-    port: 0,
-    stateFile: path.join(dir, "state.json"),
-    version: "9.9.9-test",
-    idleTimeoutMs: 100,
-  });
-  const originalFindByKey = SessionStore.prototype.findByKey;
-  try {
-    const base = `http://127.0.0.1:${server.port}`;
-    const open = await fetch(`${base}/api/sessions`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ file: artifact }),
-    });
-    const { key } = await open.json();
-    const { promise: findReleased, resolve: releaseFind } = Promise.withResolvers();
-    const { promise: findPending, resolve: findStarted } = Promise.withResolvers();
-    SessionStore.prototype.findByKey = async function (sessionKey) {
-      if (sessionKey === key) {
-        findStarted();
-        await findReleased;
-      }
-      return originalFindByKey.call(this, sessionKey);
-    };
-
-    const socket = await new Promise((resolve, reject) => {
-      const client = netConnect(server.port, "127.0.0.1", () => {
-        client.write(`GET /events/${key} HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\n\r\n`, () => resolve(client));
-      });
-      client.on("error", reject);
-    });
-    await findPending;
-    socket.on("error", () => {});
-    socket.destroy();
-    releaseFind();
-
-    await Promise.race([
-      server.done,
-      new Promise((_, reject) => setTimeout(() => reject(new Error("server retained disconnected SSE client")), 1000)),
-    ]);
-  } finally {
-    SessionStore.prototype.findByKey = originalFindByKey;
     await server.close();
     await rm(dir, { recursive: true, force: true });
   }
@@ -5580,4 +5831,168 @@ test("extractArtifactHead reads the real href, not one hidden in another attribu
     '<head><link rel="icon" title="see href=data:image/png,decoy" href="https://cdn.example.com/logo.png"></head>',
   );
   assert.equal(inValue.faviconTag, '<link rel="icon" href="https://cdn.example.com/logo.png">');
+});
+
+// The transcript is server-owned display state: the prompts route answers with it and syncs it
+// live the moment a batch is accepted, so every tab shows what was sent at send time rather than
+// when a poll happens to take the batch - and the anchor names the element in the annotation
+// card's own words.
+test("the prompts route returns the transcript and syncs it live at send time", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, '<!doctype html><html><body><h2 id="phase-1">Phase 1</h2></body></html>');
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    const stream = await startEventStream(base, opened.key, "chat-sync");
+    assert.deepEqual(await stream.next(), { chat: [], ack_ids: [], chat_revision: 0 });
+
+    const response = await fetch(`${base}/api/${opened.key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({
+        prompts: [
+          {
+            uid: "1",
+            prompt: "Rename this",
+            selector: "h2#phase-1",
+            tag: "h2",
+            text: "Phase 1: Inventory",
+            prompt_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+          },
+        ],
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.status, "queued");
+    const expected = [
+      {
+        role: "user",
+        kind: "annotation",
+        text: "Rename this",
+        prompt_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        anchor: { kind: "element", label: "<h2>", excerpt: "Phase 1: Inventory", selector: "h2#phase-1" },
+      },
+    ];
+    const withoutTimestamps = (chat) => chat.map(({ at: _at, ...entry }) => entry);
+    assert.deepEqual(withoutTimestamps(body.chat), expected);
+    // Nothing polled: the sync is driven by the accept, not by delivery.
+    assert.deepEqual(withoutTimestamps((await stream.next()).chat), expected);
+    await stream.close();
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("retrying an acknowledged prompt does not wake an unrelated poll", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    const accepted = {
+      uid: "",
+      prompt: "Already accepted",
+      selector: "",
+      tag: "message",
+      text: "Freeform message",
+      prompt_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+    };
+    const post = (prompt) =>
+      fetch(`${base}/api/${opened.key}/prompts`, {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: base },
+        body: JSON.stringify({ prompts: [prompt] }),
+      });
+
+    assert.equal((await post(accepted)).status, 200);
+    assert.equal(
+      (await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((res) => res.json()))
+        .status,
+      "feedback",
+    );
+
+    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=1000`).then((res) =>
+      res.json(),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal((await post(accepted)).status, 200);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(
+      (
+        await post({
+          ...accepted,
+          prompt: "Fresh feedback",
+          prompt_id: "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff",
+        })
+      ).status,
+      200,
+    );
+
+    const delivered = await poll;
+    assert.equal(delivered.status, "feedback");
+    assert.equal(delivered.prompts.length, 1);
+    assert.equal(delivered.prompts[0].prompt, "Fresh feedback");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the live transcript carries rendered html for agent replies and never for user text", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opened = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    await fetch(`${base}/api/${opened.key}/agent-reply`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text: "Done.\n\n- one\n- two" }),
+    });
+    await fetch(`${base}/api/${opened.key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({
+        prompts: [{ uid: "", prompt: "<b>keep</b>", selector: "", tag: "message", text: "Freeform message" }],
+      }),
+    });
+
+    const stream = await startEventStream(base, opened.key, "chat-sync");
+    const { chat } = await stream.next();
+    await stream.close();
+    assert.deepEqual(
+      chat.map(({ at: _at, ...entry }) => entry),
+      [
+        { role: "agent", text: "Done.\n\n- one\n- two", html: "<p>Done.</p><ul><li>one</li><li>two</li></ul>" },
+        { role: "user", kind: "message", text: "<b>keep</b>" },
+      ],
+    );
+
+    // The page bootstraps the same transcript, so a reload renders structure without a live event.
+    const page = await fetch(`${base}/session/${opened.key}`).then((response) => response.text());
+    assert.match(page, /"html":"\\u003cp\\u003eDone\.\\u003c\/p\\u003e\\u003cul\\u003e/);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
 });

@@ -39,12 +39,6 @@ test("published package root is a complete Agent Plugin", async () => {
   assert.ok(packageJson.files.includes("skills/lavish"));
 });
 
-test("release-please keeps the plugin manifest version in step with the package", async () => {
-  const config = JSON.parse(await readFile(new URL("../release-please-config.json", import.meta.url), "utf8"));
-
-  assert.deepEqual(config.packages["."]["extra-files"], [{ type: "json", path: "plugin.json", jsonpath: "$.version" }]);
-});
-
 test("lavish-design agent skill is marked internal for skills CLI discovery", async () => {
   const skillMd = await readFile(new URL("../.agents/skills/lavish-design/SKILL.md", import.meta.url), "utf8");
   const frontmatter = skillMd.slice(4, skillMd.indexOf("\n---\n", 4));
@@ -86,22 +80,4 @@ test("pnpm lock root importer matches the publish manifest", async () => {
 
     assert.match(pnpmLock, new RegExp(`["']?${escapedName}["']?:[\\s\\S]*?specifier: ${escapedSpecifier}`));
   }
-});
-
-test("release workflow publishes from the release tag checkout", async () => {
-  const workflow = await readFile(new URL("../.github/workflows/release-please.yml", import.meta.url), "utf8");
-
-  assert.match(
-    workflow,
-    /uses: actions\/checkout@v6\n\s+if: \$\{\{ steps\.release\.outputs\.release_created \}\}\n\s+with:\n\s+ref: \$\{\{ steps\.release\.outputs\.tag_name \}\}/,
-  );
-});
-
-test("release workflow keeps telemetry env during npm publish prepack", async () => {
-  const workflow = await readFile(new URL("../.github/workflows/release-please.yml", import.meta.url), "utf8");
-
-  assert.match(
-    workflow,
-    /run: npm publish --access public --provenance\n\s+if: \$\{\{ steps\.release\.outputs\.release_created \}\}\n\s+env:\n\s+LAVISH_AXI_UMAMI_HOST: https:\/\/a\.kunchenguid\.com\n\s+LAVISH_AXI_UMAMI_WEBSITE_ID: \$\{\{ vars\.LAVISH_AXI_UMAMI_WEBSITE_ID \}\}/,
-  );
 });

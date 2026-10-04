@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
+import { realpathSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { isIP } from "node:net";
 import os from "node:os";
@@ -59,16 +61,24 @@ export function sanitizeListenHosts(hosts) {
 }
 
 /**
+ * With `keepUnresolved`, a name that does not resolve right now is kept as the name, so it is bound
+ * and retried like any other unavailable address and reported, instead of failing or vanishing. A
+ * name that resolves to an all-interfaces address is always refused.
  * @param {string[]} hosts
- * @param {{ lookup?: typeof dnsLookup }} [options]
+ * @param {{ lookup?: typeof dnsLookup, keepUnresolved?: boolean }} [options]
  * @returns {Promise<string[]>}
  */
-export async function resolveConcreteListenHosts(hosts, { lookup = dnsLookup } = {}) {
+export async function resolveConcreteListenHosts(hosts, { lookup = dnsLookup, keepUnresolved = false } = {}) {
   const resolved = [];
   for (const host of hosts) {
-    const addresses = await lookup(host, { all: true, verbatim: true });
+    const addresses = await lookup(host, { all: true, verbatim: true }).catch((error) => {
+      if (keepUnresolved) return [];
+      throw error;
+    });
     if (!Array.isArray(addresses) || addresses.length === 0) {
-      throw new Error(`Listen host did not resolve: ${host}`);
+      if (!keepUnresolved) throw new Error(`Listen host did not resolve: ${host}`);
+      if (!resolved.includes(host)) resolved.push(host);
+      continue;
     }
     if (addresses.some(({ address }) => isWildcardHost(address))) {
       throw new Error(`Listen host resolves to an all-interfaces address: ${host}`);
@@ -125,6 +135,25 @@ export function stateDir() {
 
 export function stateFile() {
   return path.join(stateDir(), "state.json");
+}
+
+// Which Lavish installation a server belongs to, reported by /health. A CLI only ever stops a
+// duplicate daemon that shares its own state file, so another user's (or another test's) server on
+// the same port at a different address is never touched. Resolve the directory, not the state file:
+// state.json may not exist yet when the server first reports its identity.
+export function stateId(file = stateFile()) {
+  const directory = path.dirname(path.resolve(file));
+  let canonicalDirectory;
+  try {
+    canonicalDirectory = realpathSync(directory);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    canonicalDirectory = directory;
+  }
+  return createHash("sha256")
+    .update(path.join(canonicalDirectory, path.basename(file)))
+    .digest("hex")
+    .slice(0, 16);
 }
 
 export function serverLogFile() {

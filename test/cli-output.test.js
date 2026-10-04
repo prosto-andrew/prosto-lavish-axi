@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import WebSocket from "ws";
 
 import { AxiError } from "axi-sdk-js";
 
@@ -34,7 +34,6 @@ import {
   pollInterruptedText,
   pollWaitBannerText,
   pollWaitTickText,
-  resolveServerEntry,
   serverReplacementReason,
   shareCommand,
   shutdownServerOnPort,
@@ -55,39 +54,20 @@ import { serve } from "../src/server.js";
 import { canonicalFile, sessionKey } from "../src/session-store.js";
 
 async function waitForPollListening(base, key, timeoutMs = 10_000) {
-  const controller = new AbortController();
-  const res = await fetch(`${base}/events/${key}`, { signal: controller.signal });
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  const deadline = Date.now() + timeoutMs;
+  const socket = new WebSocket(`${base.replace(/^http/, "ws")}/events/${key}`, { origin: base });
   try {
-    while (true) {
-      const match = buffer.match(/^event: agent-presence\ndata: (.+)\n\n/m);
-      if (match) {
-        buffer = buffer.replace(match[0], "");
-        if (JSON.parse(match[1]).state === "listening") return;
-        continue;
-      }
-      const remaining = Math.max(1, deadline - Date.now());
-      let timer;
-      let value;
-      let done;
-      try {
-        ({ value, done } = await Promise.race([
-          reader.read(),
-          new Promise((_, reject) => {
-            timer = setTimeout(() => reject(new Error("timed out waiting for listening presence")), remaining);
-          }),
-        ]));
-      } finally {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("timed out waiting for listening presence")), timeoutMs);
+      socket.on("message", (raw) => {
+        const message = JSON.parse(String(raw));
+        if (message.type !== "agent-presence" || message.data.state !== "listening") return;
         clearTimeout(timer);
-      }
-      if (done) throw new Error("presence stream closed before listening");
-      buffer += decoder.decode(value, { stream: true });
-    }
+        resolve(undefined);
+      });
+      socket.once("error", reject);
+    });
   } finally {
-    controller.abort();
+    socket.close();
   }
 }
 
@@ -194,9 +174,10 @@ test("design output is the sole emitted concise explicit-background guidance", (
     JSON.stringify(createHomeOutput({ bin: "lavish-axi", sessions: [] })),
     getCommandHelp("design"),
     createSkillMarkdown(),
-    ...["table", "comparison", "plan", "code", "input", "slides"].map((id) =>
-      JSON.stringify(createPlaybookOutput([id])),
-    ),
+    ...createPlaybookOutput([])
+      .playbooks.map((playbook) => playbook.id)
+      .filter((id) => id !== "diagram")
+      .map((id) => JSON.stringify(createPlaybookOutput([id]))),
   ];
   for (const surface of otherAgentSurfaces) {
     assert.ok(!surface.includes(instruction));
@@ -336,7 +317,7 @@ test("top-level help renders static home output without dynamic sessions", async
     );
 
     assert.equal(result.status, 0, result.stderr || result.stdout);
-    assert.match(result.stdout, /playbooks\[7\]/);
+    assert.match(result.stdout, /playbooks\[8\]/);
     assert.match(result.stdout, /lavish-safe playbook <playbook_id>/);
     assert.match(result.stdout, /reference other filesystem assets/);
     assert.match(result.stdout, /same directory as the HTML file/);
@@ -386,10 +367,10 @@ test("design output recommends luxury as the default theme and warns against @ap
 test("playbook index output lists known playbooks with concise descriptions", () => {
   const output = createPlaybookOutput([]);
 
-  assert.equal(output.playbooks.length, 7);
+  assert.equal(output.playbooks.length, 8);
   assert.deepEqual(
     output.playbooks.map((playbook) => playbook.id),
-    ["diagram", "table", "comparison", "plan", "code", "input", "slides"],
+    ["diagram", "table", "comparison", "plan", "code", "input", "explanation", "slides"],
   );
   assert.equal(
     output.playbooks.find((playbook) => playbook.id === "plan")?.use_when,
@@ -403,6 +384,24 @@ test("playbook index output lists known playbooks with concise descriptions", ()
   assert.ok(output.help.some((item) => item.includes("lavish-safe playbook <playbook_id>")));
   assert.ok(output.help.some((item) => item.includes("combines several playbooks")));
   assert.ok(output.help.some((item) => item.includes("MUST open each matching playbook")));
+});
+
+test("explanation playbook routes understanding of existing things and separates itself from plan and comparison", () => {
+  const output = createPlaybookOutput(["explanation"]);
+
+  assert.match(output.playbook.use_when, /Explain an existing system, PR, incident, or decision/i);
+  assert.match(output.playbook.use_when, /not choosing a direction or inspecting a plan/);
+  assert.ok(
+    output.playbook.choose.some((item) => /plan playbook when the reader must inspect and approve/i.test(item)),
+  );
+  assert.ok(output.playbook.structure.some((item) => /one-sentence answer/i.test(item)));
+  assert.ok(output.playbook.structure.some((item) => /what was deliberately left out/i.test(item)));
+  assert.ok(output.playbook.pitfalls.some((item) => /restate the PR body, diff, or ticket file-by-file/i.test(item)));
+  assert.ok(
+    output.playbook.design_rules.some((item) => /diagram playbook's assume-nothing rule/i.test(item)),
+    "reader starting point is owned by the diagram playbook and only pointed at here",
+  );
+  assert.ok(output.playbook.pitfalls.some((item) => /inferred reasoning as verified fact/i.test(item)));
 });
 
 test("diagram playbook defaults to hand-authored SVG and names the anti-patterns", () => {
@@ -426,14 +425,17 @@ test("diagram playbook owns assume-nothing and one-concept-per-diagram guidance"
     "the diagram playbook must prefer one concept per diagram",
   );
 
+  const playbookIds = createPlaybookOutput([]).playbooks.map((playbook) => playbook.id);
   const otherSurfaces = [
     JSON.stringify(createHomeOutput({ bin: "lavish-axi", sessions: [] })),
     JSON.stringify(createDesignOutput()),
     createSkillMarkdown(),
+    ...playbookIds.filter((id) => id !== "diagram").map((id) => JSON.stringify(createPlaybookOutput([id]).playbook)),
   ];
   for (const surface of otherSurfaces) {
     assert.doesNotMatch(surface, /one concept per diagram/i);
     assert.doesNotMatch(surface, /knows nothing/i);
+    assert.doesNotMatch(surface, /presume/i);
   }
 
   const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-playbook-diagram-`);
@@ -717,6 +719,40 @@ test("playbook detail output returns focused Lavish-native guidance", () => {
   assert.ok(output.playbook.lavish_notes.some((item) => item.includes("Lavish")));
 });
 
+test("input playbook defines an opt-in tracked batch handoff", () => {
+  const output = createPlaybookOutput(["input"]);
+  const guidance = JSON.stringify(output.playbook);
+  const example = output.playbook.lavish_notes.find((item) => /tag: ['"]tracked-batch/.test(item));
+
+  assert.match(guidance, /multi-item/);
+  assert.match(guidance, /stable, visible ID/);
+  assert.match(guidance, /selected set/);
+  assert.match(guidance, /account for every submitted ID/);
+  assert.match(guidance, /addressed/);
+  assert.match(guidance, /deferred/);
+  assert.match(guidance, /rejected/);
+  assert.match(guidance, /receipt ID set/);
+  assert.ok(example, "the tracked-batch pattern includes a copyable example");
+  assert.match(example, /<form/);
+  assert.match(example, /type="checkbox"/);
+  assert.match(example, /onsubmit=/);
+  assert.equal(example.match(/window\.lavish\.queuePrompt/g)?.length, 1);
+  assert.match(example, /items: selected/);
+  assert.match(example, /id:/);
+  assert.match(example, /label:/);
+  assert.match(example, /disposition:/);
+});
+
+test("table playbook routes multi-row actions to the input tracked-batch pattern", () => {
+  const output = createPlaybookOutput(["table"]);
+
+  assert.ok(
+    output.playbook.lavish_notes.some(
+      (item) => item.includes("multiple rows") && item.includes("input") && item.includes("tracked batch"),
+    ),
+  );
+});
+
 // LAVISH-HARDENED: the stock rule made a CDN-loaded diff library mandatory. Under
 // this build's artifact policy that import is refused and the block renders empty,
 // so the playbook now demands self-contained rendering - and this test guards that
@@ -789,6 +825,9 @@ test("open output keeps the user URL in session data and next_step focused on po
   assert.doesNotMatch(output.next_step, /http:\/\/localhost:4387\/session\/abc123/);
   assert.match(output.next_step, /Do not respond to the user just yet\. Now you must run/);
   assert.match(output.next_step, /lavish-safe poll \/tmp\/artifact\.html/);
+  assert.match(output.next_step, /keep waiting for more feedback/);
+  assert.match(output.next_step, /lavish-safe reply \/tmp\/artifact\.html --agent-reply/);
+  assert.match(output.next_step, /without starting another long-poll/);
   assert.match(output.next_step, /Layout issues inbox/);
   assert.doesNotMatch(output.next_step, /layout_warnings/);
   assert.match(output.next_step, /never kill it/);
@@ -1012,7 +1051,7 @@ test("feedback next step keeps the next poll completion observable", () => {
   assertObservablePollWakePath(output.next_step);
   assert.doesNotMatch(output.next_step, /Codex/);
   assert.match(output.next_step, /feedback remains queued until delivery/);
-  assert.match(output.next_step, /Do not respond to the user just yet\. Now you must run/);
+  assert.match(output.next_step, /Do not respond to the user just yet\. If you are continuing to wait for feedback/);
   assert.doesNotMatch(output.next_step, /above 10 minutes/);
 });
 
@@ -1109,6 +1148,10 @@ test("detected layout warnings never appear in poll output", () => {
   assert.equal("layout_warnings" in output, false);
   assert.equal("artifact_failures" in output, false);
   assert.match(output.next_step, /Apply the requested changes/);
+  assert.match(output.next_step, /lavish-safe poll \/tmp\/report\.html --agent-reply/);
+  assert.match(output.next_step, /continuing to wait for feedback/);
+  assert.match(output.next_step, /lavish-safe reply \/tmp\/report\.html --agent-reply/);
+  assert.match(output.next_step, /without starting another long-poll/);
 });
 
 test("a queued layout-warnings batch reads as ordinary feedback with lifecycle guidance", () => {
@@ -1375,6 +1418,16 @@ test("poll wait messages tell watching agents the silence is normal", () => {
   assert.match(interrupted, /feedback remains queued until delivery/);
 });
 
+// LAVISH-HARDENED: upstream's opt-in Herdr chime spawned an external `herdr` binary from
+// PATH whenever a poll started waiting. This build launches no helper processes, so the hook,
+// its env switches, and the poll-state header it keyed off were not taken from upstream.
+test("poll has no Herdr notification hook and its help never mentions one", async () => {
+  const cli = await import("../src/cli.js");
+  assert.equal("herdrPollChimeEnabled" in cli, false);
+  assert.equal("notifyHerdrPollReady" in cli, false);
+  assert.doesNotMatch(getCommandHelp("poll"), /herdr/i);
+});
+
 test("poll wait reporter writes a banner immediately and heartbeats on an interval", async () => {
   const lines = [];
   const reporter = startPollWaitReporter({
@@ -1485,6 +1538,21 @@ test("spawned poll with piped stderr banners once and leaves re-run guidance whe
   }
 });
 
+test("browser-disconnected poll output asks before reopening or ending the resumable session", () => {
+  const output = createPollOutput({
+    file: "/tmp/report.html",
+    response: { status: "browser_disconnected" },
+  });
+
+  assert.deepEqual(output.session, { file: "/tmp/report.html", status: "browser_disconnected" });
+  assert.match(output.next_step, /review window (?:was closed|disconnected)/i);
+  assert.match(output.next_step, /ask the user/i);
+  assert.match(output.next_step, /reopen/i);
+  assert.match(output.next_step, /end the session/i);
+  assert.match(output.next_step, /remains open|resumable/i);
+  assert.doesNotMatch(output.next_step, /Run `lavish-axi \/tmp\/report\.html`/);
+});
+
 test("waiting next step reassures agents that re-running poll loses nothing", () => {
   const output = createPollOutput({
     file: "/tmp/report.html",
@@ -1541,15 +1609,11 @@ test("server spawn options can persist detached server output to a log fd", () =
   assert.deepEqual(options.stdio, ["ignore", 17, 17]);
 });
 
-test("server entry resolves to a node-executable script that actually invokes run()", () => {
-  // Running from source, the entry must be `bin/lavish-axi.js` (the only file in the
-  // source tree that calls run() on import). In the published bundle only `dist/cli.mjs`
-  // ships - it embeds the bin wrapper so it self-invokes. Either way, spawning the entry
-  // with `node <entry> server` must boot the server, not silently load the module and exit.
-  const entry = resolveServerEntry();
-  assert.ok(existsSync(entry), `server entry must exist on disk, got: ${entry}`);
-  // From source: bin/lavish-axi.js is present and preferred.
-  assert.equal(entry, fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)));
+test("detached server entry dispatches the CLI", () => {
+  const entry = fileURLToPath(new URL("../bin/lavish-axi-server.js", import.meta.url));
+  const result = spawnSync(process.execPath, [entry, "--version"], { encoding: "utf8" });
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /\d+\.\d+\.\d+/);
 });
 
 test("local built CLI opens force a server restart while source and installed runs do not", () => {
@@ -1639,8 +1703,9 @@ test("shutdownServerOnPort kills pre-handshake Lavish servers when shutdown does
       shutdowns += 1;
     },
     waitForPortFree: async () => portFreeResults.shift() ?? false,
-    killProcessOnPort: () => {
+    killServerProcess: () => {
       kills += 1;
+      return true;
     },
     processMatchesLavish: () => true,
   });
@@ -1662,8 +1727,9 @@ test("shutdownServerOnPort ignores unidentified health responders", async () => 
       shutdowns += 1;
     },
     waitForPortFree: async () => false,
-    killProcessOnPort: () => {
+    killServerProcess: () => {
       kills += 1;
+      return true;
     },
     processMatchesLavish: () => false,
   });
@@ -1781,12 +1847,16 @@ test("fetchJson reports interrupted response body failures without retrying", as
 test("stop command shuts down the running server on the configured port", async () => {
   const dir = await mkdtemp(`${os.tmpdir()}/lavish-axi-stop-test-`);
   const server = await serve({ port: 0, stateFile: `${dir}/state.json`, version: "9.9.9-test" });
+  const previousStateDir = process.env.LAVISH_AXI_STATE_DIR;
+  process.env.LAVISH_AXI_STATE_DIR = dir;
   try {
     const output = await stopCommand(["--port", String(server.port)]);
     assert.deepEqual(output, { server: { status: "stopped", port: server.port } });
     await server.done;
     await assert.rejects(() => fetch(`http://127.0.0.1:${server.port}/health`), /fetch failed|ECONNREFUSED/);
   } finally {
+    if (previousStateDir === undefined) delete process.env.LAVISH_AXI_STATE_DIR;
+    else process.env.LAVISH_AXI_STATE_DIR = previousStateDir;
     await server.close();
     await rm(dir, { force: true, recursive: true });
   }
