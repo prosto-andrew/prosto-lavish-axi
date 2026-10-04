@@ -2111,6 +2111,35 @@ test("served content security policies name only sources the CSP host-source gra
   }
 });
 
+// The design snippet imports Mermaid as a module from the sandboxed artifact frame. Module scripts and
+// their chunk imports are CORS-gated, and that frame's origin is opaque, so without the header the
+// import fails and no diagram (and no inline whiteboard) ever renders.
+test("vendored Mermaid modules answer CORS so the opaque-origin artifact frame can import them", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-mermaid-"));
+  const mermaidDir = path.join(dir, "mermaid");
+  await mkdir(path.join(mermaidDir, "chunks", "mermaid.esm.min"), { recursive: true });
+  await writeFile(path.join(mermaidDir, "mermaid.esm.min.mjs"), "export default {};\n");
+  await writeFile(path.join(mermaidDir, "chunks", "mermaid.esm.min", "chunk-TEST.mjs"), "export const x = 1;\n");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    mermaidAssetsDir: mermaidDir,
+  });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    for (const asset of ["mermaid.esm.min.mjs", "chunks/mermaid.esm.min/chunk-TEST.mjs"]) {
+      const res = await fetch(`${base}/design/mermaid/${asset}`, { headers: { origin: "null" } });
+      assert.equal(res.status, 200, asset);
+      assert.equal(res.headers.get("access-control-allow-origin"), "*", asset);
+      assert.match(res.headers.get("content-type") || "", /javascript/, asset);
+    }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("/artifact serves files copied under the artifact directory", async () => {
   const parent = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const dir = path.join(parent, ".lavish");

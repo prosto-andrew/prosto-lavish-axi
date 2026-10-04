@@ -203,6 +203,16 @@ export function defaultWhiteboardAssetsDir() {
   return fileURLToPath(new URL("../dist/whiteboard", import.meta.url));
 }
 
+// LAVISH-HARDENED: the vendored Mermaid ESM bundle (the module plus its chunk graph), so an
+// artifact that renders Mermaid never reaches out to a CDN. Resolved the same way as the
+// whiteboard bundle: the packaged copy when this file runs from dist/, the built copy when the
+// server is spawned from this checkout's src/.
+export function defaultMermaidAssetsDir() {
+  const packaged = fileURLToPath(new URL("./design/mermaid", import.meta.url));
+  if (existsSync(packaged)) return packaged;
+  return fileURLToPath(new URL("../dist/design/mermaid", import.meta.url));
+}
+
 // Whiteboard scene saves carry full Excalidraw scenes (and, at queue time, a
 // PNG preview data URL), which outgrow the default 2 MB JSON cap. Only the
 // whiteboard write routes get the larger limit.
@@ -340,6 +350,7 @@ export async function serve({
   lookupHost,
   bindRecoveryDelaysMs = BIND_RECOVERY_DELAYS_MS,
   whiteboardAssetsDir = defaultWhiteboardAssetsDir(),
+  mermaidAssetsDir = defaultMermaidAssetsDir(),
 } = {}) {
   // Keep the transport dependency off fast metadata paths such as `--version`.
   const { WebSocket, WebSocketServer } = await import("ws");
@@ -1531,17 +1542,16 @@ export async function serve({
     }
   });
 
-  // LAVISH-HARDENED: vendored Mermaid ESM bundle (the module plus its chunk graph), so an
-  // artifact that renders Mermaid never reaches out to a CDN. Resolved the same
-  // way as the other design assets: the packaged copy when this file runs from
-  // dist/, the built copy when the server is spawned from this checkout's src/
-  // (which is what resolveServerEntry does whenever bin/ is present).
-  const hardenedMermaidDir = (() => {
-    const packaged = fileURLToPath(new URL("./design/mermaid", import.meta.url));
-    if (existsSync(packaged)) return packaged;
-    return fileURLToPath(new URL("../dist/design/mermaid", import.meta.url));
-  })();
-  app.use("/design/mermaid", express.static(hardenedMermaidDir));
+  // LAVISH-HARDENED: the vendored Mermaid bundle (see defaultMermaidAssetsDir). The design
+  // snippet imports it as a module from the artifact frame, whose sandbox makes its origin
+  // opaque, and module scripts - the chunk imports included - are CORS-gated, so this static,
+  // public-content route must answer Access-Control-Allow-Origin: * or no diagram renders.
+  app.use(
+    "/design/mermaid",
+    express.static(mermaidAssetsDir, {
+      setHeaders: (res) => res.setHeader("access-control-allow-origin", "*"),
+    }),
+  );
 
   app.get("/design/:asset", async (req, res, next) => {
     try {
