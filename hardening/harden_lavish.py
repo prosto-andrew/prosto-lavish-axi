@@ -334,7 +334,7 @@ export const DESIGN_CDN_URLS = {{
     P.edit(
         "src/design-reference.js",
         'export const MERMAID_VERSION = "11.15.0";',
-        f'// {MARK}: pinned to the copy vendored into dist/design/mermaid by the build.\nexport const MERMAID_VERSION = "11.12.1";',
+        f'// {MARK}: pinned to the copy vendored into dist/design/mermaid by the build.\nexport const MERMAID_VERSION = "11.16.1";',
         "pin mermaid to vendored copy",
     )
     P.edit(

@@ -4,12 +4,14 @@ import test from "node:test";
 import {
   createWhiteboardPersistencePayload,
   findDuplicateElementIds,
+  installMermaidRenderIdPrefixShim,
   normalizeExcalidrawSceneTarget,
   repairSavedSceneTextMetrics,
   resolveWhiteboardInitAction,
   restoreMermaidLabelLineBreaks,
   sanitizeSceneLink,
   sceneIsImageFallback,
+  stripMermaidRenderIdPrefix,
   summarizeSceneEdits,
   SUMMARY_MAX_LINE_CHARS,
 } from "../src/whiteboard-core.js";
@@ -612,4 +614,78 @@ test("restoreMermaidLabelLineBreaks leaves single-line labels and non-label fiel
   assert.deepEqual(out[1], label);
   assert.equal(out[2].label.text, "yes");
   assert.equal(out[2].id, "a1");
+});
+
+// ---------------------------------------------------------------------------
+// Mermaid render-id prefix
+// mermaid >= 11.14 prefixes every element id in a rendered SVG with the render id,
+// and the `url(#...)` references to them too. The converter looks elements up by the
+// unprefixed ids diagram.db reports, so a prefixed render degrades class, ER, and
+// state diagrams and subgraph flowcharts to an image. These strings are excerpts of
+// real mermaid 11.16.1 output for the converter's render id.
+// ---------------------------------------------------------------------------
+
+const RENDER_ID = "mermaid-to-excalidraw-1";
+
+test("stripMermaidRenderIdPrefix restores the ids and references the converter looks up", () => {
+  const svg = [
+    `<svg id="${RENDER_ID}" class="classDiagram"><style>#${RENDER_ID} .node rect{fill:#ECECFF;}</style>`,
+    `<g class="node default" id="${RENDER_ID}-classId-Animal-0" data-look="classic"></g>`,
+    `<path id="${RENDER_ID}-id_Animal_Dog_1" marker-end="url(#${RENDER_ID}-arrowhead)"></path>`,
+    `<marker id="${RENDER_ID}_class-extensionStart"></marker>`,
+    `<filter id="${RENDER_ID}-drop-shadow"></filter></svg>`,
+  ].join("");
+  const out = stripMermaidRenderIdPrefix(svg, RENDER_ID);
+  assert.match(out, /<g class="node default" id="classId-Animal-0"/);
+  assert.match(out, /<path id="id_Animal_Dog_1" marker-end="url\(#arrowhead\)">/);
+  assert.match(out, /<filter id="drop-shadow">/);
+  // The svg's own id, the CSS scoped to it, and the pre-11.14 underscore marker ids
+  // carry no "<renderId>-" prefix and stay as they are.
+  assert.match(out, new RegExp(`<svg id="${RENDER_ID}" class="classDiagram"><style>#${RENDER_ID} \\.node rect`));
+  assert.match(out, new RegExp(`<marker id="${RENDER_ID}_class-extensionStart">`));
+  assert.doesNotMatch(out, new RegExp(`${RENDER_ID}-`));
+});
+
+test("stripMermaidRenderIdPrefix leaves an unprefixed render and a longer render id alone", () => {
+  const legacy = `<svg id="${RENDER_ID}"><g id="classId-Animal-0"></g><path marker-end="url(#${RENDER_ID}_arrow)"></path></svg>`;
+  assert.equal(stripMermaidRenderIdPrefix(legacy, RENDER_ID), legacy);
+  // Render ids are sequential: "...-1" must not eat the prefix of "...-10".
+  const other = `<g id="${RENDER_ID}0-flowchart-a-0"></g><path marker-end="url(#${RENDER_ID}0-arrowhead)"></path>`;
+  assert.equal(stripMermaidRenderIdPrefix(other, RENDER_ID), other);
+});
+
+test("stripMermaidRenderIdPrefix leaves label text that only mentions the render id", () => {
+  const svg = `<g id="${RENDER_ID}-flowchart-a-0"><span>see ${RENDER_ID}-notes</span></g>`;
+  assert.equal(
+    stripMermaidRenderIdPrefix(svg, RENDER_ID),
+    `<g id="flowchart-a-0"><span>see ${RENDER_ID}-notes</span></g>`,
+  );
+});
+
+test("installMermaidRenderIdPrefixShim strips the prefix from what render returns, once", async () => {
+  const calls = [];
+  const bindFunctions = () => {};
+  const fakeMermaid = {
+    render: async (id, text, container) => {
+      calls.push({ id, text, container });
+      return {
+        svg: `<svg id="${id}"><g id="${id}-flowchart-a-0"></g></svg>`,
+        diagramType: "flowchart-v2",
+        bindFunctions,
+      };
+    },
+  };
+  installMermaidRenderIdPrefixShim(fakeMermaid);
+  const shimmed = fakeMermaid.render;
+  installMermaidRenderIdPrefixShim(fakeMermaid);
+  assert.equal(fakeMermaid.render, shimmed, "a second install does not wrap the wrapper");
+
+  const container = {};
+  const result = await fakeMermaid.render(RENDER_ID, "flowchart TD\n  a", container);
+  assert.deepEqual(calls, [{ id: RENDER_ID, text: "flowchart TD\n  a", container }]);
+  assert.deepEqual(result, {
+    svg: `<svg id="${RENDER_ID}"><g id="flowchart-a-0"></g></svg>`,
+    diagramType: "flowchart-v2",
+    bindFunctions,
+  });
 });

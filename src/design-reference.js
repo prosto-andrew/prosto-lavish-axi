@@ -3,7 +3,7 @@ import { listPlaybooks, PLAYBOOK_ROUTER_INSTRUCTION } from "./playbooks.js";
 export const TAILWIND_BROWSER_VERSION = "4.2.4";
 export const DAISYUI_VERSION = "5.5.19";
 // LAVISH-HARDENED: pinned to the copy vendored into dist/design/mermaid by the build.
-export const MERMAID_VERSION = "11.12.1";
+export const MERMAID_VERSION = "11.16.1";
 
 // LAVISH-HARDENED: artifacts load styling from this machine's own Lavish server instead
 // of a public CDN, so opening one makes no outbound request. `export` inlines
