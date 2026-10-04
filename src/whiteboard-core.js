@@ -220,6 +220,43 @@ export function findDuplicateElementIds(elements) {
   return [...duplicates];
 }
 
+// mermaid >= 11.14 prefixes every element id in a rendered SVG with the render id
+// (`<renderId>-classId-Animal-0`), and the `url(#...)` references to them too. The
+// converter looks elements up by the unprefixed ids diagram.db reports, so without
+// this every class, ER, and state diagram, and every flowchart with a subgraph,
+// silently falls back to an image (mermaid-to-excalidraw#108). Dropping the prefix
+// from ids and their `#` references together gives back the SVG the converter was
+// written against. The svg's own id, which mermaid's CSS is scoped to, has no
+// trailing "-" and stays. An unprefixed (pre-11.14) render passes through unchanged.
+/**
+ * @param {string} svg
+ * @param {string} renderId
+ * @returns {string}
+ */
+export function stripMermaidRenderIdPrefix(svg, renderId) {
+  const prefix = `${renderId}-`;
+  return String(svg).replaceAll(`id="${prefix}`, 'id="').replaceAll(`#${prefix}`, "#");
+}
+
+// Applies stripMermaidRenderIdPrefix to every `mermaid.render` result. The converter
+// calls `mermaid.render` on the same module instance the frame imports, so this must
+// run before the first conversion; test/whiteboard-pins.test.js keeps the two on one
+// mermaid. Installing twice keeps a single wrapper.
+/**
+ * @param {{ render: (id: string, ...rest: any[]) => Promise<{ svg: string }> }} mermaid
+ */
+export function installMermaidRenderIdPrefixShim(mermaid) {
+  const render = mermaid.render;
+  if (/** @type {any} */ (render).stripsRenderIdPrefix) return;
+  /** @param {string} id @param {any[]} rest */
+  const shimmed = async (id, ...rest) => {
+    const result = await render(id, ...rest);
+    return { ...result, svg: stripMermaidRenderIdPrefix(result.svg, id) };
+  };
+  shimmed.stripsRenderIdPrefix = true;
+  mermaid.render = shimmed;
+}
+
 // Excalidraw measures text synchronously while materializing skeletons. Its
 // bundled fonts load asynchronously, so the first pass also gives the caller
 // the concrete text elements needed to request exactly those fonts. Always

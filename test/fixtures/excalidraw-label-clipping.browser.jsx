@@ -2,14 +2,19 @@
 
 import { parseMermaidToExcalidraw } from "@excalidraw/mermaid-to-excalidraw";
 import { convertToExcalidrawElements, exportToCanvas, FONT_FAMILY } from "@excalidraw/excalidraw";
+import mermaid from "mermaid";
 
 import {
   convertExcalidrawSkeletonsAfterFontsLoad,
   findDuplicateElementIds,
+  installMermaidRenderIdPrefixShim,
   repairSavedSceneTextMetrics,
   restoreMermaidLabelLineBreaks,
 } from "../../src/whiteboard-core.js";
 import fixture from "./excalidraw-label-clipping.json" with { type: "json" };
+
+// As the whiteboard frame does before its first conversion.
+installMermaidRenderIdPrefixShim(mermaid);
 
 /** @type {any} */ (window).EXCALIDRAW_ASSET_PATH = `${location.origin}/whiteboard-assets/`;
 

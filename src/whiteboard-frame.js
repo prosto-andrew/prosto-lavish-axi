@@ -16,6 +16,7 @@
 // inside opaque origins, exactly like the artifact iframe.
 
 import { parseMermaidToExcalidraw } from "@excalidraw/mermaid-to-excalidraw";
+import mermaid from "mermaid";
 import {
   convertToExcalidrawElements,
   Excalidraw,
@@ -33,6 +34,7 @@ import {
   convertExcalidrawSkeletonsAfterFontsLoad,
   createWhiteboardPersistencePayload,
   findDuplicateElementIds,
+  installMermaidRenderIdPrefixShim,
   repairSavedSceneTextMetrics,
   resolveWhiteboardInitAction,
   restoreMermaidLabelLineBreaks,
@@ -42,6 +44,10 @@ import {
   summarizeSceneEdits,
   WHITEBOARD_TEXT_METRICS_VERSION,
 } from "./whiteboard-core.js";
+
+// Before any conversion: the pinned mermaid prefixes rendered ids, which the
+// converter does not expect (see installMermaidRenderIdPrefixShim).
+installMermaidRenderIdPrefixShim(mermaid);
 
 const SAVE_DEBOUNCE_MS = 800;
 

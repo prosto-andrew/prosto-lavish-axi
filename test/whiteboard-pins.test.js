@@ -1,23 +1,40 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { createRequire } from "node:module";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 // The Mermaid-to-Excalidraw converter reaches into mermaid's rendered DOM and
-// diagram.db internals, and versions past 11.13.0 silently degrade class/ER/
-// state diagrams and subgraph flowcharts to non-editable image fallbacks
-// (mermaid-to-excalidraw#108). The whiteboard bundle therefore pins mermaid
-// EXACTLY - independent of the newer Mermaid CDN version artifacts use for
-// rendering. If a bump is attempted, this test forces a deliberate re-probe of
-// native conversion before it lands.
+// diagram.db internals, so a mermaid release can silently degrade class/ER/state
+// diagrams and subgraph flowcharts to non-editable image fallbacks
+// (mermaid-to-excalidraw#108). 11.14.0 did, by prefixing rendered ids, which
+// installMermaidRenderIdPrefixShim in src/whiteboard-core.js undoes. mermaid is
+// therefore pinned EXACTLY, and the same copy is vendored for artifacts. A bump
+// changes this test first, and must pass the native-conversion re-probe in
+// test/whiteboard-render.browser.test.js before it lands.
 
 const REQUIRED_EXACT_PINS = {
-  mermaid: "11.12.1",
+  mermaid: "11.16.1",
   "@excalidraw/excalidraw": "0.18.1",
   "@excalidraw/mermaid-to-excalidraw": "2.2.2",
 };
 
 function readJson(path) {
   return JSON.parse(readFileSync(new URL(path, import.meta.url), "utf8"));
+}
+
+// The version a bare `import "<name>"` inside `packageDir` reaches, found the way Node
+// and esbuild look it up: node_modules directories upward from the package's real path.
+// Under pnpm that is the package's own dependency, not the top-level node_modules copy.
+function versionResolvedFrom(packageDir, name) {
+  const real = realpathSync(fileURLToPath(new URL(packageDir, import.meta.url)));
+  const require = createRequire(path.join(real, "package.json"));
+  for (const dir of require.resolve.paths(name) ?? []) {
+    const manifest = path.join(dir, name, "package.json");
+    if (existsSync(manifest)) return JSON.parse(readFileSync(manifest, "utf8")).version;
+  }
+  return undefined;
 }
 
 test("whiteboard dependencies are pinned exactly in package.json", () => {
@@ -27,9 +44,19 @@ test("whiteboard dependencies are pinned exactly in package.json", () => {
   }
 });
 
-test("the installed mermaid the whiteboard bundles is the pinned version", () => {
+test("the installed mermaid the build vendors for artifacts is the pinned version", () => {
   const installed = readJson("../node_modules/mermaid/package.json");
   assert.equal(installed.version, REQUIRED_EXACT_PINS.mermaid);
+});
+
+// The whiteboard bundle gets mermaid through the converter's own import, and the
+// converter asks only for `^11.12.1`, so a lockfile can keep it on an older mermaid
+// after the top-level pin moves. Fix that with `pnpm dedupe`, never an override.
+test("the mermaid the whiteboard converter imports is the pinned version", () => {
+  assert.equal(
+    versionResolvedFrom("../node_modules/@excalidraw/mermaid-to-excalidraw", "mermaid"),
+    REQUIRED_EXACT_PINS.mermaid,
+  );
 });
 
 test("the converter and editor resolve to their pinned versions", () => {

@@ -190,6 +190,31 @@ test("real Excalidraw rendering keeps loaded-font labels inside their text bound
   assert.ok(result.opaquePixels >= 1000);
 });
 
+// The live re-probe test/whiteboard-pins.test.js asks for before a mermaid bump: a
+// release that changes the internals the converter reads degrades diagrams to a
+// non-editable image without an error anyone sees.
+test("the pinned mermaid converts every supported diagram type to editable shapes", { timeout: 90_000 }, async (t) => {
+  const result = await runBrowserFixture(t, "mermaid-native-conversion");
+  if (!result) return;
+  for (const [name, diagram] of Object.entries(result.diagrams)) {
+    assert.deepEqual(
+      { imageFallback: diagram.imageFallback, missingLabels: diagram.missingLabels, errors: diagram.errors },
+      { imageFallback: false, missingLabels: [], errors: [] },
+      `${name} did not convert natively`,
+    );
+    assert.ok(diagram.elements > 0, `${name} produced no elements`);
+  }
+  assert.deepEqual(Object.keys(result.diagrams), [
+    "flowchart",
+    "subgraphFlowchart",
+    "sequence",
+    "class",
+    "er",
+    "state",
+  ]);
+  assert.equal(result.control.imageFallback, true, "an unsupported diagram type must still become an image");
+});
+
 test("mounted Excalidraw autosaves prompt only after genuine edits", { timeout: 90_000 }, async (t) => {
   const result = await runBrowserFixture(t, "excalidraw-autosave-conflict");
   if (!result) return;

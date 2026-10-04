@@ -10,7 +10,7 @@ The whiteboard bundle (`dist/whiteboard/`) is built from these packages by `scri
 | ---------------------------------------------------- | ------- | ------------------------------------------------- |
 | `@excalidraw/excalidraw`                             | MIT     | Copyright (c) 2020 Excalidraw                     |
 | `@excalidraw/mermaid-to-excalidraw`                  | MIT     | Copyright (c) 2023 Excalidraw                     |
-| `mermaid` (exact 11.12.1, bundled for the converter) | MIT     | Copyright (c) 2014 - 2022 Knut Sveidqvist         |
+| `mermaid` (exact 11.16.1, bundled for the converter) | MIT     | Copyright (c) 2014 - 2022 Knut Sveidqvist         |
 | `react`, `react-dom`                                 | MIT     | Copyright (c) Meta Platforms, Inc. and affiliates |
 
 The full MIT license text applies to each of the packages above:
