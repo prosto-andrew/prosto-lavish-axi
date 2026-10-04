@@ -15,6 +15,7 @@ process.env.LAVISH_AXI_LINK_HOST = "127.0.0.1";
 
 import {
   allowsAllHosts,
+  artifactContentSecurityPolicy,
   buildAllowedHostnames,
   CHROME_BOOT_FAILSAFE_MS,
   CHROME_LAYOUT_GATE_MAX_HOLD_MS,
@@ -33,6 +34,7 @@ import {
   resolveIdleTimeoutMs,
   resolveWatchTarget,
   serve,
+  whiteboardContentSecurityPolicy,
 } from "../src/server.js";
 import { canonicalFile, sessionKey, SessionStore } from "../src/session-store.js";
 
@@ -2093,6 +2095,22 @@ test("a host option cannot make serve bind anything but loopback", async () => {
   }
 });
 
+// CSP host-source grammar has no bracketed IPv6 hosts: Chromium discards such a source and logs a
+// console error for every directive that names it, so it protects nothing.
+test("served content security policies name only sources the CSP host-source grammar accepts", () => {
+  for (const [label, policy] of [
+    ["artifact", artifactContentSecurityPolicy(4387)],
+    ["whiteboard", whiteboardContentSecurityPolicy(4387)],
+  ]) {
+    const sources = [...policy.matchAll(/https?:\/\/[^\s;]+/g)].map((match) => match[0]);
+    assert.ok(sources.length > 0, `${label} policy names no loopback source`);
+    for (const source of sources) {
+      assert.match(source, /^https?:\/\/[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*(:\d+)?$/, `${label} names ${source}`);
+    }
+    assert.ok(!policy.includes("'self'"), `${label} policy uses 'self', which matches nothing from an opaque origin`);
+  }
+});
+
 test("/artifact serves files copied under the artifact directory", async () => {
   const parent = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const dir = path.join(parent, ".lavish");
@@ -2145,7 +2163,11 @@ test("/artifact serves files copied under the artifact directory", async () => {
       // page cannot load its own assets.
       assert.ok(!policy.includes("'self'"), `${label} uses 'self', which is meaningless here`);
       for (const source of policy.matchAll(/https?:\/\/[^\s;]+/g)) {
-        assert.match(source[0], /^http:\/\/(127\.0\.0\.1|localhost|\[::1\])/, `${label} allows ${source[0]}`);
+        assert.match(
+          source[0],
+          new RegExp(`^http://(127\\.0\\.0\\.1|localhost):${port}$`),
+          `${label} allows ${source[0]}`,
+        );
       }
     };
 

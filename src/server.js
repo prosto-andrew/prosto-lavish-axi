@@ -121,6 +121,9 @@ const BROWSER_DISCONNECT_GRACE_MS = 10_000;
 // so active documents stay opaque-origin even when they are top-level.
 const ARTIFACT_SANDBOX_DIRECTIVE =
   "sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads";
+// LAVISH-HARDENED: exactly the flags of the iframes Lavish puts the whiteboard frame
+// in (the chrome overlay and the SDK's inline embed). See artifactSourceDirectives.
+const WHITEBOARD_SANDBOX_DIRECTIVE = "sandbox allow-scripts allow-popups";
 
 // LAVISH-HARDENED: the sandbox directive alone only makes the document an opaque
 // origin - it places no limit on where the page may send data. Everything this
@@ -131,17 +134,24 @@ const ARTIFACT_SANDBOX_DIRECTIVE =
 //
 // The sources must be spelled out rather than written as 'self': with the sandbox
 // directive and no allow-same-origin, the document's origin is opaque, and 'self'
-// would match nothing at all - it would block the page's own assets. All three
-// loopback spellings are listed because the source list is compared against the
-// document URL the user actually opened, not against the address we bound to.
+// would match nothing at all - it would block the page's own assets. The source
+// list is compared against the document URL the user actually opened, so it names
+// both spellings a session link can use: 127.0.0.1 (the default link host) and
+// localhost (LAVISH_AXI_LINK_HOST=localhost). The IPv6 loopback is deliberately
+// absent: CSP host-source grammar has no bracketed hosts, so browsers discard
+// `http://[::1]:<port>` with a console error per directive, and this server binds
+// 127.0.0.1 only, so a [::1] URL is refused before any policy applies. Never cover
+// it with a scheme source such as `http:`. See docs/invariants.md (Export).
 function artifactLoopbackSources(port) {
-  return `http://127.0.0.1:${port} http://localhost:${port} http://[::1]:${port}`;
+  return `http://127.0.0.1:${port} http://localhost:${port}`;
 }
 
-// Source directives only. The whiteboard frame reuses these WITHOUT the sandbox
-// directive: its iframe element already carries a narrower sandbox attribute
-// (allow-scripts allow-popups), and the two intersect, so repeating a wider one
-// here would say nothing while inviting confusion about which list is in force.
+// Source directives only. The whiteboard frame pairs these with its own sandbox
+// directive carrying exactly its iframes' flags, never the artifact's wider list:
+// framed by Lavish, the directive and the iframe attribute intersect to the same
+// set, but any page may frame /whiteboard-frame directly - becoming the window.top
+// the frame takes commands from - or open it top-level, and the directive is what
+// keeps the frame an opaque origin there too.
 function artifactSourceDirectives(port) {
   const local = artifactLoopbackSources(port);
   return [
@@ -165,7 +175,7 @@ export function artifactContentSecurityPolicy(port) {
 }
 
 export function whiteboardContentSecurityPolicy(port) {
-  return artifactSourceDirectives(port).join("; ");
+  return [WHITEBOARD_SANDBOX_DIRECTIVE, ...artifactSourceDirectives(port)].join("; ");
 }
 // Sweep orphaned/expired attachments periodically, not just at startup: a
 // detached server can run for days, and an upload whose /prompts follow-up never
