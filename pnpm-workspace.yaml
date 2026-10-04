@@ -12,3 +12,20 @@ onlyBuiltDependencies:
   - esbuild
 allowBuilds:
   esbuild: true
+
+# Security floors for vulnerable transitive dependencies. npm reads the same rules
+# from the top-level "overrides" field in package.json (npm is how the hardening
+# docs install this fork); test/dependency-overrides.test.js keeps the two equal.
+# Never override mermaid or the other exact whiteboard pins. sass>chokidar removes
+# braces (no fixed release exists) from sass's unused watch mode; it is 4.0.1 because
+# 4.0.2+ were published without provenance, which trustPolicy refuses.
+overrides:
+  "@toon-format/toon@^2": "^2.3.1"
+  "body-parser@^2": "^2.3.0"
+  "qs@^6": "^6.16.0"
+  "brace-expansion@^5": "^5.0.12"
+  "dompurify@^3": "^3.4.13"
+  "lodash-es@^4": "^4.18.1"
+  "nanoid@^3": "^3.3.18"
+  "@excalidraw/mermaid-to-excalidraw>nanoid": "^5.1.16"
+  "sass>chokidar": "4.0.1"
