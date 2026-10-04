@@ -86,7 +86,7 @@ export const POLL_AGENT_REPLY_RULE =
 const POLL_AGENT_REPLY_HELP_POINTER =
   "The Conversation panel's Markdown subset is in README's Feedback controls bullet.";
 const POLL_AGENT_REPLY_NEXT_POINTER =
-  "The Conversation panel's Markdown subset is in `lavish-axi poll --help` and README.";
+  "The Conversation panel's Markdown subset is in `lavish-safe poll --help` and README.";
 const POLL_VALUE_FLAGS = ["--agent-reply", "--agent-reply-file", "--timeout-ms", "--owner"];
 const AGENT_REPLY_JSON_LIMIT_BYTES = 2 * 1024 * 1024;
 const AGENT_REPLY_JSON_ENVELOPE_BYTES = Buffer.byteLength(JSON.stringify({ agent_reply: "" }));
@@ -421,7 +421,7 @@ async function pollCommand(args) {
     });
     if (response.code === "LISTENER_REPLACED") {
       throw new AxiError("Lavish Editor poll listener was replaced by a takeover", "LISTENER_REPLACED", [
-        `Re-run lavish-axi poll ${absolute} only if you intend to take over listening`,
+        `Re-run lavish-safe poll ${absolute} only if you intend to take over listening`,
       ]);
     }
     return createPollOutput({ file: absolute, response, agent: detectInvokingAgent(process.env) });
@@ -435,13 +435,13 @@ async function pollCommand(args) {
 }
 
 const REPLY_VALUE_FLAGS = ["--agent-reply", "--agent-reply-file"];
-const REPLY_TOO_LARGE_HELP = "Shorten the reply, then retry `lavish-axi reply <html-file>`";
+const REPLY_TOO_LARGE_HELP = "Shorten the reply, then retry `lavish-safe reply <html-file>`";
 
 async function replyCommand(args) {
   const file = firstPositionalArg(args, REPLY_VALUE_FLAGS);
   if (!file) {
     throw new AxiError("HTML file path is required", "VALIDATION_ERROR", [
-      'Run `lavish-axi reply <html-file> --agent-reply "<message>"`',
+      'Run `lavish-safe reply <html-file> --agent-reply "<message>"`',
     ]);
   }
   const inline = inspectValueFlag(args, "--agent-reply");
@@ -449,7 +449,7 @@ async function replyCommand(args) {
   if (!inline.present && !fromFile.present) {
     throw new AxiError("An agent reply is required", "VALIDATION_ERROR", [
       'Pass exactly one of --agent-reply "<message>" or --agent-reply-file <path> (`-` reads stdin)',
-      "Use `lavish-axi poll <html-file> --agent-reply` when the reply should be followed by a wait for feedback",
+      "Use `lavish-safe poll <html-file> --agent-reply` when the reply should be followed by a wait for feedback",
     ]);
   }
   const text = await resolveAgentReply(args, { tooLargeHelp: REPLY_TOO_LARGE_HELP });
@@ -468,7 +468,7 @@ async function replyCommand(args) {
 function createReplyOutput(file) {
   return {
     reply: { file, status: "sent" },
-    next_step: `Lavish Editor accepted the reply for ${file} and is no longer showing Working. Run \`lavish-axi poll ${file}\` when you are ready to wait for more feedback.`,
+    next_step: `Lavish Editor accepted the reply for ${file} and is no longer showing Working. Run \`lavish-safe poll ${file}\` when you are ready to wait for more feedback.`,
   };
 }
 
@@ -1643,8 +1643,8 @@ export async function postAgentReply(url, text, file, { timeoutMs = AGENT_REPLY_
   } catch {
     if (signal.aborted) throw agentReplyReceiptTimeoutError(file, timeoutMs);
     throw new AxiError("Lavish Editor server connection failed", "SERVER_ERROR", [
-      "Run `lavish-axi server --verbose` or inspect `~/.lavish-axi/server.log` (`LAVISH_AXI_STATE_DIR/server.log` when set) for server startup or crash diagnostics",
-      `Re-run \`lavish-axi reply ${file} --agent-reply "<message>"\` after the server is reachable`,
+      "Run `lavish-safe server --verbose` or inspect `~/.lavish-axi/server.log` (`LAVISH_AXI_STATE_DIR/server.log` when set) for server startup or crash diagnostics",
+      `Re-run \`lavish-safe reply ${file} --agent-reply "<message>"\` after the server is reachable`,
     ]);
   }
   let payload = null;
@@ -1655,7 +1655,7 @@ export async function postAgentReply(url, text, file, { timeoutMs = AGENT_REPLY_
   }
   if (response.status === 404) {
     throw new AxiError("No active Lavish Editor session for this file", "NOT_FOUND", [
-      `Run \`lavish-axi ${file}\` first`,
+      `Run \`lavish-safe ${file}\` first`,
     ]);
   }
   if (response.status === 409 && payload?.status === "ended") {
@@ -1665,7 +1665,7 @@ export async function postAgentReply(url, text, file, { timeoutMs = AGENT_REPLY_
   }
   if (!response.ok || payload?.status !== "sent") {
     throw new AxiError(`Lavish Editor did not accept the agent reply (${response.status})`, "SERVER_ERROR", [
-      `Confirm the session is open with \`lavish-axi ${file}\`, then re-run \`lavish-axi reply ${file}\``,
+      `Confirm the session is open with \`lavish-safe ${file}\`, then re-run \`lavish-safe reply ${file}\``,
     ]);
   }
   return payload;
@@ -1676,8 +1676,8 @@ function agentReplyReceiptTimeoutError(file, timeoutMs) {
     `Lavish Editor did not confirm the agent reply within ${timeoutMs}ms, so acceptance is unknown`,
     "SERVER_ERROR",
     [
-      "Run `lavish-axi server --verbose` or inspect `~/.lavish-axi/server.log` (`LAVISH_AXI_STATE_DIR/server.log` when set) for server diagnostics",
-      `Check the Lavish Editor conversation for the reply before re-running \`lavish-axi reply ${file}\`, so it is not posted twice`,
+      "Run `lavish-safe server --verbose` or inspect `~/.lavish-axi/server.log` (`LAVISH_AXI_STATE_DIR/server.log` when set) for server diagnostics",
+      `Check the Lavish Editor conversation for the reply before re-running \`lavish-safe reply ${file}\`, so it is not posted twice`,
     ],
   );
 }

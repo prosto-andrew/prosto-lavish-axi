@@ -338,7 +338,7 @@ export async function serve({
   const autoTailscale = !envHost;
   const detect = detectTailscaleFn === undefined ? detectTailscale : detectTailscaleFn;
   const tailscale = !hosts?.length && autoTailscale && typeof detect === "function" ? await detect() : null;
-  // LAVISH-HARDENED: no `extraListenHosts` (upstream's --also-listen). Outside of tests passing
+  // LAVISH-HARDENED: no extra listen hosts (upstream's --also-listen). Outside of tests passing
   // `hosts` directly, resolveListenHosts is the loopback-only stub in ./paths.js.
   const requestedListenHosts = sanitizeListenHosts(
     hosts?.length ? hosts : resolveListenHosts({ host, env, tailscale }),

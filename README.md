@@ -1,6 +1,6 @@
 > ## Hardened fork - not upstream lavish-axi
 >
-> This fork is upstream **v0.1.62** with five capabilities removed **at source level**,
+> This fork is upstream **v0.1.82** with five capabilities removed **at source level**,
 > for private use on trusted machines. It is not a drop-in replacement for the published
 > package and is not meant to be published to npm.
 >
@@ -15,6 +15,10 @@
 > | `setup hooks` / `setup plugin`   | No persistent SessionStart hooks, no agent-plugin registration.                                                           |
 > | CDN asset loading                | Tailwind, DaisyUI and Mermaid are served by the local server; Mermaid is vendored at build time.                          |
 >
+> Two later upstream additions were not taken when merging 0.1.82: the opt-in Herdr chime
+> (0.1.74), which spawned a `herdr` binary from `PATH`, and multi-address serving (0.1.78):
+> `server --also-listen` is refused and the CLI looks for a running server on loopback only.
+>
 > The agent-facing help text (`--help`, `design`, `playbook`) was rewritten to match, so
 > nothing instructs an agent to publish, install hooks, or fetch from a CDN.
 >
@@ -22,10 +26,12 @@
 > [`hardening/INSTALL-WINDOWS.md`](hardening/INSTALL-WINDOWS.md) -
 > overview in [`hardening/SETUP.md`](hardening/SETUP.md)
 >
-> **Verify any checkout:** `npm install && node verify-hardening.mjs` -> _All 10 checks passed._
+> **Verify any checkout:** `npm install && node verify-hardening.mjs` -> _All 22 checks passed._
 >
-> **Re-applying to a newer version is deliberately blocked.** `hardening/harden_lavish.py`
-> refuses to run against anything but 0.1.62 - a newer upstream needs a fresh audit first.
+> **Newer upstream releases are merged, not re-patched.** `hardening/harden_lavish.py` is the
+> original patch script and refuses anything but 0.1.62. A newer upstream is merged into this
+> tree and audited; the version pinned in `verify-hardening.mjs` and both launchers is bumped
+> only once every check passes again.
 >
 > Run it only through `./lavish-safe` (or `lavish-safe.cmd`), never `npx lavish-axi`, which
 > would fetch the unhardened package.

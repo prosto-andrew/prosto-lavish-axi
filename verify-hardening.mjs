@@ -45,10 +45,14 @@ function mustContain(text, needle, where) {
   if (!text.includes(needle)) throw new Error(`${where} does not contain ${needle}`);
 }
 
-check("checkout is the audited version 0.1.62", () => {
+// The upstream release this tree was last merged from and audited against. Bump it only
+// together with the launchers (lavish-safe, lavish-safe.cmd) after re-running every check.
+const AUDITED_VERSION = "0.1.82";
+
+check(`checkout is the audited version ${AUDITED_VERSION}`, () => {
   const pkg = JSON.parse(read("package.json"));
-  if (pkg.version !== "0.1.62") throw new Error(`version is ${pkg.version}, expected 0.1.62`);
-  return "0.1.62";
+  if (pkg.version !== AUDITED_VERSION) throw new Error(`version is ${pkg.version}, expected ${AUDITED_VERSION}`);
+  return AUDITED_VERSION;
 });
 
 check("source: telemetry permanently disabled", () => {
@@ -96,8 +100,17 @@ check("source: assets served locally, not from a CDN", () => {
 check("build exists and is newer than the sources", () => {
   const entry = path.join(root, "dist/cli.mjs");
   if (!existsSync(entry)) throw new Error("dist/cli.mjs missing - run `npm install` once to build");
+  if (!existsSync(path.join(root, "dist/server.mjs"))) throw new Error("dist/server.mjs missing - run `npm run build`");
   const built = statSync(entry).mtimeMs;
-  const newest = ["src/cli.js", "src/server.js", "src/telemetry.js", "src/paths.js", "src/design-reference.js"]
+  const newest = [
+    "src/cli.js",
+    "src/server.js",
+    "src/telemetry.js",
+    "src/paths.js",
+    "src/design-reference.js",
+    "src/server-log.js",
+    "bin/lavish-axi-server.js",
+  ]
     .map((f) => statSync(path.join(root, f)).mtimeMs)
     .reduce((a, b) => Math.max(a, b), 0);
   if (built < newest) throw new Error("dist/cli.mjs is older than the patched sources - run `npm run build`");
@@ -111,7 +124,7 @@ check("build carries the hardening markers", () => {
 });
 
 check("build reaches no external host", () => {
-  for (const file of ["dist/cli.mjs", "dist/chrome-client.js"]) {
+  for (const file of ["dist/cli.mjs", "dist/server.mjs", "dist/chrome-client.js"]) {
     const text = read(file);
     // The bare hostname still appears in the two messages that explain why `share`
     // and `setup` are gone, so match the URL forms - an endpoint, not a mention.
@@ -299,7 +312,10 @@ check("CLI guidance names the launcher, never the upstream binary", () => {
   // invoking the package this build exists to avoid - and on a machine that blocks it,
   // stalling the review loop at its first step.
   const upstream = "lavish" + "-axi";
-  const runnable = new RegExp(upstream + "(?= (?:design|poll|playbook|end|export|stop|share|server|<|--))", "g");
+  const runnable = new RegExp(
+    upstream + "(?= (?:design|poll|reply|playbook|end|export|stop|share|setup|server|<|--))",
+    "g",
+  );
   for (const file of ["src/cli.js", "src/server.js", "src/design-reference.js", "src/playbooks.js", "dist/cli.mjs"]) {
     const hits = read(file).match(runnable);
     if (hits) throw new Error(`${file} still tells the agent to run the upstream binary (${hits.length}x)`);
@@ -308,6 +324,60 @@ check("CLI guidance names the launcher, never the upstream binary", () => {
   // which runs without the launcher's version and marker checks.
   mustContain(read("src/cli.js"), 'bin: "lavish-safe"', "src/cli.js");
   return "help, next_step and hints all point at lavish-safe";
+});
+
+check("server binds and dials loopback only after the upstream merge", () => {
+  // Upstream 0.1.78 added `server --also-listen <host>`, host inheritance across server
+  // replacements, and CLI discovery that dialed every local interface address. The flag is
+  // now a refusal, and nothing may sweep interfaces or hand extra hosts to serve().
+  const cli = read("src/cli.js");
+  const server = read("src/server.js");
+  mustContain(cli, "`--also-listen` is removed in this hardened build", "src/cli.js");
+  mustContain(cli, "function serverCandidateHosts() {\n  return [LOOPBACK_HOST];\n}", "src/cli.js");
+  for (const symbol of [
+    "local-address",
+    "localInterfaceAddresses",
+    "inheritedListenHosts",
+    "requiredServerHosts",
+    "extraListenHosts",
+    'push("--also-listen"',
+    "networkInterfaces",
+  ]) {
+    mustNotContain(cli, symbol, "src/cli.js");
+  }
+  for (const symbol of ["extraListenHosts", "localInterfaceAddresses", "networkInterfaces"]) {
+    mustNotContain(server, symbol, "src/server.js");
+  }
+  if (existsSync(path.join(root, "src/local-address.js"))) throw new Error("src/local-address.js is back");
+  for (const file of ["dist/cli.mjs", "dist/server.mjs"]) {
+    for (const symbol of ["localInterfaceAddresses", "inheritedListenHosts", "extraListenHosts"]) {
+      mustNotContain(read(file), symbol, file);
+    }
+  }
+  return "no --also-listen, no interface sweep, discovery probes 127.0.0.1";
+});
+
+check("no helper process is launched for notifications", () => {
+  // Upstream 0.1.74 added an opt-in chime that spawned a `herdr` binary from PATH. Like the
+  // deleted tailscale probe, this build launches no helper processes.
+  for (const file of ["src/cli.js", "src/server.js", "dist/cli.mjs", "dist/server.mjs"]) {
+    if (/herdr/i.test(read(file))) throw new Error(`${file} still references herdr`);
+  }
+  mustNotContain(read("src/server.js"), "Lavish-Poll-State", "src/server.js");
+  return "no herdr hook";
+});
+
+check("live-event WebSocket upgrades require this server's own Origin", () => {
+  // The WebSocket transport (upstream 0.1.65) is not covered by CORS, so the Host allowlist
+  // alone would let any page that learned a session key read its live events.
+  const server = read("src/server.js");
+  mustContain(server, "function handleEventUpgrade(req, socket, head) {", "src/server.js");
+  mustContain(
+    server,
+    "if (!hostAllowed || !req.headers.origin || !isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {",
+    "src/server.js",
+  );
+  return "Host allowlist plus exact Origin";
 });
 
 check("mermaid is vendored for offline rendering", () => {

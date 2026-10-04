@@ -12,8 +12,8 @@ if not exist "%ROOT%\package.json" (
   echo lavish-safe: not a lavish-axi checkout: %ROOT% 1>&2
   exit /b 1
 )
-findstr /C:"\"version\": \"0.1.62\"" "%ROOT%\package.json" >nul || (
-  echo lavish-safe: this checkout is not version 0.1.62 - it was never audited. 1>&2
+findstr /C:"\"version\": \"0.1.82\"" "%ROOT%\package.json" >nul || (
+  echo lavish-safe: this checkout is not version 0.1.82 - it was never audited. 1>&2
   exit /b 1
 )
 if not exist "%ENTRY%" (

@@ -1,6 +1,6 @@
 # Hardened lavish-axi — setup
 
-This checkout is lavish-axi **0.1.62** with five capabilities removed **at source level**
+This checkout is lavish-axi **0.1.82** with five capabilities removed **at source level**
 (not merely switched off by an environment variable):
 
 | Removed                          | How                                                                                                                                                                          |
@@ -85,17 +85,21 @@ In `~/.claude/settings.json` (and the Windows equivalent):
 }
 ```
 
-## Re-applying after an update
+## Moving to a newer upstream
 
-`harden_lavish.py` (in the parent folder) is idempotent and refuses to run against any
-version other than 0.1.62. If you ever move to a newer lavish-axi, **re-audit first** —
-the script will fail loudly rather than silently leaving a capability in place:
+`harden_lavish.py` (in the parent folder) is the original patch script for 0.1.62 and refuses
+any other version. Newer upstream releases are **merged** into this tree instead, and every
+merge is a fresh audit: resolve conflicts in favour of the hardening, drop anything that adds a
+network destination, a non-loopback bind, a helper process, or a persistence hook, then
 
 ```
-python3 harden_lavish.py .
 npm run build
 node verify-hardening.mjs
 ```
+
+and bump the version pinned in `verify-hardening.mjs`, `lavish-safe`, and `lavish-safe.cmd`
+only once every check passes. The 0.1.82 merge left out upstream's Herdr chime (it spawned a
+`herdr` binary) and its multi-address serving (`server --also-listen`, interface-sweep discovery).
 
 ## What still touches the network
 

@@ -164,7 +164,7 @@ test("reply help and top-level help say when to prefer reply over poll --agent-r
   try {
     const top = await runCli(["--help"], { env });
     assert.equal(top.status, 0, top.stderr || top.stdout);
-    assert.match(top.stdout, /lavish-axi reply <html-file> --agent-reply/);
+    assert.match(top.stdout, /lavish-safe reply <html-file> --agent-reply/);
     assert.match(top.stdout, /not about to long-poll/);
     assert.match(top.stdout, /poll <html-file> --agent-reply/);
 
@@ -174,14 +174,14 @@ test("reply help and top-level help say when to prefer reply over poll --agent-r
     assert.match(reply.stdout, /--agent-reply-file <path>/);
     assert.match(reply.stdout, /Exit 0 only when the server answers that the reply was sent/);
     assert.match(reply.stdout, /not about to wait for more feedback/);
-    assert.match(reply.stdout, /lavish-axi poll <html-file> --agent-reply/);
+    assert.match(reply.stdout, /lavish-safe poll <html-file> --agent-reply/);
     assert.match(reply.stdout, /does not exit when the reply is accepted/);
 
     const poll = await runCli(["poll", "--help"], { env });
     assert.equal(poll.status, 0, poll.stderr || poll.stdout);
-    assert.match(poll.stdout, /lavish-axi reply <html-file> --agent-reply/);
+    assert.match(poll.stdout, /lavish-safe reply <html-file> --agent-reply/);
     assert.match(poll.stdout, /not about to long-poll/);
-    assert.match(poll.stdout, /lavish-axi poll report\.html --agent-reply "Renamed the payment step\."/);
+    assert.match(poll.stdout, /lavish-safe poll report\.html --agent-reply "Renamed the payment step\."/);
   } finally {
     await rm(stateDir, { recursive: true, force: true });
   }
@@ -277,7 +277,7 @@ test("reply refuses a missing session, an unreachable server, and a non-success 
       assert.notEqual(missing.status, 0);
       assert.match(missing.stdout, /No active Lavish Editor session for this file/);
       assert.match(missing.stdout, /NOT_FOUND/);
-      assert.match(missing.stdout, /lavish-axi/);
+      assert.match(missing.stdout, /lavish-safe/);
       assert.doesNotMatch(missing.stdout, /status: sent/);
     },
     { open: false },
@@ -428,7 +428,7 @@ test("reply fails with a timeout when the server stalls before headers or mid-bo
         (/** @type {import("axi-sdk-js").AxiError} */ error) => {
           assert.equal(error.code, "SERVER_ERROR");
           assert.match(error.message, /did not confirm the agent reply within 300ms/);
-          assert.ok(error.suggestions.some((hint) => hint.includes("lavish-axi reply /tmp/artifact.html")));
+          assert.ok(error.suggestions.some((hint) => hint.includes("lavish-safe reply /tmp/artifact.html")));
           return true;
         },
         stage,

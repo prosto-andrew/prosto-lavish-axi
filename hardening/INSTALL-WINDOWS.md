@@ -1,6 +1,6 @@
 # Установка hardened lavish на Windows (приложение Claude Code)
 
-Ставится **hardened-сборка** lavish-axi 0.1.62 из вашего форка —
+Ставится **hardened-сборка** lavish-axi 0.1.82 из вашего форка —
 копия, из исходников которой удалены телеметрия, публикация на сторонний хост, привязка
 к Tailscale/LAN, установка постоянных хуков и загрузка ассетов с CDN. Стоковый пакет из
 npm ставить нельзя ни при каких условиях.
@@ -47,7 +47,7 @@ node verify-hardening.mjs
 Ожидается:
 
 ```
-All 10 checks passed. This build is hardened.
+All 22 checks passed. This build is hardened.
 ```
 
 Десять проверок читают и исходники, и собранный `dist\cli.mjs`: что телеметрия отключена
@@ -73,7 +73,7 @@ All 10 checks passed. This build is hardened.
 Закрыть терминал, открыть заново, проверить:
 
 ```powershell
-lavish-safe --version    # => 0.1.62
+lavish-safe --version    # => 0.1.82
 ```
 
 ## Шаг 5. Установить скилл
@@ -140,7 +140,8 @@ lavish-safe setup hooks        # => `setup` is removed in this hardened build...
   `package-lock.json`, который создастся после первой установки (репозиторий идёт с
   `pnpm-lock.yaml`, а мы ставим через npm, поэтому без своего lock-файла версии
   подбираются заново по диапазонам `^`).
-- Переход на новую версию lavish-axi = новый аудит. Скрипт `hardening/harden_lavish.py`
-  намеренно откажется работать с любой версией кроме 0.1.62.
+- Переход на новую версию lavish-axi = слияние оригинала в форк и новый аудит
+  (`node verify-hardening.mjs`), см. `hardening/SETUP.md`. Скрипт `hardening/harden_lavish.py`
+  исторический: он патчит только 0.1.62 и с другими версиями работать откажется.
 - Держать что-либо запущенным не нужно: сервер гасится сам через 30 минут простоя и после
   закрытия последней сессии.

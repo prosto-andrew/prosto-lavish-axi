@@ -14,8 +14,8 @@ ENTRY="$ROOT/dist/cli.mjs"
 die() { printf 'lavish-safe: %s\n' "$1" >&2; exit 1; }
 
 [ -f "$ROOT/package.json" ] || die "not a lavish-axi checkout: $ROOT"
-grep -q '"version": "0.1.62"' "$ROOT/package.json" ||
-  die "this checkout is not version 0.1.62 - it was never audited. Re-audit before use."
+grep -q '"version": "0.1.82"' "$ROOT/package.json" ||
+  die "this checkout is not version 0.1.82 - it was never audited. Re-audit before use."
 
 [ -f "$ENTRY" ] || die "dist/cli.mjs is missing - run 'npm install' in $ROOT once to build it."
 
