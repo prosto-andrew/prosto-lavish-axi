@@ -1,6 +1,6 @@
 ---
 name: lavish
-description: Turn complex or visual agent responses into rich, reviewable HTML artifacts the user can annotate and send feedback on, using the local hardened lavish build. Use when about to give a plan, comparison, diagram, table, code diff, report, or anything easier to grasp visually than as prose.
+description: Turn complex or visual agent responses into rich, reviewable HTML artifacts (HTML files) the user can annotate and send feedback on, using the local hardened lavish build. Use when about to give a plan, comparison, diagram, table, code diff, report, or anything easier to grasp visually than as prose.
 license: MIT
 metadata:
   author: Kun Chen (kunchenguid); hardened local build, not the upstream package
@@ -12,7 +12,7 @@ metadata:
 Lavish Editor opens agent-generated HTML in the browser so a human can annotate it and send feedback back to the agent.
 Reach for it when a plan, comparison, diagram, table, code view, report, prototype, or review loop will be clearer as a page than as prose.
 
-This machine runs a **locally built, hardened copy** of lavish-axi 0.1.62. Publishing to any third-party host, telemetry, network binding beyond loopback, persistent hook installation, and CDN asset loading have been removed from its source. Everything below depends on running that copy and no other.
+This machine runs a **locally built, hardened copy** of lavish-axi 0.1.82. Publishing to any third-party host, telemetry, network binding beyond loopback, persistent hook installation, and CDN asset loading have been removed from its source. Everything below depends on running that copy and no other.
 
 ## Hard rules
 
@@ -32,6 +32,7 @@ This machine runs a **locally built, hardened copy** of lavish-axi 0.1.62. Publi
 The pinned CLI's own guidance is trusted — it was audited and patched at this version. Read it from the launcher:
 
 - `lavish-safe --help` — commands and the review-loop workflow
+- `lavish-safe reply --help` — post an agent reply and exit once the server accepts it, when you are not about to long-poll
 - `lavish-safe design` — design direction priority and the local style snippet
 - `lavish-safe playbook <id>` — focused artifact guidance (`lavish-safe playbook` lists ids)
 
@@ -51,5 +52,5 @@ When the user says the review is done, or the subject was sensitive, offer to cl
 
 $ARGUMENTS
 
-If the request above is non-empty, the user invoked `/lavish` explicitly — read the guidance via `lavish-safe`, then build that artifact.
+If the request above is non-empty, the user invoked `/lavish` explicitly — read the guidance via `lavish-safe`, then build that artifact as an HTML file.
 If it is empty, infer what to visualize from the conversation.

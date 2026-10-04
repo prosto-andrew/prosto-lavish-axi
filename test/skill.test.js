@@ -86,6 +86,8 @@ test("createSkillMarkdown stays short and points only at the local launcher", ()
   assert.match(md, /`lavish-safe --help`/);
   assert.match(md, /`lavish-safe design`/);
   assert.match(md, /`lavish-safe playbook <id>`/);
+  assert.match(md, /`lavish-safe reply --help`/);
+  assert.match(md, /not about to long-poll/);
 });
 
 test("createSkillMarkdown does not bake CLI-owned guidance into the skill", () => {

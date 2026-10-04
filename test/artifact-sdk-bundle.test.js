@@ -104,7 +104,7 @@ function cell(tag, text) {
   return element;
 }
 
-function bootSdk({ runAnimationFrames = false } = {}) {
+function bootSdk({ runAnimationFrames = false, revisionsScript = null, revisionMarkElements = [] } = {}) {
   const posted = [];
   const documentListeners = [];
   // Deferred work the SDK schedules, run only when a test asks for it: the draft-anchor settle
@@ -121,6 +121,7 @@ function bootSdk({ runAnimationFrames = false } = {}) {
   const body = createElement("body");
   appendTo(documentElement, head);
   appendTo(documentElement, body);
+  for (const element of revisionMarkElements) appendTo(body, element);
 
   const sandbox = {
     parent: { postMessage: (message) => posted.push(message) },
@@ -156,8 +157,9 @@ function bootSdk({ runAnimationFrames = false } = {}) {
       removeEventListener() {},
       createElement,
       getElementById: () => null,
-      querySelector: (selector) => documentQuery(selector),
-      querySelectorAll: () => [],
+      querySelector: (selector) =>
+        selector === "script[data-lavish-revisions]" ? revisionsScript : documentQuery(selector),
+      querySelectorAll: (selector) => (selector === "[data-lavish-revision]" ? revisionMarkElements : []),
       getSelection: () => null,
     },
   };
@@ -267,6 +269,43 @@ test("a requested layout diagnostic publishes even when the result is unchanged"
   assert.equal(diagnostics.length, 2);
   assert.equal(diagnostics[1].artifact_pass_sequence, diagnostics[0].artifact_pass_sequence + 1);
   assert.deepEqual(diagnostics[1].findings, diagnostics[0].findings);
+});
+
+test("the served SDK echoes the snapshot request id", () => {
+  const sdk = bootSdk();
+
+  sdk.sendChromeMessage({ type: "lavish:requestSnapshot", snapshot_request_id: "snapshot-17" });
+
+  const response = sdk.posted.at(-1);
+  assert.equal(response.type, "lavish:snapshot");
+  assert.equal(response.snapshot_request_id, "snapshot-17");
+  assert.equal(response.artifact_load_token, "load-token");
+});
+
+// readArtifactRevisions calls parseRevisionRegistry and collectRevisionMarks, which in turn call
+// the rest of the revision helper chain; a helper left out of the bundle only ReferenceErrors on
+// this real read, which a source-grep over the bundle text cannot catch.
+test("the served SDK bundle reports the artifact's own revision registry and marks", () => {
+  const revisionsScript = createElement("script");
+  revisionsScript.textContent = JSON.stringify([
+    { id: "r1", label: "Tightened header copy", summary: "Shortened the hero headline" },
+  ]);
+  const marked = createElement("h1");
+  marked.setAttribute("data-lavish-revision", "r1");
+  marked.textContent = "Ship faster";
+
+  const sdk = bootSdk({ revisionsScript, revisionMarkElements: [marked] });
+
+  const message = sdk.posted.find((entry) => entry.type === "lavish:revisions");
+  assert.ok(message, "the SDK reports the revision registry on load");
+  assert.equal(message.revisions.length, 1);
+  assert.equal(message.revisions[0].id, "r1");
+  assert.equal(message.revisions[0].label, "Tightened header copy");
+  assert.equal(message.revisions[0].mark_count, 1);
+  assert.equal(message.marks.length, 1);
+  assert.equal(message.marks[0].revision_id, "r1");
+  assert.equal(message.marks[0].selector, "html > body > h1");
+  assert.equal(message.marks[0].excerpt, "Ship faster");
 });
 
 test("the served SDK bundle queues a table-cell annotation without a missing-helper ReferenceError", () => {
@@ -523,4 +562,102 @@ test("the served SDK bundle drops a late restore once the user has opened a card
     sdk.posted.some((message) => message.type === "lavish:reviewDraftUnrestorable"),
     false,
   );
+});
+
+test("clicking an element with a queued note asks the chrome to edit it instead of opening a card", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.click(paragraph);
+  const queued = sdk.queue("Reword this");
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  // The stub shadow root keeps closed cards, so a new card shows as a higher count.
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(paragraph);
+
+  assert.equal(sdk.cards().length, cardsBefore);
+  const message = sdk.posted.at(-1);
+  assert.equal(message.type, "lavish:editQueuedAnchor");
+  assert.equal(message.selector, queued.prompt.selector);
+  assert.equal(message.artifact_load_token, "load-token");
+});
+
+test("an element whose queued note left the queue opens a fresh card again", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.click(paragraph);
+  const queued = sdk.queue("Reword this");
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [queued.prompt.selector] });
+  sdk.sendChromeMessage({ type: "lavish:queuedAnchors", selectors: [] });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(paragraph);
+
+  assert.equal(sdk.cards().length, cardsBefore + 1);
+});
+
+test("the chrome can hand an element click back for a fresh card", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+  sdk.setDocumentQuery((selector) => (selector === "body > p" ? paragraph : null));
+
+  sdk.sendChromeMessage({ type: "lavish:annotateElement", selector: "body > p" });
+
+  assert.match(sdk.card().innerHTML, /Annotate &lt;p&gt;/);
+});
+
+// A Mermaid node as the SDK sees one: a `<g class="node">` inside an SVG Mermaid rendered.
+function buildMermaidNode(sdk) {
+  const svg = appendTo(sdk.body, createElement("svg"));
+  svg.id = "mermaid-1";
+  const node = appendTo(svg, createElement("g"));
+  node.id = "flowchart-A-0";
+  const matchesTag = node.matches;
+  node.matches = (selectorList) =>
+    String(selectorList)
+      .split(",")
+      .some((part) => part.trim() === "g.node") || matchesTag(selectorList);
+  const label = appendTo(node, cell("span", "Start"));
+  const shape = appendTo(node, createElement("rect"));
+  return { label, shape };
+}
+
+test("a note queued from a diagram node's label opens again from the node's shape", () => {
+  const sdk = bootSdk();
+  const { label, shape } = buildMermaidNode(sdk);
+  sdk.click(label);
+  const queued = sdk.queue("Rename this step");
+  sdk.sendChromeMessage({
+    type: "lavish:queuedAnchors",
+    selectors: [queued.prompt.selector, queued.prompt.target.selector],
+  });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(shape);
+
+  assert.equal(sdk.cards().length, cardsBefore);
+  const message = sdk.posted.at(-1);
+  assert.equal(message.type, "lavish:editQueuedAnchor");
+  assert.equal(message.selector, queued.prompt.target.selector);
+});
+
+test("a click inside a table cell opens only the note on the exact element clicked", () => {
+  const sdk = bootSdk();
+  const { evidence } = buildTable(sdk);
+  const strong = appendTo(evidence, cell("strong", "Drive"));
+  const em = appendTo(evidence, cell("em", "Cursor"));
+  sdk.click(evidence);
+  const cellNote = sdk.queue("Explain this cell");
+  sdk.click(strong);
+  const strongNote = sdk.queue("Explain this app");
+  sdk.sendChromeMessage({
+    type: "lavish:queuedAnchors",
+    selectors: [cellNote.prompt.selector, strongNote.prompt.selector],
+  });
+  const cardsBefore = sdk.cards().length;
+
+  sdk.click(em);
+
+  assert.equal(sdk.cards().length, cardsBefore + 1);
+  assert.notEqual(sdk.posted.at(-1)?.type, "lavish:editQueuedAnchor");
 });
