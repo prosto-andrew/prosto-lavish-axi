@@ -101,6 +101,11 @@ and bump the version pinned in `verify-hardening.mjs`, `lavish-safe`, and `lavis
 only once every check passes. The 0.1.82 merge left out upstream's Herdr chime (it spawned a
 `herdr` binary) and its multi-address serving (`server --also-listen`, interface-sweep discovery).
 
+Upstream's project-process files are deleted in this fork: the release-please workflow (which
+ran `npm publish` with the telemetry host in its environment) and its config, the no-mistakes
+PR gate, the generated-files guard, and `CONTRIBUTING.md`. If a later merge reports a
+modify/delete conflict on one of them, keep it deleted.
+
 ## What still touches the network
 
 Nothing, during normal use. Artifacts, server state (`~/.lavish-axi/`), and whiteboard
