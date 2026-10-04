@@ -158,7 +158,21 @@ check("whiteboard frame is served under that policy", () => {
   if (!head.includes("content-security-policy")) {
     throw new Error("the /whiteboard-frame route sets no content-security-policy");
   }
-  return "Excalidraw cannot reach its baked-in upstream endpoints";
+  // An artifact popup escapes its own sandbox, so it can open /whiteboard-frame as a
+  // top-level page at this server's origin, where the embedding iframe's sandbox
+  // attribute does not apply. Only a sandbox directive in the response itself keeps
+  // that document opaque, so the policy must lead with one that withholds the origin.
+  const fn = dist.slice(dist.indexOf("function whiteboardContentSecurityPolicy("));
+  const leading = /return \[([\w$]+),/.exec(fn.slice(0, fn.indexOf("}")))?.[1];
+  const declaration = leading && new RegExp(`(?<![\\w$])${leading.replace(/\$/g, "\\$")} = "([^"]*)"`);
+  const sandbox = declaration && declaration.exec(dist)?.[1];
+  if (!sandbox || !sandbox.startsWith("sandbox ")) {
+    throw new Error("the whiteboard frame policy carries no sandbox directive");
+  }
+  for (const token of ["allow-same-origin", "allow-popups-to-escape-sandbox"]) {
+    if (sandbox.split(/\s+/).includes(token)) throw new Error(`the whiteboard frame sandbox grants ${token}`);
+  }
+  return `${sandbox}; Excalidraw cannot reach its baked-in upstream endpoints`;
 });
 
 check("whiteboard assets load locally, never from a CDN", () => {

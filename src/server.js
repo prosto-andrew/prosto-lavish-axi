@@ -121,6 +121,15 @@ const BROWSER_DISCONNECT_GRACE_MS = 10_000;
 // so active documents stay opaque-origin even when they are top-level.
 const ARTIFACT_SANDBOX_DIRECTIVE =
   "sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads";
+// LAVISH-HARDENED: the whiteboard frame gets the same treatment with its own,
+// narrower list. Both embedders (the SDK's inline frame and the chrome's
+// #whiteboardFrame) set sandbox="allow-scripts allow-popups", but an iframe
+// attribute only governs a framed load: an artifact popup escapes its sandbox
+// and can open /whiteboard-frame top-level, where it would otherwise run at
+// this server's own origin - the chrome's - with the pinned Mermaid renderer
+// inside it. The directive repeats the attribute exactly; the two intersect,
+// so a framed load is unchanged. Never add allow-same-origin to either.
+const WHITEBOARD_SANDBOX_DIRECTIVE = "sandbox allow-scripts allow-popups";
 
 // LAVISH-HARDENED: the sandbox directive alone only makes the document an opaque
 // origin - it places no limit on where the page may send data. Everything this
@@ -138,10 +147,8 @@ function artifactLoopbackSources(port) {
   return `http://127.0.0.1:${port} http://localhost:${port} http://[::1]:${port}`;
 }
 
-// Source directives only. The whiteboard frame reuses these WITHOUT the sandbox
-// directive: its iframe element already carries a narrower sandbox attribute
-// (allow-scripts allow-popups), and the two intersect, so repeating a wider one
-// here would say nothing while inviting confusion about which list is in force.
+// Source directives only. Each policy below prepends its own sandbox directive:
+// the artifact's, or the whiteboard frame's narrower one.
 function artifactSourceDirectives(port) {
   const local = artifactLoopbackSources(port);
   return [
@@ -165,7 +172,7 @@ export function artifactContentSecurityPolicy(port) {
 }
 
 export function whiteboardContentSecurityPolicy(port) {
-  return artifactSourceDirectives(port).join("; ");
+  return [WHITEBOARD_SANDBOX_DIRECTIVE, ...artifactSourceDirectives(port)].join("; ");
 }
 // Sweep orphaned/expired attachments periodically, not just at startup: a
 // detached server can run for days, and an upload whose /prompts follow-up never
@@ -1614,9 +1621,10 @@ export async function serve({
   // The whiteboard frame page. Hosted by the chrome in a dedicated sandboxed
   // iframe (allow-scripts allow-popups, no allow-same-origin) so untrusted
   // Mermaid text renders - and the Excalidraw editor runs - inside an opaque
-  // origin, matching the artifact iframe's trust posture. The chrome passes
-  // the diagram source and saved scene over postMessage after the frame
-  // reports ready.
+  // origin, matching the artifact iframe's trust posture. The response carries
+  // the same sandbox, so the page stays opaque-origin even when an escaped
+  // artifact popup opens it top-level. The chrome passes the diagram source
+  // and saved scene over postMessage after the frame reports ready.
   app.get("/whiteboard-frame", (req, res) => {
     res.setHeader("cache-control", "no-store");
     // LAVISH-HARDENED: the vendored Excalidraw bundle still carries upstream

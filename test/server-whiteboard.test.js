@@ -329,3 +329,49 @@ test("the whiteboard frame page is served with the sandboxed chrome overlay poin
     await ctx.close();
   }
 });
+
+// Regression: the frame's policy used to rely on the embedding iframe's sandbox
+// attribute alone. An artifact popup escapes its own sandbox, so window.open on
+// this URL loaded the frame top-level at the server's - the chrome's - origin,
+// where the pinned Mermaid renderer would run as a same-origin client.
+test("the whiteboard frame response sandboxes itself so a top-level open stays opaque-origin", async () => {
+  const ctx = await startWhiteboardServer();
+  try {
+    const port = new URL(ctx.base).port;
+    const sandboxTokens = (response) => {
+      const directives = String(response.headers.get("content-security-policy") || "")
+        .split(";")
+        .map((directive) => directive.trim().split(/\s+/))
+        .filter(([name]) => name === "sandbox");
+      assert.equal(directives.length, 1, "the frame policy carries exactly one sandbox directive");
+      return directives[0].slice(1);
+    };
+
+    const framePage = await fetch(`${ctx.base}/whiteboard-frame?key=${ctx.key}`);
+    assert.equal(framePage.status, 200);
+    const tokens = sandboxTokens(framePage);
+    assert.ok(!tokens.includes("allow-same-origin"), "the frame must never get its origin back");
+    assert.ok(!tokens.includes("allow-popups-to-escape-sandbox"), "the frame's popups must stay sandboxed");
+
+    // The directive repeats the embedding iframe's attribute: the two intersect,
+    // so a framed load behaves exactly as before.
+    const chrome = await fetch(`${ctx.base}/session/${ctx.key}`).then((res) => res.text());
+    const attribute = /id="whiteboardFrame"[^>]*sandbox="([^"]*)"/.exec(chrome)?.[1] || "";
+    assert.deepEqual(tokens, attribute.split(/\s+/));
+
+    // The loopback source list still applies alongside the sandbox.
+    const policy = framePage.headers.get("content-security-policy") || "";
+    assert.ok(policy.includes("default-src 'none'"), "the frame policy has no closed default-src");
+    assert.ok(policy.includes(`connect-src http://127.0.0.1:${port}`), "the frame policy does not pin connect-src");
+    assert.ok(!policy.includes("'self'"), "'self' matches nothing from an opaque origin");
+    for (const source of policy.matchAll(/https?:\/\/[^\s;]+/g)) {
+      assert.match(source[0], /^http:\/\/(127\.0\.0\.1|localhost|\[::1\])/, `the frame policy allows ${source[0]}`);
+    }
+
+    const keyless = await fetch(`${ctx.base}/whiteboard-frame`);
+    assert.equal(keyless.status, 400);
+    assert.deepEqual(sandboxTokens(keyless), tokens);
+  } finally {
+    await ctx.close();
+  }
+});
