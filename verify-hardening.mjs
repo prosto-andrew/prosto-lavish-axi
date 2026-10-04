@@ -158,7 +158,21 @@ check("whiteboard frame is served under that policy", () => {
   if (!head.includes("content-security-policy")) {
     throw new Error("the /whiteboard-frame route sets no content-security-policy");
   }
-  return "Excalidraw cannot reach its baked-in upstream endpoints";
+  // An artifact popup escapes its own sandbox, so it can open /whiteboard-frame as a
+  // top-level page at this server's origin, where the embedding iframe's sandbox
+  // attribute does not apply. Only a sandbox directive in the response itself keeps
+  // that document opaque, so the policy must lead with one that withholds the origin.
+  const fn = dist.slice(dist.indexOf("function whiteboardContentSecurityPolicy("));
+  const leading = /return \[([\w$]+),/.exec(fn.slice(0, fn.indexOf("}")))?.[1];
+  const declaration = leading && new RegExp(`(?<![\\w$])${leading.replace(/\$/g, "\\$")} = "([^"]*)"`);
+  const sandbox = declaration && declaration.exec(dist)?.[1];
+  if (!sandbox || !sandbox.startsWith("sandbox ")) {
+    throw new Error("the whiteboard frame policy carries no sandbox directive");
+  }
+  for (const token of ["allow-same-origin", "allow-popups-to-escape-sandbox"]) {
+    if (sandbox.split(/\s+/).includes(token)) throw new Error(`the whiteboard frame sandbox grants ${token}`);
+  }
+  return `${sandbox}; Excalidraw cannot reach its baked-in upstream endpoints`;
 });
 
 check("whiteboard assets load locally, never from a CDN", () => {
@@ -386,6 +400,38 @@ check("mermaid is vendored for offline rendering", () => {
   if (!existsSync(mod)) throw new Error("dist/design/mermaid/mermaid.esm.min.mjs missing - run `npm run build`");
   if (!existsSync(chunks)) throw new Error("mermaid chunk directory missing - run `npm run build`");
   return "module and chunk graph present";
+});
+
+check("vendored mermaid is readable from the opaque-origin artifact", () => {
+  // The design snippet imports the vendored module from the sandboxed artifact, and module
+  // scripts plus their chunk imports are CORS-mode fetches from an opaque origin. Without
+  // Access-Control-Allow-Origin the import is blocked and no diagram (or inline whiteboard)
+  // ever renders. The header is public by definition, so it must stay on exactly the two
+  // static vendored-bundle routes and never spread to anything carrying session data.
+  const server = read("src/server.js");
+  const expected = ["/^\\/design\\/mermaid\\/(.+)$/", "/^\\/whiteboard-assets\\/(.+)$/"];
+  const routeOf = /app\.get\(\s*(\/\^[^\s,]+\/),\s*opaqueOriginAssetRoute\(/g;
+  const mounted = [...server.matchAll(routeOf)].map((match) => match[1]).sort();
+  if (JSON.stringify(mounted) !== JSON.stringify([...expected].sort())) {
+    throw new Error(
+      `opaqueOriginAssetRoute is mounted on ${mounted.join(", ") || "nothing"}, expected ${expected.join(", ")}`,
+    );
+  }
+  const uses = server.match(/opaqueOriginAssetRoute\(/g)?.length ?? 0;
+  if (uses !== expected.length + 1) {
+    throw new Error(`opaqueOriginAssetRoute appears ${uses}x in src/server.js; only its two routes may use it`);
+  }
+  // Quoted header names only: the comments explaining the rule mention it unquoted.
+  const headers = server.match(/["'`]access-control-allow-origin["'`]/gi)?.length ?? 0;
+  if (headers !== 1) {
+    throw new Error(`src/server.js sets Access-Control-Allow-Origin ${headers}x; only opaqueOriginAssetRoute may`);
+  }
+  if (server.includes('app.use("/design/mermaid"')) throw new Error("/design/mermaid is mounted outside the helper");
+  const dist = read("dist/cli.mjs");
+  if (![...dist.matchAll(routeOf)].some((match) => match[1] === expected[0])) {
+    throw new Error("dist/cli.mjs does not serve /design/mermaid through opaqueOriginAssetRoute - run `npm run build`");
+  }
+  return "Access-Control-Allow-Origin: * on /design/mermaid and /whiteboard-assets only";
 });
 
 const width = Math.max(...results.map(([, name]) => name.length));

@@ -121,8 +121,15 @@ const BROWSER_DISCONNECT_GRACE_MS = 10_000;
 // so active documents stay opaque-origin even when they are top-level.
 const ARTIFACT_SANDBOX_DIRECTIVE =
   "sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads";
-// LAVISH-HARDENED: exactly the flags of the iframes Lavish puts the whiteboard frame
-// in (the chrome overlay and the SDK's inline embed). See artifactSourceDirectives.
+// LAVISH-HARDENED: the whiteboard frame gets the same treatment with its own,
+// narrower list. Both embedders (the SDK's inline frame and the chrome's
+// #whiteboardFrame) set sandbox="allow-scripts allow-popups", but an iframe
+// attribute only governs a framed load: an artifact popup escapes its sandbox
+// and can open /whiteboard-frame top-level, and any page may frame it directly
+// and so become the window.top it takes commands from. Either way it would
+// otherwise run at this server's own origin - the chrome's - with the pinned
+// Mermaid renderer inside it. The directive repeats the attribute exactly; the
+// two intersect, so a framed load is unchanged. Never add allow-same-origin to either.
 const WHITEBOARD_SANDBOX_DIRECTIVE = "sandbox allow-scripts allow-popups";
 
 // LAVISH-HARDENED: the sandbox directive alone only makes the document an opaque
@@ -146,12 +153,8 @@ function artifactLoopbackSources(port) {
   return `http://127.0.0.1:${port} http://localhost:${port}`;
 }
 
-// Source directives only. The whiteboard frame pairs these with its own sandbox
-// directive carrying exactly its iframes' flags, never the artifact's wider list:
-// framed by Lavish, the directive and the iframe attribute intersect to the same
-// set, but any page may frame /whiteboard-frame directly - becoming the window.top
-// the frame takes commands from - or open it top-level, and the directive is what
-// keeps the frame an opaque origin there too.
+// Source directives only. Each policy below prepends its own sandbox directive:
+// the artifact's, or the whiteboard frame's narrower one.
 function artifactSourceDirectives(port) {
   const local = artifactLoopbackSources(port);
   return [
@@ -203,14 +206,47 @@ export function defaultWhiteboardAssetsDir() {
   return fileURLToPath(new URL("../dist/whiteboard", import.meta.url));
 }
 
-// LAVISH-HARDENED: the vendored Mermaid ESM bundle (the module plus its chunk graph), so an
-// artifact that renders Mermaid never reaches out to a CDN. Resolved the same way as the
-// whiteboard bundle: the packaged copy when this file runs from dist/, the built copy when the
-// server is spawned from this checkout's src/.
+// LAVISH-HARDENED: vendored Mermaid ESM bundle (the module plus its chunk graph), so an
+// artifact that renders Mermaid never reaches out to a CDN. Resolved the same
+// way as the other design assets: the packaged copy when this file runs from
+// dist/, the built copy when the server is spawned from this checkout's src/
+// (which is what resolveServerEntry does whenever bin/ is present).
 export function defaultMermaidAssetsDir() {
   const packaged = fileURLToPath(new URL("./design/mermaid", import.meta.url));
   if (existsSync(packaged)) return packaged;
   return fileURLToPath(new URL("../dist/design/mermaid", import.meta.url));
+}
+
+// Static, public, vendored bundles fetched from an opaque origin: the whiteboard
+// frame's fonts, and the Mermaid module plus every chunk it imports from the
+// sandboxed artifact (module scripts are always CORS-mode fetches). Those fetches
+// are CORS-gated, so these routes answer Access-Control-Allow-Origin: * - and
+// they are the only routes that may; nothing else this server sends is public.
+function opaqueOriginAssetRoute(root, missingMessage) {
+  return async (req, res, next) => {
+    try {
+      const file = await resolveArtifactAsset(root, req.params[0]);
+      if (!file) {
+        res.status(403).send("Forbidden");
+        return;
+      }
+      if (!existsSync(file)) {
+        res.status(404).send(existsSync(root) ? "Not found" : missingMessage);
+        return;
+      }
+      res.setHeader("access-control-allow-origin", "*");
+      // Revalidate on every use (304 via Last-Modified/ETag): the bundle URL
+      // is unversioned, and a memory-cached stale bundle after an upgrade or
+      // local rebuild is far worse than cheap loopback revalidations.
+      res.setHeader("cache-control", "no-cache");
+      // Traversal is already rejected by resolveArtifactAsset; "allow" keeps
+      // dot components in the assets dir's own absolute path (e.g. a checkout
+      // under a dot-directory) from 403ing every asset.
+      res.sendFile(file, { dotfiles: "allow" });
+    } catch (error) {
+      next(error);
+    }
+  };
 }
 
 // Whiteboard scene saves carry full Excalidraw scenes (and, at queue time, a
@@ -1542,15 +1578,11 @@ export async function serve({
     }
   });
 
-  // LAVISH-HARDENED: the vendored Mermaid bundle (see defaultMermaidAssetsDir). The design
-  // snippet imports it as a module from the artifact frame, whose sandbox makes its origin
-  // opaque, and module scripts - the chunk imports included - are CORS-gated, so this static,
-  // public-content route must answer Access-Control-Allow-Origin: * or no diagram renders.
-  app.use(
-    "/design/mermaid",
-    express.static(mermaidAssetsDir, {
-      setHeaders: (res) => res.setHeader("access-control-allow-origin", "*"),
-    }),
+  // LAVISH-HARDENED: the vendored Mermaid bundle replaces the CDN import, so it has to
+  // answer the sandboxed artifact's CORS-mode module fetches the way the CDN did.
+  app.get(
+    /^\/design\/mermaid\/(.+)$/,
+    opaqueOriginAssetRoute(mermaidAssetsDir, "Mermaid bundle missing - run `pnpm run build`"),
   );
 
   app.get("/design/:asset", async (req, res, next) => {
@@ -1595,9 +1627,10 @@ export async function serve({
   // The whiteboard frame page. Hosted by the chrome in a dedicated sandboxed
   // iframe (allow-scripts allow-popups, no allow-same-origin) so untrusted
   // Mermaid text renders - and the Excalidraw editor runs - inside an opaque
-  // origin, matching the artifact iframe's trust posture. The chrome passes
-  // the diagram source and saved scene over postMessage after the frame
-  // reports ready.
+  // origin, matching the artifact iframe's trust posture. The response carries
+  // the same sandbox, so the page stays opaque-origin even when an escaped
+  // artifact popup opens it top-level. The chrome passes the diagram source
+  // and saved scene over postMessage after the frame reports ready.
   app.get("/whiteboard-frame", (req, res) => {
     res.setHeader("cache-control", "no-store");
     // LAVISH-HARDENED: the vendored Excalidraw bundle still carries upstream
@@ -1620,32 +1653,10 @@ export async function serve({
   // runs in an opaque origin, and font fetches from an opaque origin are
   // CORS-gated, so this static, public-content route must answer with
   // Access-Control-Allow-Origin: * or every canvas font falls back.
-  app.get(/^\/whiteboard-assets\/(.+)$/, async (req, res, next) => {
-    try {
-      const file = await resolveArtifactAsset(whiteboardAssetsDir, req.params[0]);
-      if (!file) {
-        res.status(403).send("Forbidden");
-        return;
-      }
-      if (!existsSync(file)) {
-        res
-          .status(404)
-          .send(existsSync(whiteboardAssetsDir) ? "Not found" : "Whiteboard bundle missing - run `pnpm run build`");
-        return;
-      }
-      res.setHeader("access-control-allow-origin", "*");
-      // Revalidate on every use (304 via Last-Modified/ETag): the bundle URL
-      // is unversioned, and a memory-cached stale bundle after an upgrade or
-      // local rebuild is far worse than cheap loopback revalidations.
-      res.setHeader("cache-control", "no-cache");
-      // Traversal is already rejected by resolveArtifactAsset; "allow" keeps
-      // dot components in the assets dir's own absolute path (e.g. a checkout
-      // under a dot-directory) from 403ing every asset.
-      res.sendFile(file, { dotfiles: "allow" });
-    } catch (error) {
-      next(error);
-    }
-  });
+  app.get(
+    /^\/whiteboard-assets\/(.+)$/,
+    opaqueOriginAssetRoute(whiteboardAssetsDir, "Whiteboard bundle missing - run `pnpm run build`"),
+  );
 
   // Mermaid sources for a session's artifact, extracted from the HTML on disk
   // in document order so `index` matches the browser's `.mermaid` element
