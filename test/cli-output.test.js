@@ -495,6 +495,167 @@ test("design output emits a theme-aware Mermaid init that re-renders on page-the
   assert.match(snippet, /addEventListener\(["']change["']/);
 });
 
+function executableMermaidSnippet() {
+  return createDesignOutput()
+    .whiteboard_tooling.mermaid_cdn_snippet.replace(/^<script type="module">\n/, "")
+    .replace(/\n<\/script>$/, "")
+    .replace(/^\s*import mermaid from "[^"]+";\n/m, "");
+}
+
+// Mermaid registers its own `load` listener when imported and, unless startOnLoad is already off by
+// then, renders every `.mermaid` element itself - concurrently with the snippet's own render, which
+// resets the same containers mid-layout. Two renders at once share Mermaid's state and fail at random.
+test("theme-aware Mermaid snippet turns Mermaid's own load-time render off before load fires", () => {
+  const windowListeners = [];
+  const initializeCalls = [];
+  let runs = 0;
+  const document = {
+    body: {},
+    documentElement: {},
+    readyState: "loading",
+    createElement() {
+      return {
+        getContext: () => ({ clearRect() {}, fillRect() {}, getImageData: () => ({ data: [255, 255, 255, 255] }) }),
+      };
+    },
+    querySelectorAll() {
+      return [];
+    },
+    addEventListener() {},
+  };
+  const window = {
+    matchMedia() {
+      return { matches: false, addEventListener() {} };
+    },
+    addEventListener(type) {
+      windowListeners.push(type);
+    },
+  };
+  const mermaid = {
+    initialize(options) {
+      initializeCalls.push(options);
+    },
+    run() {
+      runs += 1;
+      return Promise.resolve();
+    },
+  };
+
+  new Function(
+    "mermaid",
+    "window",
+    "document",
+    "MutationObserver",
+    "getComputedStyle",
+    "console",
+    executableMermaidSnippet(),
+  )(
+    mermaid,
+    window,
+    document,
+    class {
+      observe() {}
+    },
+    () => ({ backgroundColor: "white", colorScheme: "normal" }),
+    console,
+  );
+
+  assert.deepEqual(windowListeners, ["load"], "the snippet should wait for load before rendering");
+  assert.equal(runs, 0);
+  assert.ok(
+    initializeCalls.some((options) => options.startOnLoad === false),
+    "Mermaid's own load-time render must be off before load fires",
+  );
+});
+
+// Mermaid needs on-screen geometry to lay a diagram out. Lavish hides a container once it embeds the
+// inline whiteboard, so re-rendering there on a theme change replaced a good drawing with a failed one.
+test("theme-aware Mermaid snippet re-renders only diagrams whose container is displayed", async () => {
+  let dark = false;
+  const mediaListeners = [];
+  const runs = [];
+  const paint = {
+    clearRect() {},
+    fillRect() {},
+    getImageData: () => ({ data: [0, 0, 0, 0] }),
+  };
+  const diagramStub = () => ({
+    displayed: true,
+    innerHTML: "flowchart TD\n  A -->|yes| B",
+    removeAttribute() {},
+    getClientRects() {
+      return this.displayed ? [{}] : [];
+    },
+  });
+  const shown = diagramStub();
+  const replaced = diagramStub();
+  const flush = async () => {
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+  };
+  const document = {
+    body: {},
+    documentElement: {},
+    readyState: "complete",
+    createElement: () => ({ getContext: () => paint }),
+    querySelectorAll: () => [shown, replaced],
+    addEventListener() {},
+  };
+  const window = {
+    matchMedia: () => ({
+      get matches() {
+        return dark;
+      },
+      addEventListener: (type, callback) => mediaListeners.push(callback),
+    }),
+    addEventListener() {},
+  };
+  const mermaid = {
+    initialize() {},
+    run({ nodes }) {
+      runs.push(nodes);
+      return Promise.resolve();
+    },
+  };
+
+  new Function(
+    "mermaid",
+    "window",
+    "document",
+    "MutationObserver",
+    "getComputedStyle",
+    "console",
+    executableMermaidSnippet(),
+  )(
+    mermaid,
+    window,
+    document,
+    class {
+      observe() {}
+    },
+    () => ({ backgroundColor: "transparent", colorScheme: "normal" }),
+    console,
+  );
+  await flush();
+  assert.deepEqual(runs, [[shown, replaced]], "the first render draws every diagram");
+
+  replaced.displayed = false;
+  dark = true;
+  mediaListeners[0]();
+  await flush();
+  assert.deepEqual(runs, [[shown, replaced], [shown]], "a hidden container keeps its drawing");
+
+  shown.displayed = false;
+  dark = false;
+  mediaListeners[0]();
+  await flush();
+  assert.equal(runs.length, 2, "with nothing displayed there is nothing to re-render");
+
+  shown.displayed = true;
+  mediaListeners[0]();
+  await flush();
+  assert.deepEqual(runs.at(-1), [shown], "a container shown again catches up on the next pass");
+});
+
 test("theme-aware Mermaid snippet serializes rapid theme-change renders", async () => {
   const snippet = createDesignOutput()
     .whiteboard_tooling.mermaid_cdn_snippet.replace(/^<script type="module">\n/, "")
@@ -547,6 +708,9 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
       diagramMarkup = value;
     },
     removeAttribute() {},
+    getClientRects() {
+      return [{}];
+    },
   };
   const document = {
     body: { id: "body" },
@@ -589,8 +753,9 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
     }
   }
   const mermaid = {
-    initialize({ theme }) {
-      initializedThemes.push(theme);
+    // The theme-less call is the up-front startOnLoad switch-off; only render passes pick a theme.
+    initialize(options) {
+      if ("theme" in options) initializedThemes.push(options.theme);
     },
     run() {
       renderedSources.push(diagram.innerHTML);

@@ -365,7 +365,11 @@ test("the whiteboard frame response sandboxes itself so a top-level open stays o
     assert.ok(policy.includes(`connect-src http://127.0.0.1:${port}`), "the frame policy does not pin connect-src");
     assert.ok(!policy.includes("'self'"), "'self' matches nothing from an opaque origin");
     for (const source of policy.matchAll(/https?:\/\/[^\s;]+/g)) {
-      assert.match(source[0], /^http:\/\/(127\.0\.0\.1|localhost|\[::1\])/, `the frame policy allows ${source[0]}`);
+      assert.match(
+        source[0],
+        new RegExp(`^http://(127\\.0\\.0\\.1|localhost):${port}$`),
+        `the frame policy allows ${source[0]}`,
+      );
     }
 
     const keyless = await fetch(`${ctx.base}/whiteboard-frame`);

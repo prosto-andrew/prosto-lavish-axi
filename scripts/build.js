@@ -2,6 +2,8 @@ import { chmod, copyFile, cp, mkdir, readFile } from "node:fs/promises";
 
 import * as esbuild from "esbuild";
 
+import { excalidrawFontCdnPlugin } from "./excalidraw-font-cdn.js";
+
 const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 
 await mkdir("dist", { recursive: true });
@@ -67,8 +69,10 @@ await cp("node_modules/mermaid/dist/chunks/mermaid.esm.min", "dist/design/mermai
 // in a `.mermaid` container.
 // Everything is vendored so the eagerly loaded whiteboards work fully offline.
 await mkdir("dist/whiteboard", { recursive: true });
+const fontCdnStats = { stripped: 0 };
 await esbuild.build({
   entryPoints: { whiteboard: "src/whiteboard-frame.js" },
+  plugins: [excalidrawFontCdnPlugin(fontCdnStats)],
   outdir: "dist/whiteboard",
   bundle: true,
   minify: true,
@@ -81,10 +85,15 @@ await esbuild.build({
     "process.env.IS_PREACT": '"false"',
   },
 });
+if (fontCdnStats.stripped !== 1) {
+  throw new Error(
+    `Expected to strip exactly one Excalidraw font CDN fallback, stripped ${fontCdnStats.stripped} - re-audit scripts/excalidraw-font-cdn.js against the new Excalidraw build`,
+  );
+}
 
 // Excalidraw lazily fetches canvas fonts from `EXCALIDRAW_ASSET_PATH/fonts/`.
-// Vendor every family except Xiaolai (12 MB of CJK glyphs; those fall back to
-// Excalidraw's CDN fallback or the system font when missing locally).
+// Vendor every family except Xiaolai (12 MB of CJK glyphs; with the CDN
+// fallback stripped above, those fall back to a system font).
 const fontFamilies = ["Assistant", "Cascadia", "ComicShanns", "Excalifont", "Liberation", "Lilita", "Nunito", "Virgil"];
 await mkdir("dist/whiteboard/fonts", { recursive: true });
 for (const family of fontFamilies) {

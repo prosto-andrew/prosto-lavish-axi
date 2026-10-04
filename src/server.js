@@ -125,10 +125,11 @@ const ARTIFACT_SANDBOX_DIRECTIVE =
 // narrower list. Both embedders (the SDK's inline frame and the chrome's
 // #whiteboardFrame) set sandbox="allow-scripts allow-popups", but an iframe
 // attribute only governs a framed load: an artifact popup escapes its sandbox
-// and can open /whiteboard-frame top-level, where it would otherwise run at
-// this server's own origin - the chrome's - with the pinned Mermaid renderer
-// inside it. The directive repeats the attribute exactly; the two intersect,
-// so a framed load is unchanged. Never add allow-same-origin to either.
+// and can open /whiteboard-frame top-level, and any page may frame it directly
+// and so become the window.top it takes commands from. Either way it would
+// otherwise run at this server's own origin - the chrome's - with the pinned
+// Mermaid renderer inside it. The directive repeats the attribute exactly; the
+// two intersect, so a framed load is unchanged. Never add allow-same-origin to either.
 const WHITEBOARD_SANDBOX_DIRECTIVE = "sandbox allow-scripts allow-popups";
 
 // LAVISH-HARDENED: the sandbox directive alone only makes the document an opaque
@@ -140,11 +141,16 @@ const WHITEBOARD_SANDBOX_DIRECTIVE = "sandbox allow-scripts allow-popups";
 //
 // The sources must be spelled out rather than written as 'self': with the sandbox
 // directive and no allow-same-origin, the document's origin is opaque, and 'self'
-// would match nothing at all - it would block the page's own assets. All three
-// loopback spellings are listed because the source list is compared against the
-// document URL the user actually opened, not against the address we bound to.
+// would match nothing at all - it would block the page's own assets. The source
+// list is compared against the document URL the user actually opened, so it names
+// both spellings a session link can use: 127.0.0.1 (the default link host) and
+// localhost (LAVISH_AXI_LINK_HOST=localhost). The IPv6 loopback is deliberately
+// absent: CSP host-source grammar has no bracketed hosts, so browsers discard
+// `http://[::1]:<port>` with a console error per directive, and this server binds
+// 127.0.0.1 only, so a [::1] URL is refused before any policy applies. Never cover
+// it with a scheme source such as `http:`. See docs/invariants.md (Export).
 function artifactLoopbackSources(port) {
-  return `http://127.0.0.1:${port} http://localhost:${port} http://[::1]:${port}`;
+  return `http://127.0.0.1:${port} http://localhost:${port}`;
 }
 
 // Source directives only. Each policy below prepends its own sandbox directive:

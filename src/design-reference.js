@@ -24,6 +24,10 @@ export const DESIGN_CDN_SNIPPET = `<link rel="stylesheet" href="${DESIGN_CDN_URL
 export const MERMAID_CDN_SNIPPET = `<script type="module">
   import mermaid from "${MERMAID_CDN_URL}";
 
+  // This script renders every diagram itself, so turn Mermaid's own load-time
+  // render off now, before load fires: two renders at once corrupt each other.
+  mermaid.initialize({ startOnLoad: false });
+
   // Render Mermaid in a theme that matches the artifact page, and re-render when
   // the viewer flips the page theme - Mermaid never restyles an already-rendered
   // SVG on its own, so a fixed theme clashes in either light or dark mode.
@@ -70,8 +74,7 @@ export const MERMAID_CDN_SNIPPET = `<script type="module">
     return darkQuery.matches;
   }
 
-  const diagrams = [...document.querySelectorAll(".mermaid")].map((el) => ({ el, src: el.innerHTML }));
-  let applied;
+  const diagrams = [...document.querySelectorAll(".mermaid")].map((el) => ({ el, src: el.innerHTML, theme: null }));
   let rendering = false;
   let queued = false;
   function queueRender() {
@@ -85,19 +88,26 @@ export const MERMAID_CDN_SNIPPET = `<script type="module">
       while (queued) {
         queued = false;
         const theme = pageIsDark() ? "dark" : "default";
-        if (theme === applied) continue;
+        // Mermaid needs on-screen geometry to lay a diagram out, so after the
+        // first render a diagram whose container is not displayed (closed
+        // <details>, or replaced by Lavish's whiteboard) keeps its drawing and
+        // catches up on a later pass once it is displayed again.
+        const stale = diagrams.filter(
+          (d) => d.theme !== theme && (d.theme === null || d.el.getClientRects().length > 0),
+        );
+        if (stale.length === 0) continue;
         mermaid.initialize({ startOnLoad: false, theme, securityLevel: "strict" });
-        for (const { el, src } of diagrams) {
+        for (const { el, src } of stale) {
           el.removeAttribute("data-processed");
           el.innerHTML = src;
         }
         try {
-          await mermaid.run({ nodes: diagrams.map((d) => d.el) });
+          await mermaid.run({ nodes: stale.map((d) => d.el) });
         } catch (error) {
           console.error("Mermaid diagram render failed:", error);
           return;
         }
-        applied = theme;
+        for (const d of stale) d.theme = theme;
       }
     } finally {
       rendering = false;
