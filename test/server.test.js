@@ -3151,7 +3151,8 @@ test("long-poll sends heartbeat bytes before feedback arrives", async () => {
       fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`, { signal: controller.signal }),
       new Promise((_, reject) => setTimeout(() => reject(new Error("poll did not send headers")), 500)),
     ]);
-    assert.equal(res.headers.get("lavish-poll-state"), "listening");
+    // LAVISH-HARDENED: no Lavish-Poll-State header - it only existed to drive the Herdr chime.
+    assert.equal(res.headers.get("lavish-poll-state"), null);
     const reader = res.body.getReader();
     try {
       const decoder = new TextDecoder();

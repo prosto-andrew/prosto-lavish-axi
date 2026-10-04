@@ -96,7 +96,6 @@ const AGENT_REPLY_JSON_LIMIT_BYTES = 2 * 1024 * 1024;
 const AGENT_REPLY_JSON_ENVELOPE_BYTES = Buffer.byteLength(JSON.stringify({ agent_reply: "" }));
 const AGENT_REPLY_INPUT_LIMIT_BYTES = AGENT_REPLY_JSON_LIMIT_BYTES - AGENT_REPLY_JSON_ENVELOPE_BYTES;
 const AGENT_REPLY_LIMIT_LABEL = "2 MB JSON request limit";
-const POLL_STATE_HEADER = "lavish-poll-state";
 const CODEX_POLL_WAKE_PATH_GUIDANCE =
   "Codex detected: completed background tasks may not resume Codex automatically, so keep the poll attached to the active turn.";
 // Inlined at build time from package.json; falls back to reading package.json so source-run tests work.
@@ -110,56 +109,6 @@ export function detectInvokingAgent(env = process.env) {
 
 export function shouldNarratePollWaitTicks({ isTTY }) {
   return Boolean(isTTY);
-}
-
-export function herdrPollChimeEnabled(env = process.env) {
-  return env.HERDR_ENV === "1" && env.LAVISH_AXI_HERDR_CHIME === "1";
-}
-
-/**
- * @param {{
- *   env?: NodeJS.ProcessEnv,
- *   runner?: (command: string, args: string[], options: { stdio: "ignore" }) => import("node:child_process").ChildProcess,
- * }} [options]
- */
-export function notifyHerdrPollReady({ env = process.env, runner = spawn } = {}) {
-  if (!herdrPollChimeEnabled(env)) return false;
-  try {
-    const child = runner(
-      "herdr",
-      [
-        "notification",
-        "show",
-        "Lavish review ready",
-        "--body",
-        "The artifact is open and Lavish is polling for your feedback.",
-        "--sound",
-        "request",
-      ],
-      { stdio: "ignore" },
-    );
-    const kill = () => {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        return;
-      }
-    };
-    const timer = setTimeout(kill, 2_000);
-    timer.unref();
-    const cleanup = () => {
-      clearTimeout(timer);
-      process.off("exit", kill);
-    };
-    child.on("error", () => {});
-    child.once("close", cleanup);
-    process.once("exit", kill);
-    child.unref();
-    return true;
-  } catch {
-    // A desktop notification is optional and must never interrupt feedback delivery.
-    return false;
-  }
 }
 
 export function pollExecutionGuidance({ agent = "generic" } = {}) {
@@ -473,9 +422,6 @@ async function pollCommand(args) {
       // Poll ownership is claimed before the response is available. Retrying a transport failure
       // can leave the first claim alive and make the retry reject itself as LISTENER_ACTIVE.
       retries: 0,
-      onResponse: (pollResponse) => {
-        if (pollResponse.headers.get(POLL_STATE_HEADER) === "listening") notifyHerdrPollReady();
-      },
     });
     if (response.code === "LISTENER_REPLACED") {
       throw new AxiError("Lavish Editor poll listener was replaced by a takeover", "LISTENER_REPLACED", [
@@ -1693,12 +1639,9 @@ export function createServerSpawnOptions(logFd = null) {
 
 /**
  * @param {string} url
- * @param {{ retries?: number, retryDelayMs?: number, onResponse?: ((response: Response) => void) | null, method?: string, headers?: Record<string, string>, body?: string }} [options]
+ * @param {{ retries?: number, retryDelayMs?: number, method?: string, headers?: Record<string, string>, body?: string }} [options]
  */
-export async function fetchJson(
-  url,
-  { retries = 0, retryDelayMs = 250, onResponse = null, method = "GET", headers, body } = {},
-) {
+export async function fetchJson(url, { retries = 0, retryDelayMs = 250, method = "GET", headers, body } = {}) {
   let response;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
@@ -1739,7 +1682,6 @@ export async function fetchJson(
     }
     throw new AxiError(`Lavish Editor request failed: ${response.status}`, "SERVER_ERROR");
   }
-  onResponse?.(response);
   try {
     return await response.json();
   } catch {
@@ -2042,7 +1984,7 @@ function createTopLevelHelp({ agent = "generic" } = {}) {
 function createCommandHelp({ agent = "generic" } = {}) {
   return {
     open: `Usage: lavish-safe <html-file> [--no-open] [--no-gate] [--reopen]\n\nOpen or resume a Lavish Editor review session for an HTML artifact. Use --no-open when you need to ensure the server/session exists without opening another browser window. Use --no-gate to skip the open-time layout curtain for this browser open. If the user explicitly ended the session from the browser, this refuses to reopen it and returns guidance instead - pass --reopen to force it open when the user asks for further review or something important needs their visual attention. Sessions ended by the agent (\`lavish-safe end\`) reopen normally without the flag.\n`,
-    poll: `Usage: lavish-safe poll <html-file> [--owner <label>] [--takeover] [--agent-reply "..."] [--agent-reply-file <path>]\n\nThis command exclusively long-polls for queued user prompts. Pass --owner <label> to make the active listener visible in session listings; --takeover displaces an existing listener, which receives LISTENER_REPLACED. A second poll without --takeover fails with LISTENER_ACTIVE instead of silently returning waiting.\n\nThis command long-polls indefinitely for queued user prompts. It stays silent while it waits - that is normal, never kill it. Browser-detected layout issues do NOT return this poll: they are filed passively in the user's Layout issues inbox and arrive as an ordinary tag "layout-warnings" prompt only after the user selects them and queues the fixes. Warning lifecycle: an issue stays unresolved and counted while queued, becomes recurring if a newer artifact revision still shows it, and is resolved only after a newer artifact load plus a complete diagnostic pass at the same viewport no longer detects it. A failed or incomplete pass preserves it as unverified rather than clearing it. The only response that arrives without user action is artifact_failures - a fatal failure that made the review surface itself unusable. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. In a Herdr-managed pane, set LAVISH_AXI_HERDR_CHIME=1 to request attention when the poll has entered its waiting state; unset it or use any other value to keep the current silent behavior. Notification failures never interrupt the poll. ${pollExecutionGuidance({ agent })} Use --agent-reply after applying prior feedback to display a concise response in Lavish Editor before waiting again. When you are handing a result back and are not about to long-poll, run \`lavish-safe reply <html-file> --agent-reply "..."\` instead: that command exits 0 only after the server accepts the reply, so the board stops showing Working without this poll staying open. ${POLL_AGENT_REPLY_RULE} ${POLL_AGENT_REPLY_HELP_POINTER} Do not combine --agent-reply with --agent-reply-file.\n\nExamples:\n  lavish-safe poll report.html --agent-reply "Renamed the payment step."\n  lavish-safe poll report.html --agent-reply-file reply.md\n  lavish-safe poll report.html --agent-reply-file -\n\n${POLL_SEND_AND_END_RULE}\n`,
+    poll: `Usage: lavish-safe poll <html-file> [--owner <label>] [--takeover] [--agent-reply "..."] [--agent-reply-file <path>]\n\nThis command exclusively long-polls for queued user prompts. Pass --owner <label> to make the active listener visible in session listings; --takeover displaces an existing listener, which receives LISTENER_REPLACED. A second poll without --takeover fails with LISTENER_ACTIVE instead of silently returning waiting.\n\nThis command long-polls indefinitely for queued user prompts. It stays silent while it waits - that is normal, never kill it. Browser-detected layout issues do NOT return this poll: they are filed passively in the user's Layout issues inbox and arrive as an ordinary tag "layout-warnings" prompt only after the user selects them and queues the fixes. Warning lifecycle: an issue stays unresolved and counted while queued, becomes recurring if a newer artifact revision still shows it, and is resolved only after a newer artifact load plus a complete diagnostic pass at the same viewport no longer detects it. A failed or incomplete pass preserves it as unverified rather than clearing it. The only response that arrives without user action is artifact_failures - a fatal failure that made the review surface itself unusable. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} Use --agent-reply after applying prior feedback to display a concise response in Lavish Editor before waiting again. When you are handing a result back and are not about to long-poll, run \`lavish-safe reply <html-file> --agent-reply "..."\` instead: that command exits 0 only after the server accepts the reply, so the board stops showing Working without this poll staying open. ${POLL_AGENT_REPLY_RULE} ${POLL_AGENT_REPLY_HELP_POINTER} Do not combine --agent-reply with --agent-reply-file.\n\nExamples:\n  lavish-safe poll report.html --agent-reply "Renamed the payment step."\n  lavish-safe poll report.html --agent-reply-file reply.md\n  lavish-safe poll report.html --agent-reply-file -\n\n${POLL_SEND_AND_END_RULE}\n`,
     reply: `Usage: lavish-safe reply <html-file> (--agent-reply "..." | --agent-reply-file <path>)\n\nPost an agent reply to the open Lavish Editor session and exit once the server confirms it was accepted. Exit 0 only when the server answers that the reply was sent, which is when the board stops showing Working. If that answer does not arrive within ${AGENT_REPLY_RECEIPT_TIMEOUT_MS / 1000} seconds, exit non-zero with a timeout error. Use this when you are handing a result back and are not about to wait for more feedback.\n\nUse \`lavish-safe poll <html-file> --agent-reply "..."\` instead when the reply should be followed by a long-poll. That command posts the reply and then keeps waiting, so it does not exit when the reply is accepted.\n\nPass exactly one of --agent-reply or --agent-reply-file. ${POLL_AGENT_REPLY_RULE} ${POLL_AGENT_REPLY_HELP_POINTER} Do not combine the two flags. An empty reply is refused.\n\nExamples:\n  lavish-safe reply report.html --agent-reply "Renamed the payment step."\n  lavish-safe reply report.html --agent-reply-file reply.md\n  lavish-safe reply report.html --agent-reply-file -\n`,
     end: `Usage: lavish-safe end <html-file>\n\nEnd a Lavish Editor session as the agent. A session ended this way still reopens normally on the next \`lavish-safe <html-file>\`, unlike a user ending it from the browser, which requires --reopen.\n`,
     export: `Usage: lavish-safe export <html-file> [--out <path>]\n\nWrite a portable copy of an artifact: one HTML file with its LOCAL assets inlined (relative-path stylesheets, scripts, images, and fonts become inline <style>/<script> blocks and data URIs). Remote CDN/font references (https URLs) are left as links for the browser to load, so the file needs network to render those. Lavish makes no outbound requests - it only reads local files, confined to the artifact's directory. Defaults to writing <name>.export.html next to the source; pass --out to choose a path. The Lavish annotation SDK is never included in an export.\n`,

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
@@ -30,9 +29,7 @@ import {
   detectInvokingAgent,
   fetchJson,
   getCommandHelp,
-  herdrPollChimeEnabled,
   normalizeArgv,
-  notifyHerdrPollReady,
   resolveShareRequest,
   pollInterruptedText,
   pollWaitBannerText,
@@ -1421,120 +1418,14 @@ test("poll wait messages tell watching agents the silence is normal", () => {
   assert.match(interrupted, /feedback remains queued until delivery/);
 });
 
-test("Herdr poll chime is disabled unless both Lavish and Herdr opt in", () => {
-  assert.equal(herdrPollChimeEnabled({}), false);
-  assert.equal(herdrPollChimeEnabled({ HERDR_ENV: "1" }), false);
-  assert.equal(herdrPollChimeEnabled({ LAVISH_AXI_HERDR_CHIME: "1" }), false);
-  assert.equal(herdrPollChimeEnabled({ HERDR_ENV: "1", LAVISH_AXI_HERDR_CHIME: "0" }), false);
-  assert.equal(herdrPollChimeEnabled({ HERDR_ENV: "1", LAVISH_AXI_HERDR_CHIME: "1" }), true);
-});
-
-test("Herdr poll chime requests attention without making notification failure fatal", async () => {
-  const calls = [];
-  /** @type {import("node:child_process").ChildProcess | undefined} */
-  let child;
-  const notified = notifyHerdrPollReady({
-    env: { HERDR_ENV: "1", LAVISH_AXI_HERDR_CHIME: "1" },
-    runner(command, args, options) {
-      calls.push({ command, args, options });
-      child = spawn(process.execPath, ["-e", "process.exit(0)"], options);
-      return child;
-    },
-  });
-
-  assert.equal(notified, true);
-  assert.ok(child);
-  child.ref();
-  await once(child, "close");
-  assert.deepEqual(calls, [
-    {
-      command: "herdr",
-      args: [
-        "notification",
-        "show",
-        "Lavish review ready",
-        "--body",
-        "The artifact is open and Lavish is polling for your feedback.",
-        "--sound",
-        "request",
-      ],
-      options: { stdio: "ignore" },
-    },
-  ]);
-
-  assert.equal(
-    notifyHerdrPollReady({
-      env: { HERDR_ENV: "1", LAVISH_AXI_HERDR_CHIME: "1" },
-      runner() {
-        throw new Error("Herdr unavailable");
-      },
-    }),
-    false,
-  );
-});
-
-test("Herdr failures and a stalled notification do not delay poll feedback", { timeout: 10_000 }, async (t) => {
-  const server = createServer((_req, res) => {
-    res.setHeader("Lavish-Poll-State", "listening");
-    res.end(JSON.stringify({ status: "feedback", prompts: [{ text: "Review this" }] }));
-  });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  t.after(() => server.close());
-  const address = server.address();
-  assert.ok(address && typeof address === "object");
-  const env = { HERDR_ENV: "1", LAVISH_AXI_HERDR_CHIME: "1" };
-
-  for (const behavior of ["missing", "rejected", "stalled"]) {
-    await t.test(behavior, async () => {
-      const exitListeners = process.listenerCount("exit");
-      /** @type {import("node:child_process").ChildProcess | undefined} */
-      let child;
-      /** @type {Promise<{ code: number | null, signal: NodeJS.Signals | null }> | undefined} */
-      let closed;
-      const response = await fetchJson(`http://127.0.0.1:${address.port}`, {
-        onResponse() {
-          notifyHerdrPollReady({
-            env,
-            runner(_command, _args, options) {
-              child =
-                behavior === "missing"
-                  ? spawn(path.join(process.cwd(), "missing-herdr-executable"), [], options)
-                  : spawn(
-                      process.execPath,
-                      [
-                        "-e",
-                        behavior === "rejected"
-                          ? "process.exit(1)"
-                          : "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)",
-                      ],
-                      options,
-                    );
-              closed = new Promise((resolve) => child.once("close", (code, signal) => resolve({ code, signal })));
-              return child;
-            },
-          });
-        },
-      });
-      try {
-        assert.ok(child);
-        assert.ok(closed);
-        assert.deepEqual(response, { status: "feedback", prompts: [{ text: "Review this" }] });
-        if (behavior === "stalled") {
-          assert.equal(child.exitCode, null);
-          assert.equal(child.signalCode, null);
-          const result = await closed;
-          if (process.platform !== "win32") assert.equal(result.signal, "SIGKILL");
-          assert.ok(child.killed);
-        } else {
-          await closed;
-        }
-        assert.equal(process.listenerCount("exit"), exitListeners);
-      } finally {
-        child?.kill("SIGKILL");
-      }
-    });
-  }
+// LAVISH-HARDENED: upstream's opt-in Herdr chime spawned an external `herdr` binary from
+// PATH whenever a poll started waiting. This build launches no helper processes, so the hook,
+// its env switches, and the poll-state header it keyed off were not taken from upstream.
+test("poll has no Herdr notification hook and its help never mentions one", async () => {
+  const cli = await import("../src/cli.js");
+  assert.equal("herdrPollChimeEnabled" in cli, false);
+  assert.equal("notifyHerdrPollReady" in cli, false);
+  assert.doesNotMatch(getCommandHelp("poll"), /herdr/i);
 });
 
 test("poll wait reporter writes a banner immediately and heartbeats on an interval", async () => {
