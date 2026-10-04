@@ -47,7 +47,7 @@
     "@excalidraw/excalidraw": "0.18.1",
     "@excalidraw/mermaid-to-excalidraw": "2.2.2",
     "@types/node": "^25.6.2",
-    "esbuild": "^0.28.0",
+    "esbuild": "^0.28.2",
     "eslint": "^10.3.0",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.6.0",
@@ -56,6 +56,21 @@
     "react": "18.3.1",
     "react-dom": "18.3.1",
     "typescript": "^5.9.3"
+  },
+  "overrides": {
+    "@toon-format/toon@^2": "^2.3.1",
+    "body-parser@^2": "^2.3.0",
+    "qs@^6": "^6.16.0",
+    "brace-expansion@^5": "^5.0.12",
+    "dompurify@^3": "^3.4.13",
+    "lodash-es@^4": "^4.18.1",
+    "nanoid@^3": "^3.3.18",
+    "@excalidraw/mermaid-to-excalidraw": {
+      "nanoid": "^5.1.16"
+    },
+    "sass": {
+      "chokidar": "4.0.1"
+    }
   },
   "engines": {
     "node": ">=22"

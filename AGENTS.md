@@ -32,6 +32,7 @@ Seven-tab pool regression: `LAVISH_AXI_BROWSER_E2E=1 node --test test/event-tran
 - Run `pnpm run check` before pushing.
 - Treat repo-provided `.agents/` skill content as vendored. Prettier ignores it.
 - Do not hand-edit `CHANGELOG.md` or `.release-please-manifest.json`. Release-please owns them.
+- Dependency security overrides are declared twice: `overrides` in `pnpm-workspace.yaml` (pnpm, CI, `pnpm audit`, Dependabot; pnpm 11 ignores the `pnpm` field in `package.json`) and the top-level `overrides` in `package.json` (npm, which the hardening docs install with). Change both. `test/dependency-overrides.test.js` fails on drift and on any override of `mermaid` or another exact whiteboard pin.
 - Human-authored PRs to `main` go through [no-mistakes](https://github.com/kunchenguid/no-mistakes) >= 1.46.0. [CONTRIBUTING.md](CONTRIBUTING.md) owns the gate, the attestation contract, and the workflow-pin rules.
 - Tests that start the server set `LAVISH_AXI_STATE_DIR` and use an ephemeral port.
 - `run()` returns on `--version` / `-v` / `-V` before `ensureStateDir` and telemetry (`test/cli-version.test.js`). New startup work goes after that short-circuit.
