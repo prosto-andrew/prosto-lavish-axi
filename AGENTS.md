@@ -23,7 +23,7 @@ pnpm run typecheck      # tsc --noEmit (checkJs)
 One file: `node --test test/server.test.js`. One name: `node --test --test-name-pattern "createOpenOutput" test/cli-output.test.js`.
 Opt-in browser suites need `chrome-devtools-axi`: `LAVISH_AXI_BROWSER_E2E=1 node --test test/layout-audit-browser.test.js test/layout-warning-inbox.browser.test.js`.
 Seven-tab pool regression: `LAVISH_AXI_BROWSER_E2E=1 node --test test/event-transport.browser.test.js`.
-`prepack` and `prepare` both run `build`. `pnpm run check` fails if `skills/lavish/SKILL.md` drifts from `createSkillMarkdown()`, or if root `plugin.json` drifts from `pnpm run build:plugin`. Release-please bumps `plugin.json` through `extra-files`.
+`prepack` and `prepare` both run `build`. `pnpm run check` fails if `skills/lavish/SKILL.md` drifts from `createSkillMarkdown()`, or if root `plugin.json` drifts from `pnpm run build:plugin`.
 
 ## Project conventions
 
@@ -31,8 +31,7 @@ Seven-tab pool regression: `LAVISH_AXI_BROWSER_E2E=1 node --test test/event-tran
 - Use TDD for bug fixes and new features (see the `test-driven-development` skill).
 - Run `pnpm run check` before pushing.
 - Treat repo-provided `.agents/` skill content as vendored. Prettier ignores it.
-- Do not hand-edit `CHANGELOG.md` or `.release-please-manifest.json`. Release-please owns them.
-- Human-authored PRs to `main` go through [no-mistakes](https://github.com/kunchenguid/no-mistakes) >= 1.46.0. [CONTRIBUTING.md](CONTRIBUTING.md) owns the gate, the attestation contract, and the workflow-pin rules.
+- This fork carries no release automation and no upstream contribution gate: release-please, its config, the no-mistakes PR gate, and the generated-files guard are deleted. `CHANGELOG.md` is upstream history and is not maintained here. A PR into `main` needs `pnpm run check` and `node verify-hardening.mjs` to pass.
 - Tests that start the server set `LAVISH_AXI_STATE_DIR` and use an ephemeral port.
 - `run()` returns on `--version` / `-v` / `-V` before `ensureStateDir` and telemetry (`test/cli-version.test.js`). New startup work goes after that short-circuit.
 - `canonicalFile` runs `realpath`. Two paths to the same file are one session.
