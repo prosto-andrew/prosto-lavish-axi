@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  isMermaidRenderInProgress,
   isMermaidSvg,
   mermaidNodeElement,
   mermaidNodeFrom,
@@ -171,6 +172,44 @@ test("isMermaidSvg matches the data-lavish-mermaid opt-in wrapper", () => {
 test("isMermaidSvg rejects a plain unrelated svg and null", () => {
   assert.equal(isMermaidSvg(el("svg", { id: "logo" })), false);
   assert.equal(isMermaidSvg(null), false);
+});
+
+// ---------------------------------------------------------------------------
+// isMermaidRenderInProgress
+// ---------------------------------------------------------------------------
+
+// mermaid.run lays a diagram out inside the container, in a temporary `<div id="d<svg id>">`, and
+// only swaps the finished svg in afterwards. Hiding the container mid-layout breaks edge labels.
+test("isMermaidRenderInProgress is true for an svg still inside Mermaid's temporary wrapper", () => {
+  const svg = el("svg", { id: "mermaid-3" });
+  el("pre", { className: "mermaid", children: [el("div", { id: "dmermaid-3", children: [svg] })] });
+  assert.equal(isMermaidRenderInProgress(svg), true);
+});
+
+test("isMermaidRenderInProgress is false once the finished svg sits in the container", () => {
+  const svg = el("svg", { id: "mermaid-3" });
+  el("pre", { className: "mermaid", children: [svg] });
+  assert.equal(isMermaidRenderInProgress(svg), false);
+});
+
+// A failed render leaves its error drawing in the wrapper for good, so it counts as settled.
+test("isMermaidRenderInProgress is false for an error drawing Mermaid left in its wrapper", () => {
+  const svg = el("svg", {
+    id: "mermaid-3",
+    children: [el("g", { children: [el("path", { className: "error-icon" })] })],
+  });
+  el("pre", { className: "mermaid", children: [el("div", { id: "dmermaid-3", children: [svg] })] });
+  assert.equal(isMermaidRenderInProgress(svg), false);
+});
+
+test("isMermaidRenderInProgress ignores wrappers that are not Mermaid's own and null", () => {
+  const wrapped = el("svg", { id: "mermaid-3" });
+  el("div", { id: "figure-3", children: [wrapped] });
+  assert.equal(isMermaidRenderInProgress(wrapped), false);
+  const anonymous = el("svg");
+  el("div", { id: "d", children: [anonymous] });
+  assert.equal(isMermaidRenderInProgress(anonymous), false);
+  assert.equal(isMermaidRenderInProgress(null), false);
 });
 
 // ---------------------------------------------------------------------------

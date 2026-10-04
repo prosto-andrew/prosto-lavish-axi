@@ -628,7 +628,13 @@ test("annotation hover remains active while another element is selected", () => 
 test("artifact SDK injects every shared mermaid node helper as a same-scope const", () => {
   const js = createSdkJs("abc");
 
-  for (const name of ["isMermaidSvg", "readNodeLabel", "mermaidNodeElement", "mermaidNodeFrom"]) {
+  for (const name of [
+    "isMermaidSvg",
+    "isMermaidRenderInProgress",
+    "readNodeLabel",
+    "mermaidNodeElement",
+    "mermaidNodeFrom",
+  ]) {
     assert.match(js, new RegExp(`const ${name}=`));
   }
   // mermaidNodeFrom calls mermaidNodeElement, so the resolver must reach the

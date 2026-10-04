@@ -468,7 +468,7 @@ export function createArtifactSdk(
   sessionKey = "",
   options = {},
 ) {
-  const { isMermaidSvg, mermaidNodeFrom, mermaidNodeElement } = mermaid;
+  const { isMermaidSvg, isMermaidRenderInProgress, mermaidNodeFrom, mermaidNodeElement } = mermaid;
   function postArtifactMessage(type, payload = {}) {
     parent.postMessage({ type, ...payload, artifact_load_token: String(artifactLoadToken || "") }, "*");
   }
@@ -1062,6 +1062,9 @@ export function createArtifactSdk(
 
   function enhanceMermaid() {
     for (const svg of findMermaidSvgs()) {
+      // Mid-layout, the svg Mermaid is drawing is a scratch copy it replaces when done, and hiding its
+      // container breaks the layout. The swap-in is a DOM mutation, which brings us back here.
+      if (isMermaidRenderInProgress(svg)) continue;
       embedWhiteboard(svg);
       if (mermaidViewports.has(svg)) continue;
       const viewport = createViewport(svg);

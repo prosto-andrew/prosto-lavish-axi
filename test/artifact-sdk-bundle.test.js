@@ -104,7 +104,13 @@ function cell(tag, text) {
   return element;
 }
 
-function bootSdk({ runAnimationFrames = false, revisionsScript = null, revisionMarkElements = [] } = {}) {
+function bootSdk({
+  runAnimationFrames = false,
+  revisionsScript = null,
+  revisionMarkElements = [],
+  mermaidSvgs = [],
+  mermaidContainers = [],
+} = {}) {
   const posted = [];
   const documentListeners = [];
   // Deferred work the SDK schedules, run only when a test asks for it: the draft-anchor settle
@@ -143,6 +149,7 @@ function bootSdk({ runAnimationFrames = false, revisionsScript = null, revisionM
       revokeObjectURL() {},
     },
     getComputedStyle: () => ({}),
+    URLSearchParams,
     setTimeout: scheduleTimer,
     clearTimeout: cancelTimer,
     requestAnimationFrame: (fn) => (runAnimationFrames ? scheduleTimer(fn, 0) : 0),
@@ -159,7 +166,12 @@ function bootSdk({ runAnimationFrames = false, revisionsScript = null, revisionM
       getElementById: () => null,
       querySelector: (selector) =>
         selector === "script[data-lavish-revisions]" ? revisionsScript : documentQuery(selector),
-      querySelectorAll: (selector) => (selector === "[data-lavish-revision]" ? revisionMarkElements : []),
+      querySelectorAll: (selector) => {
+        if (selector === "[data-lavish-revision]") return revisionMarkElements;
+        if (selector === "svg") return mermaidSvgs;
+        if (selector === ".mermaid") return mermaidContainers;
+        return [];
+      },
       getSelection: () => null,
     },
   };
@@ -660,4 +672,59 @@ test("a click inside a table cell opens only the note on the exact element click
 
   assert.equal(sdk.cards().length, cardsBefore + 1);
   assert.notEqual(sdk.posted.at(-1)?.type, "lavish:editQueuedAnchor");
+});
+
+// A `.mermaid` container holding `svg`, as mermaid.run leaves it mid-layout (`wrapped`), finished, or
+// after a failed render (`errored`, an error drawing left in the wrapper). The stubs answer exactly the
+// lookups the SDK's whiteboard embedding makes.
+function mermaidDiagram({ wrapped = false, errored = false } = {}) {
+  const container = createElement("pre");
+  container.className = "mermaid";
+  const matches = container.matches;
+  container.matches = (selectorList) =>
+    matches(selectorList) ||
+    String(selectorList)
+      .split(",")
+      .some((part) => part.trim() === ".mermaid");
+  container.inserted = [];
+  container.insertAdjacentElement = (position, element) => container.inserted.push({ position, element });
+  const svg = createElement("svg");
+  svg.id = "mermaid-1";
+  svg.getBoundingClientRect = () => ({ left: 0, top: 0, right: 400, bottom: 200, width: 400, height: 200 });
+  const errorIcon = errored ? createElement("path") : null;
+  svg.querySelector = (selector) => (selector === ".error-icon" ? errorIcon : null);
+  if (wrapped) {
+    const wrapper = appendTo(container, createElement("div"));
+    wrapper.id = `d${svg.id}`;
+    appendTo(wrapper, svg);
+  } else {
+    appendTo(container, svg);
+  }
+  return { container, svg };
+}
+
+test("the served SDK leaves a Mermaid diagram alone while Mermaid is still laying it out", () => {
+  const { container, svg } = mermaidDiagram({ wrapped: true });
+  bootSdk({ mermaidSvgs: [svg], mermaidContainers: [container] });
+  assert.notEqual(container.style.display, "none", "the container was hidden mid-render");
+  assert.equal(container.inserted.length, 0, "a whiteboard was embedded over an unfinished render");
+});
+
+test("the served SDK embeds the whiteboard once Mermaid has placed the finished diagram", () => {
+  const { container, svg } = mermaidDiagram();
+  bootSdk({ mermaidSvgs: [svg], mermaidContainers: [container] });
+  assert.equal(container.style.display, "none");
+  assert.equal(container.inserted.length, 1);
+  assert.equal(container.inserted[0].position, "afterend");
+  assert.match(
+    container.inserted[0].element.getAttribute("src") || container.inserted[0].element.src,
+    /^\/whiteboard-frame\?/,
+  );
+});
+
+test("the served SDK still embeds the whiteboard over an error drawing a failed render left behind", () => {
+  const { container, svg } = mermaidDiagram({ wrapped: true, errored: true });
+  bootSdk({ mermaidSvgs: [svg], mermaidContainers: [container] });
+  assert.equal(container.style.display, "none");
+  assert.equal(container.inserted.length, 1);
 });

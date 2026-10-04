@@ -12,6 +12,10 @@
     <script type="module">
       import mermaid from "/design/mermaid/mermaid.esm.min.mjs";
 
+      // This script renders every diagram itself, so turn Mermaid's own load-time
+      // render off now, before load fires: two renders at once corrupt each other.
+      mermaid.initialize({ startOnLoad: false });
+
       // Render Mermaid in a theme that matches the artifact page, and re-render when
       // the viewer flips the page theme - Mermaid never restyles an already-rendered
       // SVG on its own, so a fixed theme clashes in either light or dark mode.

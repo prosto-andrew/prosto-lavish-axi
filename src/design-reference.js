@@ -24,6 +24,10 @@ export const DESIGN_CDN_SNIPPET = `<link rel="stylesheet" href="${DESIGN_CDN_URL
 export const MERMAID_CDN_SNIPPET = `<script type="module">
   import mermaid from "${MERMAID_CDN_URL}";
 
+  // This script renders every diagram itself, so turn Mermaid's own load-time
+  // render off now, before load fires: two renders at once corrupt each other.
+  mermaid.initialize({ startOnLoad: false });
+
   // Render Mermaid in a theme that matches the artifact page, and re-render when
   // the viewer flips the page theme - Mermaid never restyles an already-rendered
   // SVG on its own, so a fixed theme clashes in either light or dark mode.

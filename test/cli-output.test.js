@@ -495,6 +495,79 @@ test("design output emits a theme-aware Mermaid init that re-renders on page-the
   assert.match(snippet, /addEventListener\(["']change["']/);
 });
 
+function executableMermaidSnippet() {
+  return createDesignOutput()
+    .whiteboard_tooling.mermaid_cdn_snippet.replace(/^<script type="module">\n/, "")
+    .replace(/\n<\/script>$/, "")
+    .replace(/^\s*import mermaid from "[^"]+";\n/m, "");
+}
+
+// Mermaid registers its own `load` listener when imported and, unless startOnLoad is already off by
+// then, renders every `.mermaid` element itself - concurrently with the snippet's own render, which
+// resets the same containers mid-layout. Two renders at once share Mermaid's state and fail at random.
+test("theme-aware Mermaid snippet turns Mermaid's own load-time render off before load fires", () => {
+  const windowListeners = [];
+  const initializeCalls = [];
+  let runs = 0;
+  const document = {
+    body: {},
+    documentElement: {},
+    readyState: "loading",
+    createElement() {
+      return {
+        getContext: () => ({ clearRect() {}, fillRect() {}, getImageData: () => ({ data: [255, 255, 255, 255] }) }),
+      };
+    },
+    querySelectorAll() {
+      return [];
+    },
+    addEventListener() {},
+  };
+  const window = {
+    matchMedia() {
+      return { matches: false, addEventListener() {} };
+    },
+    addEventListener(type) {
+      windowListeners.push(type);
+    },
+  };
+  const mermaid = {
+    initialize(options) {
+      initializeCalls.push(options);
+    },
+    run() {
+      runs += 1;
+      return Promise.resolve();
+    },
+  };
+
+  new Function(
+    "mermaid",
+    "window",
+    "document",
+    "MutationObserver",
+    "getComputedStyle",
+    "console",
+    executableMermaidSnippet(),
+  )(
+    mermaid,
+    window,
+    document,
+    class {
+      observe() {}
+    },
+    () => ({ backgroundColor: "white", colorScheme: "normal" }),
+    console,
+  );
+
+  assert.deepEqual(windowListeners, ["load"], "the snippet should wait for load before rendering");
+  assert.equal(runs, 0);
+  assert.ok(
+    initializeCalls.some((options) => options.startOnLoad === false),
+    "Mermaid's own load-time render must be off before load fires",
+  );
+});
+
 test("theme-aware Mermaid snippet serializes rapid theme-change renders", async () => {
   const snippet = createDesignOutput()
     .whiteboard_tooling.mermaid_cdn_snippet.replace(/^<script type="module">\n/, "")
@@ -589,8 +662,9 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
     }
   }
   const mermaid = {
-    initialize({ theme }) {
-      initializedThemes.push(theme);
+    // The theme-less call is the up-front startOnLoad switch-off; only render passes pick a theme.
+    initialize(options) {
+      if ("theme" in options) initializedThemes.push(options.theme);
     },
     run() {
       renderedSources.push(diagram.innerHTML);

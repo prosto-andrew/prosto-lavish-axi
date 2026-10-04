@@ -24,6 +24,18 @@ export function isMermaidSvg(svg) {
   return !!(svg.closest && svg.closest(".mermaid, [data-lavish-mermaid]"));
 }
 
+// True while mermaid.run is still laying `svg` out. Mermaid draws into the container itself, inside a
+// temporary `<div id="d<svg id>">`, because layout needs the rendered geometry - placing an edge label
+// walks the edge's path - and only afterwards swaps the finished svg in as the container's content.
+// Hiding the container in that window (as embedding a whiteboard does) leaves the path with no
+// geometry, and the render fails ("Could not find a suitable point for the given distance"). A failed
+// render leaves its error drawing (`.error-icon`) in the wrapper for good, so that counts as settled.
+export function isMermaidRenderInProgress(svg) {
+  if (!svg?.id) return false;
+  if (svg.parentElement?.id !== `d${svg.id}`) return false;
+  return !svg.querySelector?.(".error-icon");
+}
+
 // Extract a node's visible label as a single line. Mermaid renders multi-line
 // labels (`A<br/>B`) as real <br> elements, which textContent silently drops —
 // so we swap <br> for a space before reading, giving "A B" instead of "AB".
