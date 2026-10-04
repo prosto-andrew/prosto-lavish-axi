@@ -3344,6 +3344,58 @@ test("/design serves local Tailwind and DaisyUI artifact assets", async () => {
   }
 });
 
+test("/design/mermaid serves the vendored module graph to the opaque-origin artifact and stays confined", async () => {
+  // The design snippet imports this module from the sandboxed artifact, whose origin is
+  // opaque, and module scripts plus their chunk imports are always CORS-mode fetches.
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const outside = await mkdtemp(path.join(tmpdir(), "lavish-outside-"));
+  const mermaidDir = path.join(dir, "mermaid");
+  await mkdir(path.join(mermaidDir, "chunks", "mermaid.esm.min"), { recursive: true });
+  await writeFile(path.join(mermaidDir, "mermaid.esm.min.mjs"), "export default {}; // fake mermaid\n");
+  await writeFile(path.join(mermaidDir, "chunks", "mermaid.esm.min", "chunk-TEST.mjs"), "export const chunk = 1;\n");
+  await writeFile(path.join(outside, "secret.txt"), "outside-secret\n");
+  await symlink(path.join(outside, "secret.txt"), path.join(mermaidDir, "leak.txt"));
+  await writeFile(path.join(dir, "sibling-secret.txt"), "outside-secret\n");
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    mermaidAssetsDir: mermaidDir,
+  });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    for (const asset of ["mermaid.esm.min.mjs", "chunks/mermaid.esm.min/chunk-TEST.mjs"]) {
+      const res = await fetch(`${base}/design/mermaid/${asset}`, { headers: { origin: "null" } });
+      assert.equal(res.status, 200, asset);
+      assert.equal(res.headers.get("access-control-allow-origin"), "*", asset);
+      assert.equal(res.headers.get("cache-control"), "no-cache", asset);
+      assert.match(res.headers.get("content-type") || "", /javascript/, asset);
+      assert.match(await res.text(), /export/, asset);
+    }
+
+    const leak = await rawRequest(server.port, "/design/mermaid/leak.txt");
+    assert.equal(leak.status, 403);
+    assert.doesNotMatch(leak.body, /outside-secret/);
+
+    const traversal = await rawRequest(server.port, "/design/mermaid/../sibling-secret.txt");
+    assert.equal(traversal.status, 403);
+    assert.doesNotMatch(traversal.body, /outside-secret/);
+
+    const missing = await fetch(`${base}/design/mermaid/nope.mjs`);
+    assert.equal(missing.status, 404);
+
+    // Classic scripts and stylesheets are no-cors fetches, so the other design assets
+    // never needed the header and must not gain it.
+    const daisy = await fetch(`${base}/design/daisyui.css`);
+    assert.equal(daisy.status, 200);
+    assert.equal(daisy.headers.get("access-control-allow-origin"), null);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
 test("design asset resolver only trusts exact packaged design asset paths", () => {
   assert.equal(resolveDesignAssetPath("/design/daisyui.css/extra"), null);
   assert.equal(resolveDesignAssetPath("/design/tailwindcss-browser.js/extra"), null);

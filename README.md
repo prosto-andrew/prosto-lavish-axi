@@ -26,7 +26,7 @@
 > [`hardening/INSTALL-WINDOWS.md`](hardening/INSTALL-WINDOWS.md) -
 > overview in [`hardening/SETUP.md`](hardening/SETUP.md)
 >
-> **Verify any checkout:** `npm install && node verify-hardening.mjs` -> _All 22 checks passed._
+> **Verify any checkout:** `npm install && node verify-hardening.mjs` -> _All 23 checks passed._
 >
 > **Newer upstream releases are merged, not re-patched.** `hardening/harden_lavish.py` is the
 > original patch script and refuses anything but 0.1.62. A newer upstream is merged into this

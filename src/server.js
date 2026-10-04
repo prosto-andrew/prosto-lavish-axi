@@ -193,6 +193,49 @@ export function defaultWhiteboardAssetsDir() {
   return fileURLToPath(new URL("../dist/whiteboard", import.meta.url));
 }
 
+// LAVISH-HARDENED: vendored Mermaid ESM bundle (the module plus its chunk graph), so an
+// artifact that renders Mermaid never reaches out to a CDN. Resolved the same
+// way as the other design assets: the packaged copy when this file runs from
+// dist/, the built copy when the server is spawned from this checkout's src/
+// (which is what resolveServerEntry does whenever bin/ is present).
+export function defaultMermaidAssetsDir() {
+  const packaged = fileURLToPath(new URL("./design/mermaid", import.meta.url));
+  if (existsSync(packaged)) return packaged;
+  return fileURLToPath(new URL("../dist/design/mermaid", import.meta.url));
+}
+
+// Static, public, vendored bundles fetched from an opaque origin: the whiteboard
+// frame's fonts, and the Mermaid module plus every chunk it imports from the
+// sandboxed artifact (module scripts are always CORS-mode fetches). Those fetches
+// are CORS-gated, so these routes answer Access-Control-Allow-Origin: * - and
+// they are the only routes that may; nothing else this server sends is public.
+function opaqueOriginAssetRoute(root, missingMessage) {
+  return async (req, res, next) => {
+    try {
+      const file = await resolveArtifactAsset(root, req.params[0]);
+      if (!file) {
+        res.status(403).send("Forbidden");
+        return;
+      }
+      if (!existsSync(file)) {
+        res.status(404).send(existsSync(root) ? "Not found" : missingMessage);
+        return;
+      }
+      res.setHeader("access-control-allow-origin", "*");
+      // Revalidate on every use (304 via Last-Modified/ETag): the bundle URL
+      // is unversioned, and a memory-cached stale bundle after an upgrade or
+      // local rebuild is far worse than cheap loopback revalidations.
+      res.setHeader("cache-control", "no-cache");
+      // Traversal is already rejected by resolveArtifactAsset; "allow" keeps
+      // dot components in the assets dir's own absolute path (e.g. a checkout
+      // under a dot-directory) from 403ing every asset.
+      res.sendFile(file, { dotfiles: "allow" });
+    } catch (error) {
+      next(error);
+    }
+  };
+}
+
 // Whiteboard scene saves carry full Excalidraw scenes (and, at queue time, a
 // PNG preview data URL), which outgrow the default 2 MB JSON cap. Only the
 // whiteboard write routes get the larger limit.
@@ -330,6 +373,7 @@ export async function serve({
   lookupHost,
   bindRecoveryDelaysMs = BIND_RECOVERY_DELAYS_MS,
   whiteboardAssetsDir = defaultWhiteboardAssetsDir(),
+  mermaidAssetsDir = defaultMermaidAssetsDir(),
 } = {}) {
   // Keep the transport dependency off fast metadata paths such as `--version`.
   const { WebSocket, WebSocketServer } = await import("ws");
@@ -1521,17 +1565,12 @@ export async function serve({
     }
   });
 
-  // LAVISH-HARDENED: vendored Mermaid ESM bundle (the module plus its chunk graph), so an
-  // artifact that renders Mermaid never reaches out to a CDN. Resolved the same
-  // way as the other design assets: the packaged copy when this file runs from
-  // dist/, the built copy when the server is spawned from this checkout's src/
-  // (which is what resolveServerEntry does whenever bin/ is present).
-  const hardenedMermaidDir = (() => {
-    const packaged = fileURLToPath(new URL("./design/mermaid", import.meta.url));
-    if (existsSync(packaged)) return packaged;
-    return fileURLToPath(new URL("../dist/design/mermaid", import.meta.url));
-  })();
-  app.use("/design/mermaid", express.static(hardenedMermaidDir));
+  // LAVISH-HARDENED: the vendored Mermaid bundle replaces the CDN import, so it has to
+  // answer the sandboxed artifact's CORS-mode module fetches the way the CDN did.
+  app.get(
+    /^\/design\/mermaid\/(.+)$/,
+    opaqueOriginAssetRoute(mermaidAssetsDir, "Mermaid bundle missing - run `pnpm run build`"),
+  );
 
   app.get("/design/:asset", async (req, res, next) => {
     try {
@@ -1600,32 +1639,10 @@ export async function serve({
   // runs in an opaque origin, and font fetches from an opaque origin are
   // CORS-gated, so this static, public-content route must answer with
   // Access-Control-Allow-Origin: * or every canvas font falls back.
-  app.get(/^\/whiteboard-assets\/(.+)$/, async (req, res, next) => {
-    try {
-      const file = await resolveArtifactAsset(whiteboardAssetsDir, req.params[0]);
-      if (!file) {
-        res.status(403).send("Forbidden");
-        return;
-      }
-      if (!existsSync(file)) {
-        res
-          .status(404)
-          .send(existsSync(whiteboardAssetsDir) ? "Not found" : "Whiteboard bundle missing - run `pnpm run build`");
-        return;
-      }
-      res.setHeader("access-control-allow-origin", "*");
-      // Revalidate on every use (304 via Last-Modified/ETag): the bundle URL
-      // is unversioned, and a memory-cached stale bundle after an upgrade or
-      // local rebuild is far worse than cheap loopback revalidations.
-      res.setHeader("cache-control", "no-cache");
-      // Traversal is already rejected by resolveArtifactAsset; "allow" keeps
-      // dot components in the assets dir's own absolute path (e.g. a checkout
-      // under a dot-directory) from 403ing every asset.
-      res.sendFile(file, { dotfiles: "allow" });
-    } catch (error) {
-      next(error);
-    }
-  });
+  app.get(
+    /^\/whiteboard-assets\/(.+)$/,
+    opaqueOriginAssetRoute(whiteboardAssetsDir, "Whiteboard bundle missing - run `pnpm run build`"),
+  );
 
   // Mermaid sources for a session's artifact, extracted from the HTML on disk
   // in document order so `index` matches the browser's `.mermaid` element

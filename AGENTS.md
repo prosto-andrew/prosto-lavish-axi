@@ -23,6 +23,7 @@ pnpm run typecheck      # tsc --noEmit (checkJs)
 One file: `node --test test/server.test.js`. One name: `node --test --test-name-pattern "createOpenOutput" test/cli-output.test.js`.
 Opt-in browser suites need `chrome-devtools-axi`: `LAVISH_AXI_BROWSER_E2E=1 node --test test/layout-audit-browser.test.js test/layout-warning-inbox.browser.test.js`.
 Seven-tab pool regression: `LAVISH_AXI_BROWSER_E2E=1 node --test test/event-transport.browser.test.js`.
+Vendored Mermaid in the opaque-origin artifact (headless Chrome via `CHROME_PATH`, no `chrome-devtools-axi`): `LAVISH_AXI_BROWSER_E2E=1 node --test test/mermaid-artifact.browser.test.js`.
 `prepack` and `prepare` both run `build`. `pnpm run check` fails if `skills/lavish/SKILL.md` drifts from `createSkillMarkdown()`, or if root `plugin.json` drifts from `pnpm run build:plugin`.
 
 ## Project conventions
@@ -86,7 +87,7 @@ Each line is the rule. [docs/invariants.md](docs/invariants.md) has the failure 
 - `/whiteboard-frame` stays framable by any origin and requires `?key=`. The channel token is signed over the session key. [Whiteboard](docs/invariants.md#whiteboard-mermaid-excalidraw).
 - Whiteboard scenes persist in per-diagram sidecars, never in `state.json`. Stale user edits are never silently merged, and `handleInit` goes through `resolveWhiteboardInitAction`. [Whiteboard](docs/invariants.md#whiteboard-mermaid-excalidraw).
 - Mermaid source stays authoritative. There is no scene-to-Mermaid reverse conversion. `mermaid` is pinned exactly. Persisted Excalidraw `appState` must not carry `theme` or a dark `viewBackgroundColor`. [Whiteboard](docs/invariants.md#whiteboard-mermaid-excalidraw).
-- `/whiteboard-assets/*` keeps `Access-Control-Allow-Origin: *` so fonts load in the opaque-origin frame, plus `Cache-Control: no-cache` and sendFile `dotfiles: "allow"`. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
+- `/whiteboard-assets/*` and `/design/mermaid/*` (one helper, `opaqueOriginAssetRoute`) keep `Access-Control-Allow-Origin: *` so fonts and the vendored Mermaid module graph load in opaque-origin frames, plus `Cache-Control: no-cache` and sendFile `dotfiles: "allow"`. No other route sends ACAO. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
 - Mermaid skeletons re-materialize after Excalidraw fonts load, saved-scene repair is expansion-only, and `restoreMermaidLabelLineBreaks` runs before `convertToExcalidrawElements`. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
 - Every store mutation takes `store.lock`. `referencedAttachmentIds` stays lock-free. [Image attachments](docs/invariants.md#image-attachments).
 - Attachment identity is the content-addressed file. `queuePrompts` re-derives path, mime, bytes, and dimensions from disk. Resolution is all-or-nothing. `boundAttachmentRefs` runs before any filesystem await. [Image attachments](docs/invariants.md#image-attachments).
