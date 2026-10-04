@@ -712,7 +712,9 @@ test(
         },
         () => stopCommand([]),
       );
-      assert.equal(output.server.status, "not-lavish");
+      // LAVISH-HARDENED: upstream dialed the configured LAVISH_AXI_HOST and reported this foreign
+      // server as not-lavish. This build ignores LAVISH_AXI_HOST and dials loopback only.
+      assert.equal(output.server.status, "not-running");
     } finally {
       await new Promise((resolve) => foreignOnly.close(() => resolve(undefined)));
     }

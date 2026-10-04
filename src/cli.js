@@ -2,7 +2,6 @@ import { spawn, spawnSync } from "node:child_process";
 import { closeSync, createReadStream, existsSync, openSync, readFileSync } from "node:fs";
 import { access, readFile, writeFile } from "node:fs/promises";
 import { get as httpGet } from "node:http";
-import { isIP } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,15 +16,12 @@ import {
   splitExportWarnings,
 } from "./export-bundle.js";
 import { normalizeSiteId } from "./html-app.js";
-import { localInterfaceAddresses } from "./local-address.js";
 import {
   clientHost,
   defaultPort,
   ensureStateDir,
   hostForUrl,
-  isWildcardHost,
   LOOPBACK_HOST,
-  resolveConcreteListenHosts,
   serverLogFile,
   stateFile,
   stateId,
@@ -1094,6 +1090,16 @@ async function designCommand() {
 // it would have called.
 
 async function serverCommand(args) {
+  // LAVISH-HARDENED: upstream's `--also-listen <host>` asked the server to bind further addresses
+  // beside loopback. This build listens on 127.0.0.1 only, so the flag is refused rather than
+  // silently ignored - a caller relying on it must learn that nothing else was bound.
+  if (args.some((arg) => arg === "--also-listen" || arg.startsWith("--also-listen="))) {
+    throw new AxiError(
+      "`--also-listen` is removed in this hardened build: the server listens on 127.0.0.1 only.",
+      "VALIDATION_ERROR",
+      [],
+    );
+  }
   const port = Number(flagValue(args, "--port") || defaultPort());
   const debug = args.includes("--verbose") || process.env.LAVISH_AXI_DEBUG === "1";
   const server = await serve({
@@ -1101,7 +1107,6 @@ async function serverCommand(args) {
     stateFile: stateFile(),
     version: VERSION,
     debug,
-    extraListenHosts: flagValues(args, "--also-listen"),
   });
   await server.done;
   return "";
@@ -1145,17 +1150,11 @@ const MAX_HEALTH_BODY_BYTES = 256 * 1024;
 // answering, which can take longer than a plain health read.
 const HEALTH_RECONCILE_TIMEOUT_MS = 3000;
 
-// Every address a Lavish server on this port could be answering at, in preference order: the host
-// this CLI is configured for, loopback, then every other local interface address. Agents on one
-// machine do not share LAVISH_AXI_HOST, and a CLI that only dialed its own host (plus loopback)
-// concluded nothing was running while a server pinned to the tailnet address held the port, then
-// spawned a second daemon beside it on the same port and the same state file.
+// LAVISH-HARDENED: upstream also dialed every address on every local interface (the tailnet one
+// included) to find a server pinned elsewhere by another agent's LAVISH_AXI_HOST. Servers of this
+// build only ever listen on loopback, so discovery probes loopback and nothing else.
 function serverCandidateHosts() {
-  const hosts = [clientHost(), LOOPBACK_HOST];
-  for (const address of localInterfaceAddresses()) {
-    if (!hosts.includes(address)) hosts.push(address);
-  }
-  return hosts;
+  return [LOOPBACK_HOST];
 }
 
 function serverBaseUrl(host, port) {
@@ -1246,65 +1245,12 @@ async function stopDuplicateServers(duplicates, { reloadKey = "", reason = "" } 
   }
 }
 
-// Keep the running server, retiring any same-port duplicate first. Only duplicates whose addresses
-// the kept server already requests reach here (`hostsToServe`), and the reconcile afterwards makes
-// it bind an address the duplicate was holding right away, instead of on its next background retry.
+// Keep the running server, retiring any same-port duplicate of this installation first.
 async function adoptServer(baseUrl, duplicates, reloadKey) {
   if (duplicates.length === 0) return baseUrl;
   await stopDuplicateServers(duplicates, { reloadKey });
   await probeHealth(baseUrl, { reconcileNetwork: true, timeoutMs: HEALTH_RECONCILE_TIMEOUT_MS });
   return baseUrl;
-}
-
-// The concrete addresses this CLI's own LAVISH_AXI_HOST needs a server to serve. Without an explicit
-// host any running server will do: loopback is always served, and Tailscale is the server's to
-// detect. A name that does not resolve right now is still required as the name, so the server is
-// asked to serve it, retries it, and reports it as network_warning instead of it being dropped.
-async function requiredServerHosts(env = process.env) {
-  const envHost = env.LAVISH_AXI_HOST?.trim();
-  if (!envHost || isWildcardHost(envHost)) return [];
-  return resolveConcreteListenHosts([clientHost(env)], { keepUnresolved: true });
-}
-
-// Which required addresses a running server was never asked to serve. An address it was asked for
-// but has not bound yet is NOT missing: that server is already retrying it, and a replacement could
-// not bind it either. A server too old to report its requested addresses is judged by version.
-export function missingServerHosts(healthBody, requiredHosts) {
-  if (!healthBody || !Array.isArray(healthBody.requested_hosts)) return [];
-  return requiredHosts.filter((host) => !healthBody.requested_hosts.includes(host));
-}
-
-// Every address the replaced servers were asked to serve, so a replacement - for an upgrade, a
-// changed network, or a missing host - never drops another agent's address and its review links.
-// This CLI's own hosts come from its environment. An address that is no longer on this machine (a
-// Tailscale IP from a network that went away) is left out, so the replacement does not retry it
-// forever; one still on a local interface is kept even when the network around it changed.
-export function inheritedListenHosts(
-  healthBodies,
-  requiredHosts,
-  inherited = [],
-  localAddresses = localInterfaceAddresses(),
-) {
-  const hosts = [...inherited];
-  for (const health of healthBodies) {
-    if (!health || !Array.isArray(health.requested_hosts)) continue;
-    for (const host of health.requested_hosts) {
-      if (host === LOOPBACK_HOST || requiredHosts.includes(host)) continue;
-      if (isIP(host) && !localAddresses.includes(host)) continue;
-      if (!hosts.includes(host)) hosts.push(host);
-    }
-  }
-  return hosts;
-}
-
-// Every address a kept server has to be asked to serve: this CLI's own, and every address a
-// same-port duplicate serves, so retiring that duplicate never takes its review links with it.
-function hostsToServe(requiredHosts, duplicates) {
-  return inheritedListenHosts(
-    duplicates.map((duplicate) => duplicate.health),
-    [],
-    requiredHosts,
-  );
 }
 
 async function probeHealth(baseUrl, { reconcileNetwork, timeoutMs }) {
@@ -1316,15 +1262,11 @@ async function probeHealth(baseUrl, { reconcileNetwork, timeoutMs }) {
 // reloads that chrome only; every other open review page is told it is outdated and left alone.
 async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
   const port = defaultPort();
-  const requiredHosts = await requiredServerHosts();
   const { baseUrl, health: existing, duplicates, foreign } = await findRunningServer(port, { reconcileNetwork: true });
   if (foreign) throw otherInstallationError(port, foreign);
-  const missingHosts =
-    existing?.app === "lavish-axi" ? missingServerHosts(existing, hostsToServe(requiredHosts, duplicates)) : [];
-  if (existing && !shouldRestartServer(VERSION, existing, forceRestart) && missingHosts.length === 0) {
+  if (existing && !shouldRestartServer(VERSION, existing, forceRestart)) {
     return adoptServer(baseUrl, duplicates, reloadKey);
   }
-  let alsoListen = inheritedListenHosts([existing, ...duplicates.map((duplicate) => duplicate.health)], requiredHosts);
   let unidentified = "";
   if (existing) {
     if (!(await canControlServerOnPort(baseUrl, existing, listenerMatchesLavish))) {
@@ -1347,7 +1289,7 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
       }
     }
   }
-  await startServer(port, { alsoListen });
+  await startServer(port);
   const replacedForNetwork =
     Boolean(existing) &&
     existing.app === "lavish-axi" &&
@@ -1366,40 +1308,23 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
       foreign: liveForeign,
     } = await findRunningServer(port, { reconcileNetwork: true });
     if (liveForeign) throw otherInstallationError(port, liveForeign);
-    const liveMissing =
-      health?.app === "lavish-axi" ? missingServerHosts(health, hostsToServe(requiredHosts, liveDuplicates)) : [];
-    // Once is the bound: every replacement carries the hosts of the server it replaces, so two CLIs
-    // that each need their own address converge on one server instead of replacing each other.
-    if (health && !shouldRestartServer(VERSION, health)) {
-      if (liveMissing.length === 0) return adoptServer(liveUrl, liveDuplicates, reloadKey);
-      if (raceRestarted) throw missingHostsError(port, liveMissing);
-    }
+    if (health && !shouldRestartServer(VERSION, health)) return adoptServer(liveUrl, liveDuplicates, reloadKey);
     // Another daemon won the port while ours was starting (ours exits when a Lavish server already
-    // owns loopback) - an older release, or one missing an address this CLI needs. Retire it and
-    // start once more rather than wait it out.
+    // owns loopback) - an older release. Retire it and start once more rather than wait it out.
     if (health?.app === "lavish-axi" && health.network_stale !== true && !raceRestarted) {
       raceRestarted = true;
-      alsoListen = inheritedListenHosts(
-        [health, ...liveDuplicates.map((duplicate) => duplicate.health)],
-        requiredHosts,
-        alsoListen,
-      );
       await stopDuplicateServers(liveDuplicates, { reloadKey });
       await requestShutdown(liveUrl, { reloadKey, reason: serverReplacementReason(VERSION, health) });
       if (!(await waitForPortFree(liveUrl, 3000))) break;
-      await startServer(port, { alsoListen });
+      await startServer(port);
       deadline = Date.now() + 5000;
       continue;
     }
     if (health?.network_stale === true && health.app === "lavish-axi") {
-      if (networkRestarted) {
-        if (liveMissing.length > 0) throw missingHostsError(port, liveMissing);
-        return adoptServer(liveUrl, liveDuplicates, reloadKey);
-      }
-      alsoListen = inheritedListenHosts([health], requiredHosts, alsoListen);
+      if (networkRestarted) return adoptServer(liveUrl, liveDuplicates, reloadKey);
       await requestShutdown(liveUrl, { reloadKey, reason: "" });
       if (!(await waitForPortFree(liveUrl, 3000))) break;
-      await startServer(port, { alsoListen });
+      await startServer(port);
       networkRestarted = true;
       deadline = Date.now() + 5000;
       continue;
@@ -1410,14 +1335,6 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
   throw new AxiError("Lavish Editor server did not start", "SERVER_ERROR", [
     `Run \`lavish-safe server --port ${port}\` to inspect server startup`,
   ]);
-}
-
-function missingHostsError(port, missingHosts) {
-  return new AxiError(
-    `The Lavish server on port ${port} does not serve ${missingHosts.join(", ")}, and replacing it did not stick`,
-    "SERVER_ERROR",
-    ["Run `lavish-axi stop`, then retry"],
-  );
 }
 
 // Pure helper so the upgrade-detection logic is unit-testable without spinning up HTTP.
@@ -1593,7 +1510,7 @@ function unidentifiedListenerError(baseUrl) {
   );
 }
 
-async function startServer(port, { alsoListen = [] } = {}) {
+async function startServer(port) {
   await ensureStateDir();
   const entry = resolveServerEntry();
   let logFd = null;
@@ -1604,7 +1521,6 @@ async function startServer(port, { alsoListen = [] } = {}) {
   }
   try {
     const args = [entry, "server", "--port", String(port)];
-    for (const host of alsoListen) args.push("--also-listen", host);
     const child = spawn(process.execPath, args, createServerSpawnOptions(logFd));
     child.unref();
   } finally {
@@ -1809,21 +1725,6 @@ function flagValue(args, flag) {
     if (arg.startsWith(`${flag}=`)) return arg.slice(flag.length + 1) || null;
   }
   return null;
-}
-
-function flagValues(args, flag) {
-  const values = [];
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (arg === "--") break;
-    if (arg === flag && args[i + 1]) {
-      values.push(args[i + 1]);
-      i += 1;
-    } else if (arg.startsWith(`${flag}=`) && arg.length > flag.length + 1) {
-      values.push(arg.slice(flag.length + 1));
-    }
-  }
-  return values;
 }
 
 function inspectValueFlag(args, flag) {

@@ -328,7 +328,6 @@ export async function serve({
   allowedHosts,
   detectTailscale: detectTailscaleFn,
   lookupHost,
-  extraListenHosts = [],
   bindRecoveryDelaysMs = BIND_RECOVERY_DELAYS_MS,
   whiteboardAssetsDir = defaultWhiteboardAssetsDir(),
 } = {}) {
@@ -339,10 +338,10 @@ export async function serve({
   const autoTailscale = !envHost;
   const detect = detectTailscaleFn === undefined ? detectTailscale : detectTailscaleFn;
   const tailscale = !hosts?.length && autoTailscale && typeof detect === "function" ? await detect() : null;
+  // LAVISH-HARDENED: no `extraListenHosts` (upstream's --also-listen). Outside of tests passing
+  // `hosts` directly, resolveListenHosts is the loopback-only stub in ./paths.js.
   const requestedListenHosts = sanitizeListenHosts(
-    hosts?.length
-      ? [...hosts, ...extraListenHosts]
-      : resolveListenHosts({ host, env, tailscale, extraHosts: extraListenHosts }),
+    hosts?.length ? hosts : resolveListenHosts({ host, env, tailscale }),
   );
   const lookupOptions = lookupHost ? { lookup: lookupHost } : {};
   const listenHosts = await resolveConcreteListenHosts(requestedListenHosts, {
