@@ -16,19 +16,26 @@ nothing tells an agent to publish, install hooks, or fetch from a CDN.
 
 ## 1. Build (once)
 
-From this directory, in **WSL** or **Windows**, whichever you use more:
+Clone anywhere you like - nothing here assumes a particular path - and from the checkout,
+in **WSL/Linux** or **Windows**:
 
 ```
-npm install
+npx --yes pnpm@11.1.1 install --frozen-lockfile
 ```
 
-That is all — the package's `prepare` script runs the build automatically.
+That installs exactly the dependency tree in the committed `pnpm-lock.yaml` (the one CI
+tests) and the package's `prepare` script then runs the build. The pnpm version matches
+`packageManager` in `package.json`; `npx` fetches it, so nothing needs a global install.
 The build needs Node 22+.
 
-Note on running from both WSL and Windows: the runtime dependencies are pure
-JavaScript, so a `node_modules/` installed under one will still _run_ under the
-other. Only rebuilding (`npm run build`) needs the platform's own esbuild binary —
-if you want to rebuild from the other environment, run `npm install` there once.
+`pnpm-lock.yaml` is the fork's only lockfile. `npm install` still builds a working tree, but
+it re-resolves every `^` range on each machine and ignores the supply-chain policy in
+`pnpm-workspace.yaml` (minimum release age, trust policy, build-script allowlist). If npm was
+used anyway, do not commit the `package-lock.json` it writes; `.gitignore` excludes it on
+purpose.
+
+Install separately in each environment you run from (one clone for WSL, one for Windows):
+pnpm links `node_modules/` with symlinks or junctions native to the platform that made them.
 
 ## 2. Verify
 
@@ -36,9 +43,9 @@ if you want to rebuild from the other environment, run `npm install` there once.
 node verify-hardening.mjs
 ```
 
-Ten checks, covering both the sources and the compiled `dist/`. Exit code 0 means
-the build is hardened; any failure prints what is wrong. Re-run this after every
-`npm install` or `git pull`.
+Twenty-three checks, covering both the sources and the compiled `dist/`. Exit code 0
+means the build is hardened; any failure prints what is wrong. Re-run this after every
+install or `git pull`.
 
 ## 3. Put the launcher on PATH
 
@@ -51,12 +58,13 @@ ln -sf "$(pwd)/lavish-safe" ~/.local/bin/lavish-safe
 # add to ~/.bashrc if needed:  export PATH="$HOME/.local/bin:$PATH"
 ```
 
-**Windows:** add this directory to your user PATH, or copy `lavish-safe.cmd` into a
-directory that is already on PATH.
+**Windows:** add the checkout directory itself to your user PATH. Do not copy
+`lavish-safe.cmd` elsewhere: it resolves `dist\cli.mjs` relative to its own location.
 
-The launcher refuses to start if `dist/cli.mjs` is missing, is older than the patched
-sources, lost its hardening markers, or regained any of the removed endpoints — which
-is what an accidental re-download or `npm update` would look like.
+The launcher refuses to start if `dist/cli.mjs` is missing, lost its hardening markers,
+or regained any of the removed endpoints — which is what an accidental re-download or
+`npm update` would look like. (`verify-hardening.mjs` additionally catches a `dist/` older
+than the sources.)
 
 ## 4. Install the skill
 
@@ -78,6 +86,7 @@ In `~/.claude/settings.json` (and the Windows equivalent):
     "deny": [
       "Bash(npx lavish-axi:*)",
       "Bash(npx -y lavish-axi:*)",
+      "Bash(npx --yes lavish-axi:*)",
       "Bash(lavish-axi:*)",
       "Bash(npm install -g lavish-axi:*)"
     ]
@@ -87,24 +96,28 @@ In `~/.claude/settings.json` (and the Windows equivalent):
 
 ## Moving to a newer upstream
 
-`harden_lavish.py` (in the parent folder) is the original patch script for 0.1.62 and refuses
-any other version. Newer upstream releases are **merged** into this tree instead, and every
-merge is a fresh audit: resolve conflicts in favour of the hardening, drop anything that adds a
-network destination, a non-loopback bind, a helper process, or a persistence hook, then
+Newer upstream releases are **merged** into this tree, and every merge is a fresh audit:
+resolve conflicts in favour of the hardening, drop anything that adds a network destination,
+a non-loopback bind, a helper process, or a persistence hook, then
 
 ```
-npm run build
+pnpm install            # refreshes pnpm-lock.yaml for the merged package.json
+pnpm run check
 node verify-hardening.mjs
 ```
 
 and bump the version pinned in `verify-hardening.mjs`, `lavish-safe`, and `lavish-safe.cmd`
 only once every check passes. The 0.1.82 merge left out upstream's Herdr chime (it spawned a
 `herdr` binary) and its multi-address serving (`server --also-listen`, interface-sweep discovery).
+The original 0.1.62 patch script (`harden_lavish.py`) is gone from the tree; it refused every
+other version, and git history keeps it.
 
-Upstream's project-process files are deleted in this fork: the release-please workflow (which
-ran `npm publish` with the telemetry host in its environment) and its config, the no-mistakes
-PR gate, the generated-files guard, and `CONTRIBUTING.md`. If a later merge reports a
-modify/delete conflict on one of them, keep it deleted.
+Upstream files this fork does not use are deleted: the release-please workflow (which ran
+`npm publish` with the telemetry host in its environment) and its config, the no-mistakes PR
+gate, the generated-files guard, `CONTRIBUTING.md`, the issue templates, the
+`lavish-editor-marketing/` video project (its demo GIF only illustrated the upstream README), and the
+committed `task-evidence/` screenshots. If a later merge reports a modify/delete conflict on
+one of them, keep it deleted.
 
 ## What still touches the network
 

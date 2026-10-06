@@ -17,11 +17,11 @@ die() { printf 'lavish-safe: %s\n' "$1" >&2; exit 1; }
 grep -q '"version": "0.1.82"' "$ROOT/package.json" ||
   die "this checkout is not version 0.1.82 - it was never audited. Re-audit before use."
 
-[ -f "$ENTRY" ] || die "dist/cli.mjs is missing - run 'npm install' in $ROOT once to build it."
+[ -f "$ENTRY" ] || die "dist/cli.mjs is missing - run 'npx --yes pnpm@11.1.1 install --frozen-lockfile' in $ROOT once to build it."
 
 # The build must carry the hardening and must not carry the removed endpoints.
 grep -q 'LAVISH-HARDENED' "$ENTRY" ||
-  die "dist/cli.mjs has no hardening markers - it was rebuilt from unpatched sources. Re-run harden_lavish.py and 'npm run build'."
+  die "dist/cli.mjs has no hardening markers - it was rebuilt from unpatched sources. Check out this fork's main and rebuild, then run 'node verify-hardening.mjs'."
 for host in 'a.kunchenguid.com' 'api.ht-ml.app' 'cdn.jsdelivr.net'; do
   if grep -q "$host" "$ENTRY"; then
     die "dist/cli.mjs still references $host - the hardening is not in this build. Refusing to run."

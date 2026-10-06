@@ -17,7 +17,7 @@ findstr /C:"\"version\": \"0.1.82\"" "%ROOT%\package.json" >nul || (
   exit /b 1
 )
 if not exist "%ENTRY%" (
-  echo lavish-safe: dist\cli.mjs is missing - run "npm install" in %ROOT% once to build it. 1>&2
+  echo lavish-safe: dist\cli.mjs is missing - run "npx --yes pnpm@11.1.1 install --frozen-lockfile" in %ROOT% once to build it. 1>&2
   exit /b 1
 )
 

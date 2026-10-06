@@ -99,7 +99,8 @@ check("source: assets served locally, not from a CDN", () => {
 
 check("build exists and is newer than the sources", () => {
   const entry = path.join(root, "dist/cli.mjs");
-  if (!existsSync(entry)) throw new Error("dist/cli.mjs missing - run `npm install` once to build");
+  if (!existsSync(entry))
+    throw new Error("dist/cli.mjs missing - run `npx --yes pnpm@11.1.1 install --frozen-lockfile` once to build");
   if (!existsSync(path.join(root, "dist/server.mjs"))) throw new Error("dist/server.mjs missing - run `npm run build`");
   const built = statSync(entry).mtimeMs;
   const newest = [

@@ -14,8 +14,9 @@ allowBuilds:
   esbuild: true
 
 # Security floors for vulnerable transitive dependencies. npm reads the same rules
-# from the top-level "overrides" field in package.json (npm is how the hardening
-# docs install this fork); test/dependency-overrides.test.js keeps the two equal.
+# from the top-level "overrides" field in package.json (the hardening docs install
+# with pnpm --frozen-lockfile and keep npm as a fallback);
+# test/dependency-overrides.test.js keeps the two equal.
 # Never override mermaid or the other exact whiteboard pins. sass>chokidar removes
 # braces (no fixed release exists) from sass's unused watch mode; it is 4.0.1 because
 # 4.0.2+ were published without provenance, which trustPolicy refuses.

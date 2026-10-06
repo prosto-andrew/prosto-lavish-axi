@@ -26,10 +26,11 @@
 > [`hardening/INSTALL-WINDOWS.md`](hardening/INSTALL-WINDOWS.md) -
 > overview in [`hardening/SETUP.md`](hardening/SETUP.md)
 >
-> **Verify any checkout:** `npm install && node verify-hardening.mjs` -> _All 23 checks passed._
+> **Verify any checkout:** `npx --yes pnpm@11.1.1 install --frozen-lockfile && node verify-hardening.mjs`
+> -> _All 23 checks passed._ The install uses the committed `pnpm-lock.yaml`, so every machine
+> gets the exact dependency tree CI tested.
 >
-> **Newer upstream releases are merged, not re-patched.** `hardening/harden_lavish.py` is the
-> original patch script and refuses anything but 0.1.62. A newer upstream is merged into this
+> **Newer upstream releases are merged, not re-patched.** A newer upstream is merged into this
 > tree and audited; the version pinned in `verify-hardening.mjs` and both launchers is bumped
 > only once every check passes again.
 >
@@ -70,10 +71,6 @@
 </p>
 
 <h3 align="center">For when a rich editor is not rich enough.</h3>
-
-<p align="center">
-  <img alt="Lavish Editor demo" src="lavish-editor-marketing/renders/lavish-editor-marketing.gif" width="960" />
-</p>
 
 HTML is the new markdown. Lavish is the new editor for your HTML artifacts.
 

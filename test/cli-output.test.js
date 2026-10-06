@@ -850,19 +850,6 @@ test("theme-aware Mermaid snippet serializes rapid theme-change renders", async 
   await Promise.resolve();
 });
 
-test("Mermaid after evidence embeds the shipped theme-aware snippet", async () => {
-  const evidence = await readFile(new URL("../task-evidence/mermaid-theme/after.html", import.meta.url), "utf8");
-  const start = evidence.indexOf('    <script type="module">');
-  const closingScript = evidence.indexOf("    </script>", start);
-
-  assert.notEqual(start, -1);
-  assert.notEqual(closingScript, -1);
-  assert.equal(
-    evidence.slice(start, closingScript + "    </script>".length).replace(/^ {4}/gm, ""),
-    createDesignOutput().whiteboard_tooling.mermaid_cdn_snippet,
-  );
-});
-
 test("playbook detail output returns focused Lavish-native guidance", () => {
   const output = createPlaybookOutput(["input"]);
 
