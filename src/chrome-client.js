@@ -22,6 +22,33 @@ const internalQueueKeyField = "_lavishQueueKey";
 const promptIdentityField = "prompt_id";
 const PROMPT_IDENTITY_MAX = 128;
 const PROMPT_IDENTITY_RE = /^[A-Za-z0-9_-]+$/;
+// The composer's unsent words, kept per tab like the queue so a reload does not take them.
+const composerStorageKey = "lavish-axi:composer:" + key;
+// Everything above lives in sessionStorage, which a browser that unloads an idle tab may not
+// bring back: Firefox and Zen restore it only while the origin holds at most 2 KB
+// (browser.sessionstore.dom_storage_limit), so a real queue returned empty and a user lost every
+// note. The stash mirrors the reviewer's unsent writing into localStorage, one entry per page
+// (`lavish-axi:stash:<key>:<id>`). A live page holds the Web Lock named for its entry; a page
+// whose lock is free is gone, and the next page that opens this review takes its entry over.
+const STASH_PREFIX = "lavish-axi:stash:";
+const STASH_LOCK_PREFIX = "lavish-axi:stash-lock:";
+// The id of the entry this tab's previous page mirrored into, so a reload takes over its own.
+const stashTabStorageKey = "lavish-axi:stash-tab:" + key;
+// An entry nobody has written for this long belongs to a review nobody is coming back to. A page
+// rewrites its entry whenever it is hidden, so the clock starts when the reviewer last left it.
+const STASH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+// A reload's old page releases its lock within moments. One still held after this long belongs to
+// a live tab this page was duplicated from, whose entry is not this page's to take.
+const STASH_PREDECESSOR_WAIT_MS = 2500;
+const stashId = createPromptIdentity();
+const predecessorStashId = (() => {
+  try {
+    const stored = sessionStorage.getItem(stashTabStorageKey);
+    return isPromptIdentity(stored) && stored !== stashId ? stored : "";
+  } catch {
+    return "";
+  }
+})();
 const initialChat = Array.isArray(sessionData.initialChat) ? sessionData.initialChat : [];
 const initialChatAckIds = Array.isArray(sessionData.initialChatAckIds) ? sessionData.initialChatAckIds : [];
 const initialChatRevision = parseChatRevision(sessionData.initialChatRevision) || 0;
@@ -250,6 +277,9 @@ let postedQueuedAnchors = "[]";
 // session so a full page reload replays it too.
 let lastReviewState = loadJsonState(reviewStateStorageKey, null);
 if (lastReviewState && typeof lastReviewState !== "object") lastReviewState = null;
+// Whether the artifact frame has loaded at least once, after which the load handler's replay of
+// the review state has already happened.
+let artifactFrameLoaded = false;
 const ARTIFACT_SILENCE_PROBE_MS = 8000;
 const ARTIFACT_LOAD_BEGIN_RETRY_DELAYS_MS = [100, 300];
 // Backoff for retrying a whole begin-load attempt after its in-call retries ran out. The
@@ -455,6 +485,247 @@ function persistQueuedPrompts() {
     }
   } catch {
     // The in-memory queue still works if browser storage is unavailable.
+  }
+  persistStash();
+}
+
+function persistComposerDraft() {
+  const text = String(chatInput.value || "");
+  try {
+    if (text) sessionStorage.setItem(composerStorageKey, text);
+    else sessionStorage.removeItem(composerStorageKey);
+  } catch {
+    // The words are still in the composer if browser storage is unavailable.
+  }
+  persistStash();
+}
+
+function restoreComposerDraft() {
+  try {
+    const text = sessionStorage.getItem(composerStorageKey);
+    // A browser that restored the field itself already put these words back.
+    if (text && !chatInput.value) chatInput.value = text;
+  } catch {
+    // Nothing stored, or storage unavailable: the composer starts empty as before.
+  }
+}
+
+// ---- Unload-safe stash ----
+
+function stashStorage() {
+  try {
+    return typeof localStorage !== "undefined" && localStorage ? localStorage : null;
+  } catch {
+    // Accessing localStorage throws where site data is blocked.
+    return null;
+  }
+}
+
+function webLocks() {
+  try {
+    const locks = typeof navigator !== "undefined" ? navigator.locks : null;
+    return locks && typeof locks.request === "function" ? locks : null;
+  } catch {
+    return null;
+  }
+}
+
+function stashLockName(owner) {
+  return STASH_LOCK_PREFIX + owner;
+}
+
+function hasReviewDraft(state) {
+  if (!state || typeof state !== "object" || Array.isArray(state)) return false;
+  return Boolean(
+    (state.card && typeof state.card === "object") || (Array.isArray(state.fields) && state.fields.length),
+  );
+}
+
+// Mirrors this page's unsent writing. It is a copy for a page that comes after this one, so a
+// write the browser refuses changes nothing here: sessionStorage and memory still hold it all.
+function persistStash() {
+  const storage = stashStorage();
+  if (!storage) return;
+  const storageKey = STASH_PREFIX + key + ":" + stashId;
+  const review = hasReviewDraft(lastReviewState) ? lastReviewState : null;
+  const composer = String(chatInput.value || "");
+  try {
+    if (!queued.length && !review && !retiredDrafts.length && !composer.trim()) {
+      storage.removeItem(storageKey);
+      return;
+    }
+    storage.setItem(
+      storageKey,
+      JSON.stringify({ v: 1, at: Date.now(), queued, review, retired: retiredDrafts, composer }),
+    );
+  } catch {
+    // Quota exceeded or storage blocked.
+  }
+}
+
+function stashKeys(storage, prefix) {
+  const keys = [];
+  try {
+    for (let index = 0; index < storage.length; index += 1) {
+      const storageKey = storage.key(index);
+      if (typeof storageKey === "string" && storageKey.startsWith(prefix)) keys.push(storageKey);
+    }
+  } catch {
+    // Storage became unavailable mid-scan; whatever was found is still worth handling.
+  }
+  return keys;
+}
+
+function readStash(storage, storageKey) {
+  try {
+    const raw = storage.getItem(storageKey);
+    if (raw === null) return undefined;
+    const stash = JSON.parse(raw);
+    return stash && typeof stash === "object" && !Array.isArray(stash) ? stash : null;
+  } catch {
+    return null;
+  }
+}
+
+function stashExpired(stash) {
+  const at = Number(stash?.at);
+  return !Number.isFinite(at) || at < Date.now() - STASH_TTL_MS;
+}
+
+function removeStash(storage, storageKey) {
+  try {
+    storage.removeItem(storageKey);
+  } catch {
+    // Left for a later page to retry.
+  }
+}
+
+// Called with the entry's lock held (or, without Web Locks, only for this tab's own previous
+// page), so no other page can be writing or taking the same entry meanwhile. An ended review
+// takes entries over too: it cannot send them, but its own entry carries them to a reopened one.
+function adoptStash(owner, own = false) {
+  // A held Send & End batch must stay exactly the batch the reviewer sent. This tab's own previous
+  // page held that same batch, so only another page's notes wait for a later page.
+  if (terminalSubmission && !own) return;
+  const storage = stashStorage();
+  if (!storage) return;
+  const storageKey = STASH_PREFIX + owner;
+  const stash = readStash(storage, storageKey);
+  if (stash === undefined) return;
+  if (stash && !stashExpired(stash)) mergeStash(stash);
+  removeStash(storage, storageKey);
+  persistStash();
+}
+
+// Takes over what a gone page had not sent. Nothing here can overwrite what this page holds:
+// a note is added only under an identity this page does not have and the transcript has not
+// acknowledged, and a draft or composer text only joins what is already here.
+function mergeStash(stash) {
+  let queueChanged = false;
+  if (Array.isArray(stash.queued)) {
+    const knownIds = new Set(queued.map(promptIdentity).filter(Boolean));
+    const knownKeys = new Set(queued.map(promptQueueKey).filter(Boolean));
+    for (const raw of stash.queued) {
+      if (Array.isArray(raw)) continue;
+      const prompt = adoptQueuedPrompt(raw, true);
+      if (!prompt) continue;
+      const id = promptIdentity(prompt);
+      const queueKey = promptQueueKey(prompt);
+      if (knownIds.has(id) || (queueKey && knownKeys.has(queueKey))) continue;
+      if (promptAcknowledgedInChat(prompt, displayedChat)) continue;
+      queued.push(prompt);
+      knownIds.add(id);
+      if (queueKey) knownKeys.add(queueKey);
+      queueChanged = true;
+    }
+  }
+  if (hasReviewDraft(stash.review) && !hasReviewDraft(lastReviewState)) {
+    if (!artifactFrameLoaded) {
+      // The load handler replays it, exactly like a draft this tab stored itself.
+      setReviewState(stash.review);
+    } else if (typeof stash.review.card?.text === "string") {
+      // Reopening a card now would close any card the reviewer has started typing in, so the
+      // words are handed back where they can be read and copied instead.
+      keepRetiredDraft(stash.review.card.text);
+    }
+  }
+  if (Array.isArray(stash.retired)) {
+    for (const text of stash.retired) {
+      if (typeof text === "string" && text.trim() && !retiredDrafts.includes(text)) keepRetiredDraft(text);
+    }
+  }
+  const words = typeof stash.composer === "string" ? stash.composer : "";
+  if (words.trim()) {
+    const current = String(chatInput.value || "");
+    if (!current.trim()) chatInput.value = words;
+    else if (!current.includes(words)) chatInput.value = current + "\n\n" + words;
+    persistComposerDraft();
+  }
+  if (queueChanged) {
+    persistQueuedPrompts();
+    render();
+  }
+}
+
+function pruneExpiredStashes(storage, locks) {
+  for (const storageKey of stashKeys(storage, STASH_PREFIX)) {
+    const stash = readStash(storage, storageKey);
+    if (stash === undefined || (stash && !stashExpired(stash))) continue;
+    const owner = storageKey.slice(STASH_PREFIX.length);
+    if (owner === key + ":" + stashId) continue;
+    if (!locks) {
+      removeStash(storage, storageKey);
+      continue;
+    }
+    locks
+      .request(stashLockName(owner), { ifAvailable: true }, (lock) => {
+        if (lock) removeStash(storage, storageKey);
+      })
+      .catch(() => {});
+  }
+}
+
+function startStashRecovery() {
+  const storage = stashStorage();
+  if (!storage) return;
+  const locks = webLocks();
+  const ownOwner = key + ":" + stashId;
+  // Held for this page's whole life: it is how every other page tells this one is still here.
+  if (locks) locks.request(stashLockName(ownOwner), () => new Promise(() => {})).catch(() => {});
+  try {
+    sessionStorage.setItem(stashTabStorageKey, stashId);
+  } catch {
+    // A reload then looks like a new tab and takes its old entry over once that page is gone.
+  }
+  persistStash();
+  pruneExpiredStashes(storage, locks);
+
+  const predecessorOwner = predecessorStashId ? key + ":" + predecessorStashId : "";
+  if (predecessorOwner) {
+    if (!locks) {
+      adoptStash(predecessorOwner, true);
+    } else {
+      const controller = typeof AbortController === "function" ? new AbortController() : null;
+      const timer = controller ? setTimeout(() => controller.abort(), STASH_PREDECESSOR_WAIT_MS) : undefined;
+      locks
+        .request(stashLockName(predecessorOwner), controller ? { signal: controller.signal } : {}, () => {
+          clearTimeout(timer);
+          adoptStash(predecessorOwner, true);
+        })
+        .catch(() => {});
+    }
+  }
+  // Without Web Locks nothing tells a live tab from a gone one, so other pages' entries stay put.
+  if (!locks) return;
+  for (const storageKey of stashKeys(storage, STASH_PREFIX + key + ":")) {
+    const owner = storageKey.slice(STASH_PREFIX.length);
+    if (owner === ownOwner || owner === predecessorOwner) continue;
+    locks
+      .request(stashLockName(owner), { ifAvailable: true }, (lock) => {
+        // A held lock is a live page; this page never takes its entry, now or when it closes.
+        if (lock) adoptStash(owner);
+      })
+      .catch(() => {});
   }
 }
 
@@ -1101,9 +1372,10 @@ function setReviewState(state) {
     } catch {
       // The in-memory state still works if browser storage is unavailable.
     }
-    return;
+  } else {
+    saveJsonState(reviewStateStorageKey, state);
   }
-  saveJsonState(reviewStateStorageKey, state);
+  persistStash();
 }
 
 function hasUnsentDraft() {
@@ -1149,6 +1421,7 @@ function keepRetiredDraft(text) {
   if (!text.trim()) return;
   retiredDrafts = [...retiredDrafts, text];
   renderRetiredDraft(text, saveJsonState(retiredDraftStorageKey, retiredDrafts));
+  persistStash();
 }
 
 function renderRetiredDraft(text, stored = true) {
@@ -1873,6 +2146,7 @@ function sendQueued(endAfter) {
       // becomes a sent bubble only when the server's transcript carries it (see submitQueuedOnce).
       render();
       chatInput.value = "";
+      persistComposerDraft();
       chatAttachmentController.reset();
     }
   }
@@ -4214,7 +4488,10 @@ chatInput.addEventListener("keydown", (event) => {
     sendQueued(false);
   }
 });
-chatInput.addEventListener("input", () => hideSendHint());
+chatInput.addEventListener("input", () => {
+  hideSendHint();
+  persistComposerDraft();
+});
 copyPathButton.onclick = copyFilePath;
 reloadArtifactButton.onclick = reloadArtifact;
 copySnapshotButton.onclick = copyDomSnapshot;
@@ -4284,7 +4561,11 @@ document.addEventListener(
   },
   true,
 );
+// A browser unloads a tab only after it has been hidden for a while, so this is the last moment
+// the entry's age is guaranteed to be refreshed before the page may disappear.
+document.addEventListener("visibilitychange", () => persistStash());
 frame.addEventListener("load", () => {
+  artifactFrameLoaded = true;
   if (artifactSpokeToken !== artifactLoadToken) armArtifactAvailabilityProbe(artifactLoadToken);
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation && !ended });
   // Replay the pre-reload scroll position so hot reloads don't jump the artifact to the top.
@@ -4370,6 +4651,7 @@ events.set("ended", () => markSessionEnded());
 connectLiveEvents();
 
 applySheetState();
+restoreComposerDraft();
 settleQueuedFromTranscript(initialChat, false);
 render();
 setChromeOutdated(false);
@@ -4381,6 +4663,7 @@ setAgentPresence("waiting");
 // The session already ended before this page (re)loaded, so there is no future live `ended` event
 // to wait for - start read-only instead of looking live until a Send gets silently refused.
 if (sessionData.initialEnded) markSessionEnded();
+startStashRecovery();
 
 // Reaching this line is the only proof that this file parsed and ran to completion. The inline
 // bootstrap already owns the gate's bounded escape if this script fails; retire only its separate

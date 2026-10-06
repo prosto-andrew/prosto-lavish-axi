@@ -81,6 +81,13 @@ async function createChromeHarness({
   // chrome's sheet breakpoint, with `setMobile` flipping it the way a resize would. Left off, the
   // window has no matchMedia at all, which is the desktop the other tests run against.
   mobile = false,
+  // The browser's localStorage for the Lavish origin. Unlike `storage` (this tab's
+  // sessionStorage), every tab of the origin shares it, so tests that model several tabs - or one
+  // tab whose browser dropped its sessionStorage - pass the same map to each harness.
+  localStore = new Map(),
+  // `navigator.locks` (createFakeLockManager). Shared across harnesses like `localStore`; left
+  // off, the page has no Web Locks API.
+  locks = null,
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
   // Seed sessionStorage before the client boots, to model a tab whose queue was
@@ -370,6 +377,7 @@ async function createChromeHarness({
           clipboardWrites.push(String(value));
         },
       },
+      ...(locks ? { locks } : {}),
     },
     setTimeout: fakeSetTimeout,
     crypto: globalThis.crypto,
@@ -440,6 +448,23 @@ async function createChromeHarness({
       },
       removeItem(key) {
         storage.delete(key);
+      },
+    },
+    localStorage: {
+      get length() {
+        return localStore.size;
+      },
+      key(index) {
+        return [...localStore.keys()][index] ?? null;
+      },
+      getItem(key) {
+        return localStore.has(key) ? localStore.get(key) : null;
+      },
+      setItem(key, value) {
+        localStore.set(key, String(value));
+      },
+      removeItem(key) {
+        localStore.delete(key);
       },
     },
     window: {
@@ -593,6 +618,7 @@ async function createChromeHarness({
     },
     focusLog,
     storage,
+    localStore,
     warningRows() {
       return element("warningsList").children.filter((child) => String(child.className).startsWith("warning-row"));
     },
@@ -8354,4 +8380,470 @@ test("a keyed replacement of an untouched open edit leaves no unsent note", asyn
   );
   assert.doesNotMatch(chrome.element("queuedLog").innerHTML, /queued-edit-input/);
   assert.equal(retiredDraftNotes(chrome).length, 0);
+});
+
+// ---- Unload-safe stash ----
+// Firefox and Zen restore an unloaded ("discarded") tab's sessionStorage only while the origin
+// holds at most 2 KB of it (browser.sessionstore.dom_storage_limit), so a tab with a real review
+// queue comes back with an empty one. The chrome therefore mirrors the reviewer's unsent writing
+// into localStorage, one entry per page, and a page whose own copy is gone takes over the entries
+// of pages that no longer exist. A live page holds a Web Lock for its entry; that lock is the only
+// signal another page uses to tell a live tab from one the browser unloaded or closed.
+
+const STASH_PREFIX = "lavish-axi:stash:abc:";
+const STASH_PREDECESSOR_WAIT_MS = 2500;
+
+// navigator.locks as far as the chrome uses it: exclusive locks by name, held until the
+// callback's promise settles, `ifAvailable` answering null instead of waiting, and `signal`
+// withdrawing a queued request. `releaseHeld` is a document going away - discarded, closed, or
+// replaced by a reload - which is the only way a page's held locks end.
+function createFakeLockManager() {
+  /** @type {Map<string, object>} */
+  const held = new Map();
+  /** @type {Map<string, Array<() => void>>} */
+  const waiting = new Map();
+  const abortError = () => Object.assign(new Error("The request was aborted."), { name: "AbortError" });
+
+  function release(name, token) {
+    if (held.get(name) !== token) return;
+    held.delete(name);
+    const next = waiting.get(name)?.shift();
+    if (next) next();
+  }
+
+  return {
+    request(name, optionsOrCallback, maybeCallback) {
+      const options = typeof optionsOrCallback === "function" ? {} : optionsOrCallback || {};
+      const callback = typeof optionsOrCallback === "function" ? optionsOrCallback : maybeCallback;
+      return new Promise((resolve, reject) => {
+        const grant = () => {
+          const token = {};
+          held.set(name, token);
+          Promise.resolve()
+            .then(() => callback({ name, mode: "exclusive" }))
+            .then(
+              (value) => {
+                release(name, token);
+                resolve(value);
+              },
+              (error) => {
+                release(name, token);
+                reject(error);
+              },
+            );
+        };
+        if (!held.has(name)) {
+          grant();
+          return;
+        }
+        if (options.ifAvailable) {
+          Promise.resolve()
+            .then(() => callback(null))
+            .then(resolve, reject);
+          return;
+        }
+        if (options.signal?.aborted) {
+          reject(abortError());
+          return;
+        }
+        if (!waiting.has(name)) waiting.set(name, []);
+        const queue = waiting.get(name);
+        queue.push(grant);
+        options.signal?.addEventListener("abort", () => {
+          const index = queue.indexOf(grant);
+          if (index === -1) return;
+          queue.splice(index, 1);
+          reject(abortError());
+        });
+      });
+    },
+    releaseHeld(predicate) {
+      for (const [name, token] of [...held]) if (predicate(name)) release(name, token);
+    },
+    isHeld(name) {
+      return held.has(name);
+    },
+  };
+}
+
+function stashEntries(localStore) {
+  return [...localStore]
+    .filter(([storageKey]) => storageKey.startsWith(STASH_PREFIX))
+    .map(([storageKey, value]) => [storageKey.slice(STASH_PREFIX.length), JSON.parse(value)]);
+}
+
+function tabStashId(chrome) {
+  return chrome.storage.get("lavish-axi:stash-tab:abc");
+}
+
+// The browser destroyed this page's document. Whatever it kept in sessionStorage is the caller's
+// business: a restore after an unload starts from an empty map, a reload from the same one.
+function endPage(locks, stashId) {
+  locks.releaseHeld((name) => name.endsWith(":" + stashId));
+}
+
+function queueNote(chrome, text, extra = {}) {
+  chrome.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: text, selector: "h2", tag: "h2", text: "Heading", ...extra },
+  });
+}
+
+function seedStash(localStore, id, stash, sessionKey = "abc") {
+  localStore.set(`lavish-axi:stash:${sessionKey}:${id}`, JSON.stringify({ v: 1, at: Date.now(), ...stash }));
+}
+
+test("a tab whose browser dropped its sessionStorage gets its queued notes back", async () => {
+  const localStore = new Map();
+  const locks = createFakeLockManager();
+  const before = await createChromeHarness({ localStore, locks });
+  queueNote(before, "Tighten this heading");
+  const [note] = before.queued();
+  assertPromptIdentity(note.prompt_id);
+  assert.deepEqual(
+    stashEntries(localStore).map(([id, stash]) => [id, stash.queued.map((prompt) => prompt.prompt_id)]),
+    [[tabStashId(before), [note.prompt_id]]],
+    "the queue is mirrored where an unload cannot take it",
+  );
+
+  endPage(locks, tabStashId(before));
+  const after = await createChromeHarness({ localStore, locks });
+  await flushPromises();
+
+  assert.deepEqual(
+    after.queued().map((prompt) => [prompt.prompt, prompt.prompt_id]),
+    [["Tighten this heading", note.prompt_id]],
+    "the same note comes back, with the identity that settles it exactly once",
+  );
+  assert.match(after.element("queuedLog").innerHTML, /Tighten this heading/);
+  assert.deepEqual(
+    stashEntries(localStore).map(([id]) => id),
+    [tabStashId(after)],
+    "the restored page took the entry over instead of leaving a second copy",
+  );
+});
+
+test("a live tab's unsent notes stay in that tab", async () => {
+  const localStore = new Map();
+  const locks = createFakeLockManager();
+  const first = await createChromeHarness({ localStore, locks });
+  queueNote(first, "Only in the first tab");
+  const firstId = tabStashId(first);
+
+  const second = await createChromeHarness({ localStore, locks });
+  await flushPromises();
+  assert.deepEqual(second.queued(), []);
+  assert.deepEqual(
+    stashEntries(localStore).map(([id]) => id),
+    [firstId],
+  );
+
+  // Closing the first tab later does not move its notes into a page the reviewer is already using.
+  endPage(locks, firstId);
+  await flushPromises();
+  assert.deepEqual(second.queued(), []);
+
+  // The next page that opens this review does pick them up.
+  const third = await createChromeHarness({ localStore, locks });
+  await flushPromises();
+  assert.deepEqual(
+    third.queued().map((prompt) => prompt.prompt),
+    ["Only in the first tab"],
+  );
+});
+
+test("a recovered note the server already accepted is not queued again", async () => {
+  const localStore = new Map();
+  const locks = createFakeLockManager();
+  const before = await createChromeHarness({ localStore, locks });
+  queueNote(before, "Already delivered");
+  const [note] = before.queued();
+  endPage(locks, tabStashId(before));
+
+  const after = await createChromeHarness({
+    localStore,
+    locks,
+    sessionData: { ...defaultSessionData, initialChatAckIds: [note.prompt_id] },
+  });
+  await flushPromises();
+
+  assert.deepEqual(after.queued(), []);
+  assert.deepEqual(stashEntries(localStore), []);
+});
+
+test("a reload takes over its own earlier stash once the old page lets go of it", async () => {
+  const storage = new Map();
+  const localStore = new Map();
+  const locks = createFakeLockManager();
+  const before = await createChromeHarness({ storage, localStore, locks });
+  queueNote(before, "Keep me once");
+  before.element("chatInput").value = "Half a thought";
+  before.element("chatInput").dispatch("input");
+  const oldId = tabStashId(before);
+
+  // The new document can run before the browser has released the old one's lock.
+  const after = await createChromeHarness({ storage, localStore, locks });
+  await flushPromises();
+  assert.notEqual(tabStashId(after), oldId);
+  assert.ok(localStore.has(STASH_PREFIX + oldId), "a page still holding its entry keeps it");
+
+  endPage(locks, oldId);
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(localStore.has(STASH_PREFIX + oldId), false);
+  assert.deepEqual(
+    after.queued().map((prompt) => prompt.prompt),
+    ["Keep me once"],
+    "the reload's own sessionStorage copy and the taken-over entry are one note",
+  );
+  assert.equal(after.element("chatInput").value, "Half a thought");
+  assert.deepEqual(
+    stashEntries(localStore).map(([id]) => id),
+    [tabStashId(after)],
+  );
+});
+
+test("a duplicated tab never takes over the original tab's stash", async () => {
+  const storage = new Map();
+  const localStore = new Map();
+  const locks = createFakeLockManager();
+  const original = await createChromeHarness({ storage, localStore, locks });
+  queueNote(original, "The original's note");
+  const originalId = tabStashId(original);
+
+  // Duplicating a tab copies its sessionStorage, including the id of the entry it mirrors into.
+  const duplicate = await createChromeHarness({ storage: new Map(storage), localStore, locks });
+  await flushPromises();
+  duplicate.runTimers(STASH_PREDECESSOR_WAIT_MS);
+  await flushPromises();
+  assert.notEqual(tabStashId(duplicate), originalId);
+  assert.ok(localStore.has(STASH_PREFIX + originalId));
+
+  endPage(locks, originalId);
+  await flushPromises();
+  assert.ok(
+    localStore.has(STASH_PREFIX + originalId),
+    "the duplicate stopped waiting, so the original's entry is left for the next page that opens",
+  );
+});
+
+test("words typed in the composer survive a reload and an unload, and sending clears them", async () => {
+  const storage = new Map();
+  const localStore = new Map();
+  const locks = createFakeLockManager();
+  const first = await createChromeHarness({ storage, localStore, locks });
+  first.element("chatInput").value = "Half a thought";
+  first.element("chatInput").dispatch("input");
+  const firstId = tabStashId(first);
+
+  const reloaded = await createChromeHarness({ storage, localStore, locks });
+  assert.equal(reloaded.element("chatInput").value, "Half a thought");
+  endPage(locks, firstId);
+  await flushPromises();
+  assert.equal(reloaded.element("chatInput").value, "Half a thought", "taking over its own entry adds nothing");
+
+  endPage(locks, tabStashId(reloaded));
+  const restored = await createChromeHarness({ localStore, locks });
+  await flushPromises();
+  assert.equal(restored.element("chatInput").value, "Half a thought");
+
+  restored.element("send").click();
+  await flushPromises();
+  assert.equal(restored.element("chatInput").value, "");
+  assert.equal(restored.storage.has("lavish-axi:composer:abc"), false);
+  assert.deepEqual(
+    stashEntries(localStore).map(([, stash]) => [stash.composer || "", stash.queued.map((prompt) => prompt.prompt)]),
+    [["", ["Half a thought"]]],
+    "the words moved from the composer into the queue, which stays mirrored until acknowledged",
+  );
+});
+
+test("an open annotation draft survives an unload", async () => {
+  const localStore = new Map();
+  const locks = createFakeLockManager();
+  const before = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", localStore, locks });
+  reportDraft(before, "#hero", "needs a shorter headline");
+  await flushPromises();
+  endPage(locks, tabStashId(before));
+
+  const after = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", localStore, locks });
+
+  const restores = after.postedToFrame.filter((message) => message.type === "lavish:restoreReviewState");
+  assert.deepEqual(JSON.parse(JSON.stringify(restores.map((message) => message.state.card))), [
+    { selector: "#hero", text: "needs a shorter headline" },
+  ]);
+});
+
+test("an annotation draft recovered after the artifact loaded is handed back, not forced open", async () => {
+  const localStore = new Map();
+  const locks = createFakeLockManager();
+  const storage = new Map();
+  const before = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", storage, localStore, locks });
+  reportDraft(before, "#hero", "needs a shorter headline");
+  await flushPromises();
+  const oldId = tabStashId(before);
+  // Model a reload whose sessionStorage write of the draft never happened.
+  storage.delete("lavish-axi:review-state:abc");
+
+  const after = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", storage, localStore, locks });
+  endPage(locks, oldId);
+  await flushPromises();
+  await flushPromises();
+
+  assert.deepEqual(
+    after.postedToFrame.filter((message) => message.type === "lavish:restoreReviewState"),
+    [],
+    "reopening a card now could close one the reviewer has started typing in",
+  );
+  const notes = retiredDraftNotes(after);
+  assert.equal(notes.length, 1);
+  assert.match(notes[0].innerHTML, /needs a shorter headline/);
+});
+
+test("handed-back drafts in an orphaned stash are handed back again", async () => {
+  const localStore = new Map();
+  const locks = createFakeLockManager();
+  seedStash(localStore, "gone-tab", { queued: [], review: null, retired: ["the old paragraph note"], composer: "" });
+
+  const chrome = await createChromeHarness({ localStore, locks });
+  await flushPromises();
+
+  const notes = retiredDraftNotes(chrome);
+  assert.equal(notes.length, 1);
+  assert.match(notes[0].innerHTML, /the old paragraph note/);
+  assert.deepEqual(JSON.parse(chrome.storage.get("lavish-axi:retired-drafts:abc")), ["the old paragraph note"]);
+});
+
+test("stashes left by pages gone for a month are dropped, fresh ones of other reviews are kept", async () => {
+  const localStore = new Map();
+  const locks = createFakeLockManager();
+  const monthAndADay = 31 * 24 * 60 * 60 * 1000;
+  seedStash(localStore, "stale", { at: Date.now() - monthAndADay, queued: [{ prompt: "old", prompt_id: "old-1" }] });
+  seedStash(localStore, "stale", { at: Date.now() - monthAndADay, composer: "old" }, "other");
+  seedStash(localStore, "fresh", { composer: "keep" }, "other");
+  localStore.set("lavish-axi:stash:other:broken", "{not json");
+
+  const chrome = await createChromeHarness({ localStore, locks });
+  await flushPromises();
+
+  assert.deepEqual(chrome.queued(), [], "an expired entry is not recovered either");
+  assert.deepEqual([...localStore.keys()].filter((storageKey) => storageKey.startsWith("lavish-axi:stash:")).sort(), [
+    "lavish-axi:stash:other:fresh",
+  ]);
+});
+
+test("a corrupted or poisoned stash cannot wedge the page", async () => {
+  const localStore = new Map();
+  const locks = createFakeLockManager();
+  localStore.set(STASH_PREFIX + "garbled", "{not json");
+  seedStash(localStore, "poisoned", {
+    queued: [
+      null,
+      "text",
+      { prompt: "Survivor", selector: "h2", tag: "h2", text: "Heading", attachments: [{ id: 5 }, { id: "img-1" }] },
+    ],
+    review: "not an object",
+    retired: [42, "", "kept words"],
+    composer: { not: "text" },
+  });
+
+  const chrome = await createChromeHarness({ localStore, locks });
+  await flushPromises();
+
+  assert.deepEqual(
+    chrome.queued().map((prompt) => [prompt.prompt, prompt.attachments]),
+    [["Survivor", [{ id: "img-1" }]]],
+  );
+  assertPromptIdentity(chrome.queued()[0].prompt_id);
+  assert.equal(chrome.element("chatInput").value, "");
+  assert.equal(retiredDraftNotes(chrome).length, 1);
+  assert.equal(localStore.has(STASH_PREFIX + "garbled"), false);
+  assert.equal(localStore.has(STASH_PREFIX + "poisoned"), false);
+});
+
+test("without Web Locks a page takes over only its own earlier stash", async () => {
+  const storage = new Map([["lavish-axi:stash-tab:abc", "previous"]]);
+  const localStore = new Map();
+  seedStash(localStore, "previous", {
+    queued: [{ prompt: "Mine", selector: "", tag: "message", text: "Freeform message" }],
+  });
+  seedStash(localStore, "someone-else", {
+    queued: [{ prompt: "Not mine", selector: "", tag: "message", text: "Freeform message" }],
+  });
+
+  const chrome = await createChromeHarness({ storage, localStore });
+  await flushPromises();
+
+  assert.deepEqual(
+    chrome.queued().map((prompt) => prompt.prompt),
+    ["Mine"],
+  );
+  assert.ok(localStore.has(STASH_PREFIX + "someone-else"), "with no way to tell it is gone, it stays");
+  assert.equal(localStore.has(STASH_PREFIX + "previous"), false);
+});
+
+test("an ended review still takes over a gone page's notes, so a reopened one has them", async () => {
+  const localStore = new Map();
+  const locks = createFakeLockManager();
+  seedStash(localStore, "gone-tab", {
+    queued: [{ prompt: "Too late", selector: "", tag: "message", text: "Freeform message", prompt_id: "late-1" }],
+  });
+
+  const chrome = await createChromeHarness({
+    localStore,
+    locks,
+    sessionData: { ...defaultSessionData, initialEnded: true },
+  });
+  await flushPromises();
+
+  assert.deepEqual(
+    chrome.queued().map((prompt) => prompt.prompt_id),
+    ["late-1"],
+  );
+  assert.equal(chrome.element("send").disabled, true);
+  assert.deepEqual(
+    stashEntries(localStore).map(([id, stash]) => [id, stash.queued.map((prompt) => prompt.prompt_id)]),
+    [[tabStashId(chrome), ["late-1"]]],
+  );
+});
+
+test("a held Send & End batch takes over no other page's notes", async () => {
+  const storage = new Map([
+    ["lavish-axi:terminal:abc", "true"],
+    [
+      "lavish-axi:queued:abc",
+      JSON.stringify([
+        { prompt: "Final", selector: "", tag: "message", text: "Freeform message", prompt_id: "final-1" },
+      ]),
+    ],
+  ]);
+  const localStore = new Map();
+  const locks = createFakeLockManager();
+  seedStash(localStore, "gone-tab", {
+    queued: [{ prompt: "Not in the batch", selector: "", tag: "message", text: "Freeform message", prompt_id: "x-1" }],
+  });
+
+  const chrome = await createChromeHarness({ storage, localStore, locks });
+  await flushPromises();
+
+  assert.deepEqual(
+    chrome.queued().map((prompt) => prompt.prompt_id),
+    ["final-1"],
+  );
+  assert.ok(localStore.has(STASH_PREFIX + "gone-tab"), "left for a page that is not mid Send & End");
+});
+
+test("hiding the page refreshes its stash's age", async () => {
+  const localStore = new Map();
+  const locks = createFakeLockManager();
+  const chrome = await createChromeHarness({ localStore, locks, fakeClock: true });
+  queueNote(chrome, "Left open for weeks");
+  const [[, written]] = stashEntries(localStore);
+
+  chrome.advanceClock(20 * 24 * 60 * 60 * 1000);
+  chrome.dispatchDocumentEvent("visibilitychange");
+
+  const [[, refreshed]] = stashEntries(localStore);
+  assert.equal(refreshed.at - written.at, 20 * 24 * 60 * 60 * 1000);
 });
