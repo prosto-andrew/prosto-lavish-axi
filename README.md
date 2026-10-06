@@ -26,10 +26,11 @@
 > [`hardening/INSTALL-WINDOWS.md`](hardening/INSTALL-WINDOWS.md) -
 > overview in [`hardening/SETUP.md`](hardening/SETUP.md)
 >
-> **Verify any checkout:** `npm install && node verify-hardening.mjs` -> _All 23 checks passed._
+> **Verify any checkout:** `npx --yes pnpm@11.1.1 install --frozen-lockfile && node verify-hardening.mjs`
+> -> _All 23 checks passed._ The install uses the committed `pnpm-lock.yaml`, so every machine
+> gets the exact dependency tree CI tested.
 >
-> **Newer upstream releases are merged, not re-patched.** `hardening/harden_lavish.py` is the
-> original patch script and refuses anything but 0.1.62. A newer upstream is merged into this
+> **Newer upstream releases are merged, not re-patched.** A newer upstream is merged into this
 > tree and audited; the version pinned in `verify-hardening.mjs` and both launchers is bumped
 > only once every check passes again.
 >
@@ -70,10 +71,6 @@
 </p>
 
 <h3 align="center">For when a rich editor is not rich enough.</h3>
-
-<p align="center">
-  <img alt="Lavish Editor demo" src="lavish-editor-marketing/renders/lavish-editor-marketing.gif" width="960" />
-</p>
 
 HTML is the new markdown. Lavish is the new editor for your HTML artifacts.
 
@@ -245,7 +242,7 @@ pnpm link
   Per-asset and per-bundle inline caps default to 10 MB and 25 MB, overridable with `LAVISH_AXI_EXPORT_MAX_ASSET_BYTES` and `LAVISH_AXI_EXPORT_MAX_BUNDLE_BYTES`.
   Unresolved local assets or export notices such as author-set CSP meta tags and redacted file URLs are surfaced in command or browser output.
   Use `--token` or `LAVISH_AXI_HTML_APP_TOKEN` for an optional bearer token when publishing a new page (a republish or `--unpublish` authorizes with the `update_key` instead and rejects `--token`); set `LAVISH_AXI_HTML_APP_API_URL` to override the ht-ml.app API base and point `share` at a backend you control (see [Self-hosting the share backend](docs/self-hosting-share.md) for the contract it must implement).
-- **Live reload** - Lavish watches the HTML artifact file by default and preserves review context across reloads: the artifact iframe scroll position, an open annotation card's unsent text, and answers to `data-lavish-question` controls (application-owned form state is left alone). Unsent annotation text also survives a full reload of the review page itself. While a queued layout-issue batch is outstanding, closely spaced saves coalesce so one batch of fixes costs one refresh. To also reload on sibling asset changes, add `data-lavish-live-reload-root` to the root element or `<meta name="lavish-live-reload" content="root">`.
+- **Live reload** - Lavish watches the HTML artifact file by default and preserves review context across reloads: the artifact iframe scroll position, an open annotation card's unsent text, and answers to `data-lavish-question` controls (application-owned form state is left alone). Unsent annotation text, queued notes, and words typed in the composer also survive a full reload of the review page itself, and a browser unloading an idle tab to save memory (Firefox, Zen, and other Firefox-based browsers restore only 2 KB of a tab's session storage): each review page keeps a copy of its unsent writing in the browser's local storage, and the next page that opens the review takes over the copy of a page that is gone - never one still open in another tab - without duplicating notes that were already delivered. While a queued layout-issue batch is outstanding, closely spaced saves coalesce so one batch of fixes costs one refresh. To also reload on sibling asset changes, add `data-lavish-live-reload-root` to the root element or `<meta name="lavish-live-reload" content="root">`.
   If the element an unsent annotation was attached to is gone from the artifact for good, Lavish cannot reopen that card, and if the artifact replaces a queued note while you are editing it, the replacement is kept as the artifact sent it. Either way, Lavish writes your edited text into the conversation panel under **Unsent annotation** - selectable, never written over anything you have typed, and kept there across reloads; no note is ever dropped to make room for a newer one, and a note the browser refuses to store says so where it is shown.
 - **Feedback controls** - Native controls (radios, checkboxes, inputs, selects, buttons, labels, disclosure summaries, contenteditable) and custom widgets with an interactive ARIA role (`button`, `checkbox`, `combobox`, `menuitem`, `menuitemcheckbox`, `menuitemradio`, `option`, `radio`, `switch`, `tab`, `treeitem`) are interactive automatically, so they do not need `data-lavish-action`. A link (`<a href>`) stays annotatable when it carries one of these roles or sits inside such a widget.
   For reversible choices, let option clicks update local state, then queue exactly one final answer from a per-question submit or Queue answer button with `window.lavish.queuePrompt()`.
@@ -296,7 +293,7 @@ pnpm link
   Every **Check and reload** control asks the server whether it is running before it navigates; while nothing answers, the page stays where it is and says so, and a check that gets no answer at all says that instead of guessing.
   In-flight `lavish-axi poll` commands end with an interrupted-poll error and are safe to re-run; queued feedback is never lost, and annotation text you have typed but not queued yet survives the reload as described under **Live reload**.
   A page waits for the replacement rather than reloading into a port nothing is listening on, and tells the user to restart Lavish if it never returns.
-- **Local-first state** - Session state stays under `~/.lavish-axi/` by default, or `LAVISH_AXI_STATE_DIR` when set.
+- **Local-first state** - Session state stays under `~/.lavish-axi/` by default, or `LAVISH_AXI_STATE_DIR` when set. Unsent review writing is also copied into the browser's local storage for the Lavish origin (`127.0.0.1:<port>`) until it is sent or removed; a copy left by a closed tab is picked up the next time that review opens and is dropped after 30 days. Clearing that site's data in the browser removes it.
 - **Diagnostic viewports** - `LAVISH_AXI_DIAGNOSTIC_VIEWPORTS` sets which viewport classes the layout-issue inbox tracks (`mobile`, `compact`, `desktop`; comma-separated, default all). Warnings whose class leaves the set are marked obsolete with an explicit reason instead of silently reading as fixed.
 - **Server port** - Set `LAVISH_AXI_PORT` to choose the server port; it defaults to `4387`.
 - **Network binding** - This hardened build listens on loopback (`127.0.0.1`) only. `LAVISH_AXI_HOST` is ignored, Tailscale is never probed, and `lavish-safe server --also-listen <host>` is refused, so no setting can expose the server - an unauthenticated server that can read and serve local files - on a LAN, a VPN, or a tailnet. If loopback cannot be bound, startup fails rather than claiming a reachable server.

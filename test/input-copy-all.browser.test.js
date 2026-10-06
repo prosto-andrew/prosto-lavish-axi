@@ -34,6 +34,14 @@ async function chromePath() {
   return "";
 }
 
+// Chrome's helper processes can outlive the browser process for a moment and keep writing into
+// the profile - longest when a slow first launch hits the probe's timeout and only the browser
+// process is killed - so a single recursive delete races them and fails with ENOTEMPTY. Node
+// retries that error with a linear backoff until the writers are gone.
+function removeChromeTemp(root) {
+  return rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+}
+
 async function headlessChromeState(chrome) {
   if (chromeLaunchState) return chromeLaunchState;
   const root = await mkdtemp(path.join(os.tmpdir(), "lavish-copy-all-probe-"));
@@ -59,7 +67,7 @@ async function headlessChromeState(chrome) {
             reason: `Chrome or Chromium could not launch headless (${result.signal || `exit ${result.status}`})`,
           };
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await removeChromeTemp(root);
   }
   return chromeLaunchState;
 }
@@ -248,7 +256,7 @@ async function runBrowserScenario(t, scenario, fixture, options = {}) {
   } finally {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
-    await rm(root, { recursive: true, force: true });
+    await removeChromeTemp(root);
   }
 }
 

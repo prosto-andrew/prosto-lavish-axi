@@ -1,4 +1,4 @@
-# Установка hardened lavish в WSL
+# Установка hardened lavish в WSL / Linux
 
 Ставится **hardened-сборка** lavish-axi 0.1.82 из вашего форка —
 копия, из исходников которой удалены телеметрия, публикация на сторонний хост, привязка
@@ -13,24 +13,29 @@ node -v          # v22.x или новее
 which node       # /usr/bin/node или ~/.nvm/... — НЕ /mnt/c/...
 ```
 
-Если ноды нет:
-
-```bash
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-sudo apt-get install -y nodejs
-```
+Если ноды нет — поставьте её любым привычным способом (пакетный менеджер дистрибутива,
+nodesource, nvm). Отдельно ставить pnpm не нужно: шаг 2 запускает ровно ту версию, что
+записана в `package.json`, через `npx`.
 
 ---
 
 ## Шаг 1. Клонировать форк
 
-**В `~`, а не в `/mnt/c` или `/mnt/d`.** На примонтированных дисках Windows
-`npm install` работает в разы медленнее и спотыкается о права и симлинки.
+Папку выбираете сами — инструкция нигде не предполагает конкретный путь. Задайте её один
+раз в переменной (пример ниже — только пример):
 
 ```bash
-git clone https://github.com/prosto-andrew/prosto-lavish-axi.git ~/lavish-hardened
-cd ~/lavish-hardened
+LAVISH_DIR="$HOME/lavish-hardened"     # любой путь, где вам удобно
+
+git clone https://github.com/prosto-andrew/prosto-lavish-axi.git "$LAVISH_DIR"
+cd "$LAVISH_DIR"
 ```
+
+В WSL держите клон в линуксовой файловой системе (где-нибудь под `~`), а не в `/mnt/c`
+или `/mnt/d`: на примонтированных дисках Windows установка зависимостей работает в разы
+медленнее и спотыкается о права и симлинки.
+
+Все следующие команды выполняются **из этой папки**.
 
 Убедиться, что клонировалось то самое — в шапке `README.md` должен быть блок
 «Hardened fork»:
@@ -42,14 +47,27 @@ git log --oneline -1
 
 ## Шаг 2. Собрать
 
-Одна команда: скрипт `prepare` внутри пакета сам запускает esbuild.
-
 ```bash
-npm install
+npx --yes pnpm@11.1.1 install --frozen-lockfile
 ```
 
-Около минуты, ~400 пакетов, ~260 МБ. Папки `node_modules/` и `dist/` в git не хранятся
-и создаются здесь же.
+Одна команда: ставит зависимости строго по закоммиченному `pnpm-lock.yaml` и затем сама
+запускает сборку (скрипт `prepare`). Около минуты, ~380 пакетов. Папки `node_modules/` и
+`dist/` в git не хранятся и создаются здесь же.
+
+Почему pnpm, а не `npm install`:
+
+- **одинаковые зависимости на всех машинах.** `--frozen-lockfile` ставит ровно то дерево,
+  которое записано в lock-файле и прогнано в CI. Если lock-файл не совпадает с
+  `package.json`, установка падает, а не подбирает версии заново;
+- **защиты из `pnpm-workspace.yaml` действуют только в pnpm:** версии моложе 7 дней не
+  ставятся, понижение доверия к публикации запрещено, install-скрипты разрешены только
+  esbuild. `npm install` всего этого не знает.
+
+`npm install` тоже соберёт рабочую сборку, но без lock-файла он каждый раз подбирает
+версии заново по диапазонам `^`, поэтому на двух машинах деревья могут разойтись. Если
+всё же пришлось так поставить — появившийся `package-lock.json` не коммитьте (он
+игнорируется git намеренно, у форка один lock-файл — `pnpm-lock.yaml`).
 
 ## Шаг 3. Проверить, что сборка действительно hardened
 
@@ -71,28 +89,33 @@ All 23 checks passed. This build is hardened.
 
 **Если хоть одна проверка упала — дальше не идти.** Сообщение скажет, что именно не так.
 
-## Шаг 4. Положить лаунчер в PATH
+## Шаг 4. Установить скилл
 
-Лаунчер резолвит собственный реальный путь, поэтому корректно работает через симлинк.
+Из папки форка:
 
 ```bash
-chmod +x ~/lavish-hardened/lavish-safe
-mkdir -p ~/.local/bin
-ln -sf ~/lavish-hardened/lavish-safe ~/.local/bin/lavish-safe
+mkdir -p ~/.claude/skills/lavish
+cp skills/lavish/SKILL.md ~/.claude/skills/lavish/SKILL.md
+```
 
-# если ~/.local/bin ещё не в PATH:
+## Шаг 5. Положить лаунчер в PATH
+
+Лаунчер резолвит собственный реальный путь, поэтому в PATH кладётся симлинк на него, а не
+копия. Из папки форка:
+
+```bash
+chmod +x lavish-safe
+mkdir -p ~/.local/bin
+ln -sf "$PWD/lavish-safe" ~/.local/bin/lavish-safe
+
+# если ~/.local/bin ещё не в PATH (в zsh — ~/.zshrc):
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 
 lavish-safe --version    # => 0.1.82
 ```
 
-## Шаг 5. Установить скилл
-
-```bash
-mkdir -p ~/.claude/skills/lavish
-cp ~/lavish-hardened/skills/lavish/SKILL.md ~/.claude/skills/lavish/SKILL.md
-```
+Если вы позже перенесёте папку форка, просто повторите `ln -sf` из нового места.
 
 ## Шаг 6. Убрать стоковый скилл
 
@@ -100,7 +123,7 @@ cp ~/lavish-hardened/skills/lavish/SKILL.md ~/.claude/skills/lavish/SKILL.md
 `npx -y lavish-axi` — то есть скачать нехардненный пакет.
 
 ```bash
-grep -rl "npx -y lavish-axi" ~/.claude/ 2>/dev/null
+grep -rl "npx -y lavish-axi" ~/.claude/skills ~/.claude/plugins 2>/dev/null
 ```
 
 Команда должна вывести **пусто**. Если что-то нашлось — удалите или отключите этот
@@ -145,15 +168,27 @@ Windows-браузере; если нет — скопируйте URL вруч�
 
 ## Обслуживание
 
-- **Не запускайте `npm update`.** Он поднимет версии, и сборка перестанет быть той, что вы
-  проверили. Лаунчер это заметит и откажется стартовать.
-- После любого `npm install` или `git pull` прогоняйте `node verify-hardening.mjs` заново.
-- Чтобы обе машины получили ровно одинаковые зависимости — закоммитьте в форк
-  `package-lock.json`, который создастся после первой установки (репозиторий идёт с
-  `pnpm-lock.yaml`, а мы ставим через npm, поэтому без своего lock-файла версии
-  подбираются заново по диапазонам `^`).
+- **Обновление форка** — из папки форка:
+
+  ```bash
+  git pull
+  npx --yes pnpm@11.1.1 install --frozen-lockfile
+  node verify-hardening.mjs
+  ```
+
+- **Не запускайте `npm update`, `pnpm update`, `npm audit fix`** (тем более `--force`).
+  Они меняют версии зависимостей в обход lock-файла, и сборка перестаёт быть той, что
+  проверена. Зависимости форка обновляются только коммитом нового `pnpm-lock.yaml`.
+- **Предупреждения при установке.**
+  - `npm audit` / `pnpm audit` сообщают об уязвимости низкой важности в `katex` — его
+    подтягивает `mermaid` (KaTeX рисует формулы в подписях диаграмм). Исправление есть
+    только в несовместимой ветке katex, а `npm audit fix --force` предлагает откатить
+    mermaid до 10.8.0 — это ломает whiteboard. Риск принят осознанно: уязвимость
+    срабатывает лишь вместе с уже существующим prototype pollution на странице.
+  - Если ставили через `npm install`, он может написать, что пропустил postinstall-скрипт
+    esbuild. Это безвредно: бинарник esbuild приходит отдельным платформенным пакетом,
+    сборка проходит. pnpm этот скрипт запускает (он разрешён в `pnpm-workspace.yaml`).
 - Переход на новую версию lavish-axi = слияние оригинала в форк и новый аудит
-  (`node verify-hardening.mjs`), см. `hardening/SETUP.md`. Скрипт `hardening/harden_lavish.py`
-  исторический: он патчит только 0.1.62 и с другими версиями работать откажется.
+  (`node verify-hardening.mjs`), см. `hardening/SETUP.md`.
 - Держать что-либо запущенным не нужно: сервер гасится сам через 30 минут простоя и после
   закрытия последней сессии.

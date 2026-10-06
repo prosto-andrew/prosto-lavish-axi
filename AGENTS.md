@@ -33,7 +33,7 @@ Vendored Mermaid in the opaque-origin artifact (headless Chrome via `CHROME_PATH
 - Run `pnpm run check` before pushing.
 - Treat repo-provided `.agents/` skill content as vendored. Prettier ignores it.
 - This fork carries no release automation and no upstream contribution gate: release-please, its config, the no-mistakes PR gate, and the generated-files guard are deleted. `CHANGELOG.md` is upstream history and is not maintained here. A PR into `main` needs `pnpm run check` and `node verify-hardening.mjs` to pass.
-- Dependency security overrides are declared twice: `overrides` in `pnpm-workspace.yaml` (pnpm, CI, `pnpm audit`, Dependabot; pnpm 11 ignores the `pnpm` field in `package.json`) and the top-level `overrides` in `package.json` (npm, which the hardening docs install with). Change both. `test/dependency-overrides.test.js` fails on drift and on any override of `mermaid` or another exact whiteboard pin.
+- Dependency security overrides are declared twice: `overrides` in `pnpm-workspace.yaml` (pnpm, CI, `pnpm audit`, Dependabot; pnpm 11 ignores the `pnpm` field in `package.json`) and the top-level `overrides` in `package.json` (npm, the hardening docs' fallback; their primary install is `pnpm install --frozen-lockfile`). Change both. `test/dependency-overrides.test.js` fails on drift and on any override of `mermaid` or another exact whiteboard pin.
 - Tests that start the server set `LAVISH_AXI_STATE_DIR` and use an ephemeral port.
 - `run()` returns on `--version` / `-v` / `-V` before `ensureStateDir` and telemetry (`test/cli-version.test.js`). New startup work goes after that short-circuit.
 - `canonicalFile` runs `realpath`. Two paths to the same file are one session.
@@ -63,6 +63,7 @@ Each line is the rule. [docs/invariants.md](docs/invariants.md) has the failure 
 - Layout-diagnostics reports are fire-and-forget and never hold the artifact behind a round-trip. Ordinary layout findings are never relabelled fatal. [Request flow](docs/invariants.md#request-flow).
 - The chrome mints each queued prompt's `prompt_id` (never from the iframe) and removes a queued note only when the transcript acknowledges that id. Evicted ids stay on `chat_ack_ids`. [Request flow](docs/invariants.md#request-flow).
 - Only agent chat entries render as HTML. User entries are always escaped. [Request flow](docs/invariants.md#request-flow).
+- The chrome mirrors unsent writing into its own `lavish-axi:stash:<key>:<id>` localStorage entry. A page takes over another entry only at boot, only while holding that entry's Web Lock, and only additively (`prompt_id` dedupe plus acknowledgement). [Request flow](docs/invariants.md#request-flow).
 - A note's Sending state is derived from the existing send bookkeeping, never tracked separately. [Request flow](docs/invariants.md#request-flow).
 - `/api/:key/prompts` rejects every new batch for an ended session. Only the internal `restore` replay is exempt. [Request flow](docs/invariants.md#request-flow).
 - A session the user ended never reopens without explicit opt-in (`reopen: true`, the CLI's `--reopen`). [Request flow](docs/invariants.md#request-flow).
