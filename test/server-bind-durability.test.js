@@ -55,8 +55,55 @@ async function withEnv(overrides, fn) {
   }
 }
 
-function listenHealth(host, port, body) {
-  const server = createHttpServer((req, res) => {
+// Rejects on a listen error. A bare `server.listen(options, callback)` turns that error into an
+// uncaughtException and never settles, so the test never reaches the finally that closes what it
+// opened earlier, and the leaked server keeps the whole file from exiting.
+function listen(server, options) {
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(options, () => {
+      server.off("error", reject);
+      resolve(undefined);
+    });
+  });
+}
+
+// Closes a server serve() was expected to refuse, so a regression that starts it fails the test
+// instead of leaving a listener with no idle timeout holding the file open.
+async function assertServeRejects(options, validate) {
+  /** @type {Awaited<ReturnType<typeof serve>> | undefined} */
+  let started;
+  try {
+    await assert.rejects(async () => {
+      started = await serve(options);
+    }, validate);
+  } finally {
+    await started?.close();
+  }
+}
+
+// Hosts without IPv6 (some containers and CI sandboxes) cannot bind ::1: the kernel answers
+// EAFNOSUPPORT, or EADDRNOTAVAIL when IPv6 is enabled but loopback carries no ::1. Only those two
+// codes mean "absent"; any other error fails the file rather than silently skipping coverage.
+async function canBindIpv6Loopback() {
+  const server = createServer();
+  try {
+    await listen(server, { host: "::1", port: 0 });
+  } catch (error) {
+    if (error.code === "EAFNOSUPPORT" || error.code === "EADDRNOTAVAIL") return false;
+    throw error;
+  }
+  await new Promise((resolve) => server.close(() => resolve(undefined)));
+  return true;
+}
+
+// Cases that need a listener on ::1 skip where IPv6 loopback is missing and run everywhere else.
+const ipv6LoopbackOnly = {
+  skip: (await canBindIpv6Loopback()) ? false : "IPv6 loopback (::1) cannot be bound on this host",
+};
+
+function healthServer(body) {
+  return createHttpServer((req, res) => {
     if (req.url?.startsWith("/health")) {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify(body));
@@ -64,9 +111,6 @@ function listenHealth(host, port, body) {
     }
     res.writeHead(404);
     res.end();
-  });
-  return new Promise((resolve) => {
-    server.listen({ host, port }, () => resolve(server));
   });
 }
 
@@ -114,7 +158,7 @@ test("a stale control-channel server is replaced only once per CLI invocation", 
         res.writeHead(404);
         res.end();
       });
-      await new Promise((resolve) => fake.listen({ host: "127.0.0.1", port: 0 }, () => resolve(undefined)));
+      await listen(fake, { host: "127.0.0.1", port: 0 });
       const port = /** @type {{ port: number }} */ (fake.address()).port;
       try {
         await withEnv(
@@ -148,16 +192,16 @@ test("a stale control-channel server is replaced only once per CLI invocation", 
   });
 });
 
-test("an occupied loopback control address prevents binding another listener", async () => {
+test("an occupied loopback control address prevents binding another listener", ipv6LoopbackOnly, async () => {
   await withTempDir(async (dir) => {
     // Drops each connection: startup probes an occupied loopback port for a Lavish owner, and a
     // connection nobody reads would hold this server's close() open.
     const squatter = createServer((socket) => socket.destroy());
-    await new Promise((resolve) => squatter.listen({ port: 0, host: "127.0.0.1" }, () => resolve(undefined)));
+    await listen(squatter, { port: 0, host: "127.0.0.1" });
     const occupiedPort = /** @type {{ port: number }} */ (squatter.address()).port;
     try {
-      await assert.rejects(
-        serve({
+      await assertServeRejects(
+        {
           port: occupiedPort,
           stateFile: path.join(dir, "state.json"),
           version: "9.9.9-test",
@@ -165,18 +209,16 @@ test("an occupied loopback control address prevents binding another listener", a
           hosts: ["127.0.0.1", "::1"],
           log: () => {},
           idleTimeoutMs: null,
-        }),
+        },
         (error) => {
           assert.ok(error instanceof Error);
           assert.match(error.message, /Loopback .* already in use/);
           return true;
         },
       );
+      // The refused startup must not have left ::1 bound behind it.
       const probe = createServer();
-      await new Promise((resolve, reject) => {
-        probe.once("error", reject);
-        probe.listen({ port: occupiedPort, host: "::1" }, () => resolve(undefined));
-      });
+      await listen(probe, { port: occupiedPort, host: "::1" });
       await new Promise((resolve) => probe.close(() => resolve(undefined)));
     } finally {
       await new Promise((resolve) => squatter.close(() => resolve(undefined)));
@@ -184,42 +226,43 @@ test("an occupied loopback control address prevents binding another listener", a
   });
 });
 
-test("an occupied requested address does not report network_stale after loopback fallback", async () => {
-  await withTempDir(async (dir) => {
-    const occupiedHost = "::1";
-    // Drops each connection: startup probes an occupied loopback port for a Lavish owner, and a
-    // connection nobody reads would hold this server's close() open.
-    const squatter = createServer((socket) => socket.destroy());
-    await new Promise((resolve, reject) => {
-      squatter.once("error", reject);
-      squatter.listen({ port: 0, host: occupiedHost }, () => resolve(undefined));
-    });
-    const occupiedPort = /** @type {{ port: number }} */ (squatter.address()).port;
-    try {
-      const server = await serve({
-        port: occupiedPort,
-        stateFile: path.join(dir, "state.json"),
-        version: "9.9.9-test",
-        env: { LAVISH_AXI_HOST: occupiedHost },
-        log: () => {},
-        idleTimeoutMs: null,
-      });
+test(
+  "an occupied requested address does not report network_stale after loopback fallback",
+  ipv6LoopbackOnly,
+  async () => {
+    await withTempDir(async (dir) => {
+      const occupiedHost = "::1";
+      // Drops each connection: startup probes an occupied loopback port for a Lavish owner, and a
+      // connection nobody reads would hold this server's close() open.
+      const squatter = createServer((socket) => socket.destroy());
+      await listen(squatter, { port: 0, host: occupiedHost });
+      const occupiedPort = /** @type {{ port: number }} */ (squatter.address()).port;
       try {
-        assert.deepEqual(server.hosts, ["127.0.0.1"]);
-        assert.equal(server.port, occupiedPort);
-        const health = await fetch(`http://127.0.0.1:${server.port}/health?reconcile_network=1`).then((response) =>
-          response.json(),
-        );
-        assert.equal(health.ok, true);
-        assert.equal(health.network_stale, undefined);
+        const server = await serve({
+          port: occupiedPort,
+          stateFile: path.join(dir, "state.json"),
+          version: "9.9.9-test",
+          env: { LAVISH_AXI_HOST: occupiedHost },
+          log: () => {},
+          idleTimeoutMs: null,
+        });
+        try {
+          assert.deepEqual(server.hosts, ["127.0.0.1"]);
+          assert.equal(server.port, occupiedPort);
+          const health = await fetch(`http://127.0.0.1:${server.port}/health?reconcile_network=1`).then((response) =>
+            response.json(),
+          );
+          assert.equal(health.ok, true);
+          assert.equal(health.network_stale, undefined);
+        } finally {
+          await server.close();
+        }
       } finally {
-        await server.close();
+        await new Promise((resolve) => squatter.close(() => resolve(undefined)));
       }
-    } finally {
-      await new Promise((resolve) => squatter.close(() => resolve(undefined)));
-    }
-  });
-});
+    });
+  },
+);
 
 test("a sole unbindable host falls back to loopback instead of leaving no listener", async () => {
   await withTempDir(async (dir) => {
@@ -269,11 +312,11 @@ test("a bind that cannot succeed anywhere still fails loudly and names the cause
     // Drops each connection: startup probes an occupied loopback port for a Lavish owner, and a
     // connection nobody reads would hold this server's close() open.
     const squatter = createServer((socket) => socket.destroy());
-    await new Promise((resolve) => squatter.listen({ port: 0, host: "127.0.0.1" }, () => resolve(undefined)));
+    await listen(squatter, { port: 0, host: "127.0.0.1" });
     const occupiedPort = /** @type {{ port: number }} */ (squatter.address()).port;
     try {
-      await assert.rejects(
-        serve({
+      await assertServeRejects(
+        {
           port: occupiedPort,
           stateFile: path.join(dir, "state.json"),
           version: "9.9.9-test",
@@ -281,7 +324,7 @@ test("a bind that cannot succeed anywhere still fails loudly and names the cause
           hosts: ["127.0.0.1"],
           log: () => {},
           idleTimeoutMs: null,
-        }),
+        },
         (error) => {
           assert.ok(error instanceof Error);
           assert.match(error.message, /Loopback .* already in use/);
@@ -414,7 +457,7 @@ try {
 test("a clean detached-server shutdown exits 0 without an error in server.log", async () => {
   await withTempDir(async (dir) => {
     const holder = createServer();
-    await new Promise((resolve) => holder.listen({ port: 0, host: "127.0.0.1" }, () => resolve(undefined)));
+    await listen(holder, { port: 0, host: "127.0.0.1" });
     const port = /** @type {{ port: number }} */ (holder.address()).port;
     await new Promise((resolve) => holder.close(() => resolve(undefined)));
     const logFile = path.join(dir, "server.log");
@@ -464,7 +507,7 @@ test("a detached server crash writes a timestamped line to server.log", async ()
     // Drops each connection: startup probes an occupied loopback port for a Lavish owner, and a
     // connection nobody reads would hold this server's close() open.
     const squatter = createServer((socket) => socket.destroy());
-    await new Promise((resolve) => squatter.listen({ port: 0, host: "127.0.0.1" }, () => resolve(undefined)));
+    await listen(squatter, { port: 0, host: "127.0.0.1" });
     const occupiedPort = /** @type {{ port: number }} */ (squatter.address()).port;
     const logFile = path.join(dir, "server.log");
     const fd = openSync(logFile, "a");
@@ -509,7 +552,7 @@ net.Server.prototype.emit = function (event, ...args) {
 `,
       );
       const holder = createServer();
-      await new Promise((resolve) => holder.listen({ port: 0, host: "127.0.0.1" }, () => resolve(undefined)));
+      await listen(holder, { port: 0, host: "127.0.0.1" });
       const port = /** @type {{ port: number }} */ (holder.address()).port;
       await new Promise((resolve) => holder.close(() => resolve(undefined)));
       const logFile = path.join(dir, "server.log");
@@ -641,7 +684,7 @@ test("the control channel finds a fallen-back server on loopback", async () => {
 
 test(
   "discovery prefers Lavish on loopback over a hanging or foreign requested address",
-  { timeout: 10_000 },
+  { ...ipv6LoopbackOnly, timeout: 10_000 },
   async () => {
     await withTempDir(async (dir) => {
       const lavish = await serve({
@@ -655,8 +698,8 @@ test(
       });
       const port = lavish.port;
       const hanging = createHttpServer(() => {});
-      await new Promise((resolve) => hanging.listen({ host: "::1", port }, () => resolve(undefined)));
       try {
+        await listen(hanging, { host: "::1", port });
         const started = Date.now();
         const output = await withEnv(
           {
@@ -685,8 +728,9 @@ test(
         idleTimeoutMs: null,
       });
       const port = lavish.port;
-      const foreign = await listenHealth("::1", port, { ok: true, app: "other", version: "0.0.0" });
+      const foreign = healthServer({ ok: true, app: "other", version: "0.0.0" });
       try {
+        await listen(foreign, { host: "::1", port });
         const output = await withEnv(
           {
             LAVISH_AXI_PORT: String(port),
@@ -702,9 +746,10 @@ test(
       }
     });
 
-    const foreignOnly = await listenHealth("::1", 0, { ok: true, app: "other", version: "0.0.0" });
-    const foreignPort = /** @type {{ port: number }} */ (foreignOnly.address()).port;
+    const foreignOnly = healthServer({ ok: true, app: "other", version: "0.0.0" });
     try {
+      await listen(foreignOnly, { host: "::1", port: 0 });
+      const foreignPort = /** @type {{ port: number }} */ (foreignOnly.address()).port;
       const output = await withEnv(
         {
           LAVISH_AXI_PORT: String(foreignPort),
@@ -718,14 +763,16 @@ test(
     } finally {
       await new Promise((resolve) => foreignOnly.close(() => resolve(undefined)));
     }
-
-    const none = await withEnv(
-      {
-        LAVISH_AXI_PORT: "1",
-        LAVISH_AXI_HOST: UNBINDABLE_HOST,
-      },
-      () => stopCommand([]),
-    );
-    assert.equal(none.server.status, "not-running");
   },
 );
+
+test("discovery reports not-running when nothing answers on loopback", { timeout: 10_000 }, async () => {
+  const none = await withEnv(
+    {
+      LAVISH_AXI_PORT: "1",
+      LAVISH_AXI_HOST: UNBINDABLE_HOST,
+    },
+    () => stopCommand([]),
+  );
+  assert.equal(none.server.status, "not-running");
+});
