@@ -37,7 +37,7 @@ Vendored Mermaid in the opaque-origin artifact (headless Chrome via `CHROME_PATH
 - Tests that start the server set `LAVISH_AXI_STATE_DIR` and use an ephemeral port.
 - `run()` returns on `--version` / `-v` / `-V` before `ensureStateDir` and telemetry (`test/cli-version.test.js`). New startup work goes after that short-circuit.
 - `canonicalFile` runs `realpath`. Two paths to the same file are one session.
-- `normalizeArgv` must let AXI `RESERVED_COMMANDS` (including `update`) pass through. A bare `lavish-axi update` must not become `open update`.
+- `normalizeArgv` must let AXI `RESERVED_COMMANDS` (including `update`) pass through. A bare `lavish-axi update` must not become `open update`. This build shadows `update` with a refusal so the SDK self-updater never reaches the npm registry; `verify-hardening.mjs` checks it.
 
 ## Safety and correctness
 

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import WebSocket from "ws";
 
@@ -1733,6 +1734,42 @@ test("SDK reserved commands pass through instead of normalizing to open", () => 
   assert.deepEqual(normalizeArgv(["update", "--help"]), ["update", "--help"]);
 });
 
+// LAVISH-HARDENED: the SDK's built-in `update` fetched the npm registry and then told the
+// agent to `npm install -g` the upstream package, which is not hardened. The preload records
+// every fetch the CLI attempts, and npm runs offline so the SDK's `npm view` fallback cannot
+// reach the registry either - this test never touches the network, even when it fails.
+test("update refuses without contacting the npm registry", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "lavish-axi-update-"));
+  try {
+    const fetchLog = path.join(dir, "fetch.log");
+    const preload = path.join(dir, "record-fetch.mjs");
+    await writeFile(
+      preload,
+      [
+        'import { appendFileSync } from "node:fs";',
+        "globalThis.fetch = async (url) => {",
+        `  appendFileSync(${JSON.stringify(fetchLog)}, String(url) + "\\n");`,
+        '  throw new Error("network disabled in this test");',
+        "};",
+        "",
+      ].join("\n"),
+    );
+    const entry = fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url));
+    for (const args of [["update"], ["update", "--check"]]) {
+      const result = spawnSync(process.execPath, ["--import", pathToFileURL(preload).href, entry, ...args], {
+        env: { ...process.env, LAVISH_AXI_STATE_DIR: dir, LAVISH_AXI_TELEMETRY: "0", npm_config_offline: "true" },
+        encoding: "utf8",
+      });
+      const command = args.join(" ");
+      assert.equal(existsSync(fetchLog), false, `${command} attempted a network request`);
+      assert.match(result.stdout, /`update` is removed in this hardened build/, command);
+      assert.notEqual(result.status, 0, `${command} must exit non-zero`);
+    }
+  } finally {
+    await rm(dir, { force: true, recursive: true });
+  }
+});
+
 // LAVISH-HARDENED: `setup` is removed, and so is everything it called - the hook
 // directory resolvers, the ambient-context script, the settings merge, the writer and
 // the per-client plugin registration. The fifteen tests that stood here exercised all
@@ -1768,12 +1805,21 @@ test("detached server entry dispatches the CLI", () => {
   assert.match(result.stdout, /\d+\.\d+\.\d+/);
 });
 
-test("local built CLI opens force a server restart while source and installed runs do not", () => {
+// LAVISH-HARDENED: the launchers always run this checkout's dist/cli.mjs, so upstream's
+// "a local build restarts the server" rule fired on every open and cut off every other
+// agent's poll on the shared server. A developer who wants it opts in explicitly.
+test("local built CLI opens restart the server only when a developer opts in", () => {
   const root = fileURLToPath(new URL("..", import.meta.url));
+  const optIn = { LAVISH_AXI_DEV_RESTART: "1" };
 
-  assert.equal(shouldForceRestartForLocalBuild(`${root}/dist/cli.mjs`, true), true);
-  assert.equal(shouldForceRestartForLocalBuild(`${root}/bin/lavish-axi.js`, true), false);
-  assert.equal(shouldForceRestartForLocalBuild("/usr/local/lib/node_modules/lavish-axi/dist/cli.mjs", false), false);
+  assert.equal(shouldForceRestartForLocalBuild(`${root}/dist/cli.mjs`, true, {}), false);
+  assert.equal(shouldForceRestartForLocalBuild(`${root}/dist/cli.mjs`, true, { LAVISH_AXI_DEV_RESTART: "0" }), false);
+  assert.equal(shouldForceRestartForLocalBuild(`${root}/dist/cli.mjs`, true, optIn), true);
+  assert.equal(shouldForceRestartForLocalBuild(`${root}/bin/lavish-axi.js`, true, optIn), false);
+  assert.equal(
+    shouldForceRestartForLocalBuild("/usr/local/lib/node_modules/lavish-axi/dist/cli.mjs", false, optIn),
+    false,
+  );
 });
 
 test("shouldRestartServer reuses a server running the same version", () => {

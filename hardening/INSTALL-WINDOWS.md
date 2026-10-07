@@ -72,7 +72,7 @@ node verify-hardening.mjs
 Ожидается:
 
 ```
-All 23 checks passed. This build is hardened.
+All 24 checks passed. This build is hardened.
 ```
 
 Проверки читают и исходники, и собранные `dist\cli.mjs` / `dist\server.mjs`: что телеметрия

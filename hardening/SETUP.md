@@ -43,7 +43,7 @@ pnpm links `node_modules/` with symlinks or junctions native to the platform tha
 node verify-hardening.mjs
 ```
 
-Twenty-three checks, covering both the sources and the compiled `dist/`. Exit code 0
+Twenty-four checks, covering both the sources and the compiled `dist/`. Exit code 0
 means the build is hardened; any failure prints what is wrong. Re-run this after every
 install or `git pull`.
 
