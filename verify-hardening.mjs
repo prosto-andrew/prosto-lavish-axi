@@ -3,8 +3,10 @@
 // compiled output actually carries the hardening. Run from the checkout root:
 //   node verify-hardening.mjs
 // Exit code 0 = all checks pass, 1 = something is wrong (details printed).
+// The launchers run it with --quiet before every start: nothing is printed when
+// every check passes, and only the failed checks when one does not.
 
-import { readFileSync, existsSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -45,8 +47,8 @@ function mustContain(text, needle, where) {
   if (!text.includes(needle)) throw new Error(`${where} does not contain ${needle}`);
 }
 
-// The upstream release this tree was last merged from and audited against. Bump it only
-// together with the launchers (lavish-safe, lavish-safe.cmd) after re-running every check.
+// The upstream release this tree was last merged from and audited against. The launchers
+// defer to this pin through --quiet. Bump it only after re-running every check.
 const AUDITED_VERSION = "0.1.82";
 
 check(`checkout is the audited version ${AUDITED_VERSION}`, () => {
@@ -108,25 +110,70 @@ check("source: assets served locally, not from a CDN", () => {
   return "tailwind, daisyui and mermaid come from the local server";
 });
 
-check("build exists and is newer than the sources", () => {
-  const entry = path.join(root, "dist/cli.mjs");
-  if (!existsSync(entry))
-    throw new Error("dist/cli.mjs missing - run `npx --yes pnpm@11.1.1 install --frozen-lockfile` once to build");
-  if (!existsSync(path.join(root, "dist/server.mjs"))) throw new Error("dist/server.mjs missing - run `npm run build`");
-  const built = statSync(entry).mtimeMs;
-  const newest = [
+const REBUILD = "run `npx --yes pnpm@11.1.1 install --frozen-lockfile`";
+
+function filesUnder(rel) {
+  return readdirSync(path.join(root, rel), { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => path.relative(root, path.join(entry.parentPath, entry.name)));
+}
+
+check("build exists and is newer than every build input", () => {
+  // The launchers run dist/, so a `git pull` or an upstream merge that is not rebuilt would
+  // otherwise keep running the previous build while the checkout claims to be the new one.
+  // Every file the build reads counts, not a hand-picked few.
+  const outputs = ["dist/cli.mjs", "dist/server.mjs"];
+  for (const rel of outputs) {
+    if (!existsSync(path.join(root, rel))) throw new Error(`${rel} missing - ${REBUILD} once to build`);
+  }
+  const built = Math.min(...outputs.map((rel) => statSync(path.join(root, rel)).mtimeMs));
+  const inputs = [
+    ...filesUnder("src"),
+    ...filesUnder("bin"),
+    ...filesUnder("scripts"),
+    "package.json",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+  ];
+  const newer = inputs.filter((rel) => statSync(path.join(root, rel)).mtimeMs > built);
+  if (newer.length) {
+    const more = newer.length > 3 ? ` and ${newer.length - 3} more` : "";
+    throw new Error(`dist/ is older than ${newer.slice(0, 3).join(", ")}${more} - ${REBUILD}`);
+  }
+  return `dist/ is newer than all ${inputs.length} build inputs`;
+});
+
+check("node_modules was installed by pnpm, not rewritten by npm", () => {
+  // dist/ imports its dependencies from node_modules at run time. Only pnpm applies the
+  // committed lockfile and the supply-chain policy in pnpm-workspace.yaml; `npm install` or
+  // `npm update` re-resolves every range, and leaves its own lockfiles behind when it does.
+  if (!existsSync(path.join(root, "node_modules"))) throw new Error(`node_modules is missing - ${REBUILD}`);
+  if (!existsSync(path.join(root, "node_modules/.modules.yaml"))) {
+    throw new Error(`node_modules was not installed by pnpm - delete node_modules, then ${REBUILD}`);
+  }
+  for (const rel of ["package-lock.json", "node_modules/.package-lock.json"]) {
+    if (existsSync(path.join(root, rel))) {
+      throw new Error(
+        `${rel} exists: npm rewrote this tree - delete node_modules, dist and package-lock.json, then ${REBUILD}`,
+      );
+    }
+  }
+  return "pnpm install, no npm lockfile";
+});
+
+check("the bundled CLI spawns the bundled server", () => {
+  // Upstream spawned bin/lavish-axi-server.js whenever it existed, so the launchers' verified
+  // dist/cli.mjs started a server that ran this checkout's src/ - unchecked by every dist
+  // check here. The bundle must prefer the sibling dist/server.mjs.
+  mustContain(
+    read("src/cli.js"),
+    'const bundledEntry = fileURLToPath(new URL("./server.mjs", moduleUrl));\n  if (existsSync(bundledEntry)) return bundledEntry;',
     "src/cli.js",
-    "src/server.js",
-    "src/telemetry.js",
-    "src/paths.js",
-    "src/design-reference.js",
-    "src/server-log.js",
-    "bin/lavish-axi-server.js",
-  ]
-    .map((f) => statSync(path.join(root, f)).mtimeMs)
-    .reduce((a, b) => Math.max(a, b), 0);
-  if (built < newest) throw new Error("dist/cli.mjs is older than the patched sources - run `npm run build`");
-  return "dist/cli.mjs is up to date";
+  );
+  const bundled =
+    /bundledEntry = fileURLToPath\d*\(new URL\("\.\/server\.mjs", moduleUrl\)\);\s*if \(existsSync\d*\(bundledEntry\)\) return bundledEntry;/;
+  if (!bundled.test(read("dist/cli.mjs"))) throw new Error(`dist/cli.mjs does not prefer dist/server.mjs - ${REBUILD}`);
+  return "the server runs the same verified bundle as the CLI";
 });
 
 check("build carries the hardening markers", () => {
@@ -347,7 +394,7 @@ check("CLI guidance names the launcher, never the upstream binary", () => {
     if (hits) throw new Error(`${file} still tells the agent to run the upstream binary (${hits.length}x)`);
   }
   // The home output advertises what to invoke; argv would name this build's dist entry,
-  // which runs without the launcher's version and marker checks.
+  // which runs without the verifier the launcher runs first.
   mustContain(read("src/cli.js"), 'bin: "lavish-safe"', "src/cli.js");
   return "help, next_step and hints all point at lavish-safe";
 });
@@ -446,14 +493,19 @@ check("vendored mermaid is readable from the opaque-origin artifact", () => {
   return "Access-Control-Allow-Origin: * on /design/mermaid and /whiteboard-assets only";
 });
 
-const width = Math.max(...results.map(([, name]) => name.length));
-for (const [status, name, detail] of results) {
+const quiet = process.argv.includes("--quiet");
+const shown = quiet ? results.filter(([status]) => status !== "PASS") : results;
+const width = Math.max(0, ...shown.map(([, name]) => name.length));
+for (const [status, name, detail] of shown) {
   const mark = status === "PASS" ? "  ok  " : " FAIL ";
   console.log(`${mark} ${name.padEnd(width)}  ${detail}`);
 }
-console.log("");
 if (failed) {
+  console.log("");
   console.log(`${failed} check(s) FAILED - do not use this build until they pass.`);
   process.exit(1);
 }
-console.log(`All ${results.length} checks passed. This build is hardened.`);
+if (!quiet) {
+  console.log("");
+  console.log(`All ${results.length} checks passed. This build is hardened.`);
+}

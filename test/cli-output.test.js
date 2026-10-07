@@ -35,6 +35,7 @@ import {
   pollInterruptedText,
   pollWaitBannerText,
   pollWaitTickText,
+  resolveServerEntry,
   serverReplacementReason,
   shareCommand,
   shutdownServerOnPort,
@@ -1796,6 +1797,30 @@ test("server spawn options can persist detached server output to a log fd", () =
 
   assert.equal(options.detached, true);
   assert.deepEqual(options.stdio, ["ignore", 17, 17]);
+});
+
+// LAVISH-HARDENED: the launchers verify and run this checkout's dist/cli.mjs. When that bundle
+// spawned bin/lavish-axi-server.js instead, the server ran src/ - code the verifier never
+// checked, stale after a `git pull`, and unaudited halfway through an upstream merge.
+test("a bundled CLI spawns the bundled server beside it and a source CLI the source entry", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "lavish-axi-entry-"));
+  try {
+    for (const sub of ["bin", "dist", "src"]) await mkdir(path.join(dir, sub));
+    for (const file of ["bin/lavish-axi-server.js", "dist/cli.mjs", "dist/server.mjs", "src/cli.js"]) {
+      await writeFile(path.join(dir, file), "");
+    }
+
+    assert.equal(
+      resolveServerEntry(pathToFileURL(path.join(dir, "dist", "cli.mjs")).href),
+      path.join(dir, "dist", "server.mjs"),
+    );
+    assert.equal(
+      resolveServerEntry(pathToFileURL(path.join(dir, "src", "cli.js")).href),
+      path.join(dir, "bin", "lavish-axi-server.js"),
+    );
+  } finally {
+    await rm(dir, { force: true, recursive: true });
+  }
 });
 
 test("detached server entry dispatches the CLI", () => {

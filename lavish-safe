@@ -2,31 +2,21 @@
 # lavish-safe - launcher for the locally hardened lavish-axi build (WSL / Linux).
 #
 # The capabilities are removed in this tree's SOURCE, not merely disabled here.
-# This launcher's job is to make sure the thing that runs is THAT tree: it
-# refuses to start if the build is missing, unbuilt, or no longer carries the
-# hardening markers (which is what a re-download or an `npm update` would look
-# like).
+# This launcher's job is to make sure the thing that runs is THAT tree: before every
+# start it runs verify-hardening.mjs - the same checks you run by hand - and refuses
+# to start when any of them fails: a missing, stale or unhardened build, a node_modules
+# that npm rewrote, or a version that was never audited.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-ENTRY="$ROOT/dist/cli.mjs"
 
 die() { printf 'lavish-safe: %s\n' "$1" >&2; exit 1; }
 
-[ -f "$ROOT/package.json" ] || die "not a lavish-axi checkout: $ROOT"
-grep -q '"version": "0.1.82"' "$ROOT/package.json" ||
-  die "this checkout is not version 0.1.82 - it was never audited. Re-audit before use."
+[ -f "$ROOT/verify-hardening.mjs" ] || die "not a hardened lavish-axi checkout: $ROOT"
 
-[ -f "$ENTRY" ] || die "dist/cli.mjs is missing - run 'npx --yes pnpm@11.1.1 install --frozen-lockfile' in $ROOT once to build it."
-
-# The build must carry the hardening and must not carry the removed endpoints.
-grep -q 'LAVISH-HARDENED' "$ENTRY" ||
-  die "dist/cli.mjs has no hardening markers - it was rebuilt from unpatched sources. Check out this fork's main and rebuild, then run 'node verify-hardening.mjs'."
-for host in 'a.kunchenguid.com' 'api.ht-ml.app' 'cdn.jsdelivr.net'; do
-  if grep -q "$host" "$ENTRY"; then
-    die "dist/cli.mjs still references $host - the hardening is not in this build. Refusing to run."
-  fi
-done
+# The verifier's report goes to stderr: stdout carries only the CLI's response, which the agent parses.
+node "$ROOT/verify-hardening.mjs" --quiet >&2 ||
+  die "refusing to start: the checks above failed. In $ROOT run 'npx --yes pnpm@11.1.1 install --frozen-lockfile', then 'node verify-hardening.mjs'."
 
 # Defence in depth: even though the source ignores these, keep the environment
 # itself hostile to telemetry and to binding anywhere but loopback.
@@ -34,4 +24,4 @@ export LAVISH_AXI_TELEMETRY=0
 export LAVISH_AXI_HOST=127.0.0.1
 unset LAVISH_AXI_UMAMI_WEBSITE_ID LAVISH_AXI_UMAMI_HOST LAVISH_AXI_HTML_APP_TOKEN 2>/dev/null || true
 
-exec node "$ENTRY" "$@"
+exec node "$ROOT/dist/cli.mjs" "$@"

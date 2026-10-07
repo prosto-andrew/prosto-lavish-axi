@@ -28,11 +28,12 @@ tests) and the package's `prepare` script then runs the build. The pnpm version 
 `packageManager` in `package.json`; `npx` fetches it, so nothing needs a global install.
 The build needs Node 22+.
 
-`pnpm-lock.yaml` is the fork's only lockfile. `npm install` still builds a working tree, but
-it re-resolves every `^` range on each machine and ignores the supply-chain policy in
-`pnpm-workspace.yaml` (minimum release age, trust policy, build-script allowlist). If npm was
-used anyway, do not commit the `package-lock.json` it writes; `.gitignore` excludes it on
-purpose.
+`pnpm-lock.yaml` is the fork's only lockfile. Do not use `npm install`: it re-resolves every
+`^` range on each machine and ignores the supply-chain policy in `pnpm-workspace.yaml`
+(minimum release age, trust policy, build-script allowlist). The verifier, and so the
+launchers, refuse a tree that npm installed or rewrote - a `package-lock.json` or a
+`node_modules/.package-lock.json` gives it away. If that happens, delete `node_modules`,
+`dist` and `package-lock.json`, then run the pnpm command above.
 
 Install separately in each environment you run from (one clone for WSL, one for Windows):
 pnpm links `node_modules/` with symlinks or junctions native to the platform that made them.
@@ -43,7 +44,7 @@ pnpm links `node_modules/` with symlinks or junctions native to the platform tha
 node verify-hardening.mjs
 ```
 
-Twenty-four checks, covering both the sources and the compiled `dist/`. Exit code 0
+Twenty-six checks, covering both the sources and the compiled `dist/`. Exit code 0
 means the build is hardened; any failure prints what is wrong. Re-run this after every
 install or `git pull`.
 
@@ -61,10 +62,11 @@ ln -sf "$(pwd)/lavish-safe" ~/.local/bin/lavish-safe
 **Windows:** add the checkout directory itself to your user PATH. Do not copy
 `lavish-safe.cmd` elsewhere: it resolves `dist\cli.mjs` relative to its own location.
 
-The launcher refuses to start if `dist/cli.mjs` is missing, lost its hardening markers,
-or regained any of the removed endpoints — which is what an accidental re-download or
-`npm update` would look like. (`verify-hardening.mjs` additionally catches a `dist/` older
-than the sources.)
+Before every start the launcher runs `node verify-hardening.mjs --quiet` and refuses to start
+when any check fails: a missing, stale or unhardened `dist/`, a `node_modules` that npm
+rewrote, a version that was never audited. After a `git pull`, rebuild (step 1) before the
+next use; the refusal names the command. The checks add about 0.3 s to each invocation. The
+CLI it starts spawns its server from the same `dist/` (`dist/server.mjs`), never from `src/`.
 
 ## 4. Install the skill
 
@@ -106,8 +108,8 @@ pnpm run check
 node verify-hardening.mjs
 ```
 
-and bump the version pinned in `verify-hardening.mjs`, `lavish-safe`, and `lavish-safe.cmd`
-only once every check passes. The 0.1.82 merge left out upstream's Herdr chime (it spawned a
+and bump the version pinned in `verify-hardening.mjs` (the launchers defer to it) only once
+every check passes. Until then the launchers refuse to start, so a half-merged tree never runs. The 0.1.82 merge left out upstream's Herdr chime (it spawned a
 `herdr` binary) and its multi-address serving (`server --also-listen`, interface-sweep discovery).
 The original 0.1.62 patch script (`harden_lavish.py`) is gone from the tree; it refused every
 other version, and git history keeps it.
