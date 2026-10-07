@@ -2095,9 +2095,9 @@ packages:
       { integrity: sha512-VZBmZP8WU3sMOZm1bdgTadsQbcscK0UM8oKxKVBs4XAhUo2Xxzm/OFMGBkPusxw9xL3Uy8LrzEqGqJhclsr0yA== }
     deprecated: Unsupported
 
-  source-map-js@1.2.1:
+  source-map-js@1.2.2:
     resolution:
-      { integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA== }
+      { integrity: sha512-KGj/8Y43x35aZVDtt+J4mK1hoLGHULMYfSkODJNQjNDC3oW1PqPoxMwo0pLUsWM/UEGzON/NxeHywEfNXNP3Vw== }
     engines: { node: ">=0.10.0" }
 
   statuses@2.0.2:
@@ -3836,7 +3836,7 @@ snapshots:
     dependencies:
       chokidar: 4.0.1
       immutable: 4.3.9
-      source-map-js: 1.2.1
+      source-map-js: 1.2.2
 
   scheduler@0.23.2:
     dependencies:
@@ -3905,7 +3905,7 @@ snapshots:
 
   sliced@1.0.1: {}
 
-  source-map-js@1.2.1: {}
+  source-map-js@1.2.2: {}
 
   statuses@2.0.2: {}
 
