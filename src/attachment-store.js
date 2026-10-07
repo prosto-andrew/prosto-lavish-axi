@@ -595,6 +595,9 @@ export async function sweepAttachments(stateDir, options = {}) {
     // Files younger than this grace are never cap-evicted; 0 disables the grace so the
     // pure mechanism (and its tests) evict oldest-unreferenced regardless of age.
     evictionGraceMs = 0,
+    // The `rm` the TTL and cap passes delete a listed attachment with. Only tests
+    // replace it: a permission-denied delete cannot be staged under root.
+    rmFile = rm,
   } = options;
   const files = await listAttachments(stateDir);
   let deleted = 0;
@@ -604,7 +607,7 @@ export async function sweepAttachments(stateDir, options = {}) {
     const isReferenced = referenced.has(`${file.key}/${file.id}`);
     const expired = ttlMs != null && now - file.mtimeMs > ttlMs;
     if (!isReferenced && expired) {
-      if (await removeFile(file.path)) {
+      if (await removeFile(file.path, rmFile)) {
         deleted += 1;
         freedBytes += file.bytes;
       } else {
@@ -640,7 +643,7 @@ export async function sweepAttachments(stateDir, options = {}) {
       .sort((a, b) => a.mtimeMs - b.mtimeMs);
     for (const file of evictable) {
       if (!overBudget()) break;
-      if (await removeFile(file.path)) {
+      if (await removeFile(file.path, rmFile)) {
         file.evicted = true;
         deleted += 1;
         freedBytes += file.bytes;
@@ -743,13 +746,13 @@ async function readdirSafe(dir) {
   }
 }
 
-async function removeFile(file) {
+async function removeFile(file, rmFile = rm) {
   // Sidecar first (ATTACH-002): a failure after removing the image would otherwise
   // strand the uncounted `.meta`; removing the cache first leaves only the counted
   // image if we crash between the two.
-  await rm(sidecarPath(file), { force: true }).catch(() => {});
+  await rmFile(sidecarPath(file), { force: true }).catch(() => {});
   try {
-    await rm(file, { force: true });
+    await rmFile(file, { force: true });
     return true;
   } catch {
     return false;

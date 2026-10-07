@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import fsPromises, { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -3286,14 +3287,18 @@ test("skips a local asset that exceeds the per-asset size cap and leaves it as a
   assert.equal(warnings[0].kind, "too-large");
 });
 
-test("default reader rejects oversized assets before attempting to read them", async () => {
+test("default reader rejects oversized assets before attempting to read them", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "lavish-export-"));
-  const big = path.join(root, "big.png");
+  // Observe the readFile the default reader imports instead of making the file
+  // unreadable: root reads a chmod 0 file anyway, so that proved nothing there.
+  // Named imports of a builtin follow its exports after syncBuiltinESMExports.
+  const readSpy = t.mock.method(fsPromises, "readFile");
+  syncBuiltinESMExports();
   try {
-    await writeFile(big, Buffer.alloc(2048, 1));
-    await chmod(big, 0);
+    await writeFile(path.join(root, "big.png"), Buffer.alloc(2048, 1));
+    await writeFile(path.join(root, "small.png"), Buffer.alloc(16, 1));
 
-    const html = '<!doctype html><html><body><img src="big.png"></body></html>';
+    const html = '<!doctype html><html><body><img src="big.png"><img src="small.png"></body></html>';
     const { html: out, warnings } = await buildSelfContainedHtml(html, {
       baseDir: root,
       confineDir: root,
@@ -3304,8 +3309,12 @@ test("default reader rejects oversized assets before attempting to read them", a
     assert.equal(warnings.length, 1);
     assert.equal(warnings[0].kind, "too-large");
     assert.match(warnings[0].reason || "", /per-asset cap/);
+    const read = readSpy.mock.calls.map((call) => path.basename(String(call.arguments[0])));
+    assert.ok(read.includes("small.png"), "the spy sees the default reader's reads");
+    assert.ok(!read.includes("big.png"), "the oversized asset is never read");
   } finally {
-    await chmod(big, 0o600).catch(() => {});
+    readSpy.mock.restore();
+    syncBuiltinESMExports();
     await rm(root, { recursive: true, force: true });
   }
 });
