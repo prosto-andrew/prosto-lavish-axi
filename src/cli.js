@@ -51,12 +51,15 @@ const COMMANDS = new Set([
 
 // LAVISH-HARDENED: `share` and `setup` are removed from this build. They stay registered
 // as command names only so the CLI answers with a clear refusal instead of
-// treating the word as an HTML file name to open.
+// treating the word as an HTML file name to open. `update` is the SDK's reserved
+// self-updater; registering a handler for it is how the SDK lets a tool shadow it.
 const DISABLED_COMMANDS = {
   share:
     "`share` is removed in this hardened build: it published the artifact to ht-ml.app, a third-party host. Use `export` for a self-contained local copy instead.",
   setup:
     "`setup` is removed in this hardened build: it installed persistent session-start hooks and agent plugin registrations outside the project.",
+  update:
+    "`update` is removed in this hardened build: it queried the npm registry and installed the upstream package, which is not hardened. This build is updated by pulling its git checkout and rebuilding it, which the user does by hand.",
 };
 
 function disabledCommand(name) {
@@ -167,6 +170,7 @@ export async function run(argv) {
         server: serverCommand,
         export: exportCommand,
         share: disabledCommand("share"),
+        update: disabledCommand("update"),
       },
       getCommandHelp: (command) => getCommandHelp(command, { agent }),
     });
@@ -1361,7 +1365,14 @@ export function serverReplacementReason(currentVersion, healthBody, forceRestart
   return forceRestart ? "local-build" : "";
 }
 
-export function shouldForceRestartForLocalBuild(executablePath, sourceServerExists = localSourceServerExists()) {
+// LAVISH-HARDENED: the launchers run this checkout's dist/cli.mjs on every invocation, so
+// without the opt-in each open restarted the shared server and cut off other agents' polls.
+export function shouldForceRestartForLocalBuild(
+  executablePath,
+  sourceServerExists = localSourceServerExists(),
+  env = process.env,
+) {
+  if (env.LAVISH_AXI_DEV_RESTART !== "1") return false;
   const localBuildEntry = fileURLToPath(new URL("../dist/cli.mjs", import.meta.url));
   return sourceServerExists && path.resolve(executablePath) === path.resolve(localBuildEntry);
 }

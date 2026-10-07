@@ -90,6 +90,17 @@ check("source: setup / hook installation removed", () => {
   return "no persistent hooks or plugin registration";
 });
 
+check("self-update is refused before it reaches the npm registry", () => {
+  // `update` is an axi-sdk-js built-in that runs whenever the tool registers no handler of
+  // its own: it fetches the registry and recommends installing the upstream package. The SDK
+  // stays an external import, so the bundle scans below never see that code - only the
+  // shadowing handler keeps it from running.
+  for (const file of ["src/cli.js", "dist/cli.mjs"]) {
+    mustContain(read(file), 'update: disabledCommand("update")', file);
+  }
+  return "the SDK self-updater is shadowed by a refusal";
+});
+
 check("source: assets served locally, not from a CDN", () => {
   const design = read("src/design-reference.js");
   mustNotContain(design, "cdn.jsdelivr.net", "src/design-reference.js");
