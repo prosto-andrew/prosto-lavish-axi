@@ -152,7 +152,7 @@ export async function run(argv) {
         createHomeOutput({
           // LAVISH-HARDENED: report the launcher, not process.argv[1]. The real argv
           // is this build's dist entry, and advertising that path invites an agent to
-          // run it directly, bypassing the version and marker checks the launcher makes.
+          // run it directly, bypassing the verifier the launcher runs first.
           bin: "lavish-safe",
           sessions: isTopLevelHelp ? [] : await visibleSessions(),
           includeSessions: !isTopLevelHelp,
@@ -1539,14 +1539,16 @@ async function startServer(port) {
   }
 }
 
-// The detached server child must stamp stdio before evaluating the CLI. In source layout that
-// is `../bin/lavish-axi-server.js`. In the published bundle only `dist/` ships, so the sibling
-// `server.mjs` bootstrap is the entry. Ordinary user-facing commands still use `bin/lavish-axi.js`
-// / `dist/cli.mjs`.
-function resolveServerEntry() {
-  const sourceEntry = fileURLToPath(new URL("../bin/lavish-axi-server.js", import.meta.url));
-  if (existsSync(sourceEntry)) return sourceEntry;
-  return fileURLToPath(new URL("./server.mjs", import.meta.url));
+// The detached server child must stamp stdio before evaluating the CLI. A bundled CLI
+// (`dist/cli.mjs`) spawns the sibling `server.mjs` bootstrap, which runs that same bundle. Only a
+// source run, which has no sibling bundle, uses `../bin/lavish-axi-server.js`. Ordinary
+// user-facing commands still use `bin/lavish-axi.js` / `dist/cli.mjs`.
+// LAVISH-HARDENED: upstream preferred bin/ whenever it existed, so the launchers' verified
+// dist/cli.mjs spawned a server running this checkout's unverified src/.
+export function resolveServerEntry(moduleUrl = import.meta.url) {
+  const bundledEntry = fileURLToPath(new URL("./server.mjs", moduleUrl));
+  if (existsSync(bundledEntry)) return bundledEntry;
+  return fileURLToPath(new URL("../bin/lavish-axi-server.js", moduleUrl));
 }
 
 /**

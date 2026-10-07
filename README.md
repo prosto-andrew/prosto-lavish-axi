@@ -27,12 +27,13 @@
 > overview in [`hardening/SETUP.md`](hardening/SETUP.md)
 >
 > **Verify any checkout:** `npx --yes pnpm@11.1.1 install --frozen-lockfile && node verify-hardening.mjs`
-> -> _All 24 checks passed._ The install uses the committed `pnpm-lock.yaml`, so every machine
-> gets the exact dependency tree CI tested.
+> -> _All 26 checks passed._ The install uses the committed `pnpm-lock.yaml`, so every machine
+> gets the exact dependency tree CI tested. The launchers run the same checks before every
+> start and refuse to run a build that fails any of them, including one not rebuilt after a `git pull`.
 >
 > **Newer upstream releases are merged, not re-patched.** A newer upstream is merged into this
-> tree and audited; the version pinned in `verify-hardening.mjs` and both launchers is bumped
-> only once every check passes again.
+> tree and audited; the version pinned in `verify-hardening.mjs` is bumped only once every
+> check passes again.
 >
 > Run it only through `./lavish-safe` (or `lavish-safe.cmd`), never `npx lavish-axi`, which
 > would fetch the unhardened package.

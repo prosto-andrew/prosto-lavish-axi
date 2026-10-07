@@ -209,8 +209,8 @@ export function defaultWhiteboardAssetsDir() {
 // LAVISH-HARDENED: vendored Mermaid ESM bundle (the module plus its chunk graph), so an
 // artifact that renders Mermaid never reaches out to a CDN. Resolved the same
 // way as the other design assets: the packaged copy when this file runs from
-// dist/, the built copy when the server is spawned from this checkout's src/
-// (which is what resolveServerEntry does whenever bin/ is present).
+// dist/, the built copy when the server runs from this checkout's src/ (a source
+// run such as the tests; a bundled CLI spawns the bundled server).
 export function defaultMermaidAssetsDir() {
   const packaged = fileURLToPath(new URL("./design/mermaid", import.meta.url));
   if (existsSync(packaged)) return packaged;

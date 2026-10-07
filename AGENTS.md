@@ -47,6 +47,7 @@ Each line is the rule. [docs/invariants.md](docs/invariants.md) has the failure 
 - Never signal a listener by port alone. Stop only a Lavish PID bound to that exact address, or `POST /shutdown` on an owned server. [Process model](docs/invariants.md#process-model).
 - Adopt, replace, or stop only a server `isOwnedServer` owns. Another installation's server at a control address is a `SERVER_ERROR`, never used, replaced, or stopped. [Process model](docs/invariants.md#process-model).
 - This fork binds and dials loopback only. Never reintroduce `--also-listen` / `extraListenHosts`, host inheritance across replacements, interface-sweep discovery, or any path that binds or probes a non-loopback address; `verify-hardening.mjs` checks for them. [Process model](docs/invariants.md#process-model).
+- A bundled CLI spawns the bundled `dist/server.mjs`, never `src/` through `bin/`. The launchers run `verify-hardening.mjs --quiet` before every start, so a new check must stay fast and side-effect free. [Process model](docs/invariants.md#process-model).
 - Loopback is always requested and is the only listen address outside tests that pass `hosts` to `serve()`. [Process model](docs/invariants.md#process-model).
 - A wildcard listen request becomes loopback, and an alias that resolves to an all-interfaces address is refused. Never open a wildcard listener. [Process model](docs/invariants.md#process-model).
 - Health probes use `node:http` and destroy the socket on every exit. Do not use `fetch`. [Process model](docs/invariants.md#process-model).
