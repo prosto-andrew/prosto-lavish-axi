@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { on, once } from "node:events";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -253,7 +253,11 @@ test("reply exits 0 only after the server accepts, delivers the reply, and clear
 
 test("reply refuses a missing session, an unreachable server, and a non-success response", async () => {
   await withArtifact(async ({ artifact, env, stateFile }) => {
-    await chmod(stateFile, 0o000);
+    // A directory in place of state.json makes every store read fail with EISDIR,
+    // so the reply route answers 500. A chmod would not: root bypasses it.
+    const savedStateFile = `${stateFile}.saved`;
+    await rename(stateFile, savedStateFile);
+    await mkdir(stateFile);
     try {
       const refused = await runCli(["reply", artifact, "--agent-reply", "should not land"], { env });
       assert.notEqual(refused.status, 0);
@@ -261,7 +265,8 @@ test("reply refuses a missing session, an unreachable server, and a non-success 
       assert.match(refused.stdout, /SERVER_ERROR/);
       assert.doesNotMatch(refused.stdout, /status: sent/);
     } finally {
-      await chmod(stateFile, 0o644);
+      await rm(stateFile, { recursive: true, force: true });
+      await rename(savedStateFile, stateFile);
     }
     const stored = JSON.parse(await readFile(stateFile, "utf8"));
     const chat = Object.values(stored.sessions)[0].chat || [];

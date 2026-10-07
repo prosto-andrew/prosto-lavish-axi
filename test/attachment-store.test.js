@@ -368,22 +368,9 @@ test("disk cap evicts oldest unreferenced files first and never referenced ones"
   });
 });
 
-// POSIX file modes and permission-based failures have no Windows equivalent
-// (chmod there only toggles a read-only flag and does not gate unlink).
+// POSIX file modes have no Windows equivalent (chmod there only toggles a
+// read-only flag).
 const posixOnly = { skip: process.platform === "win32" ? "POSIX file modes" : false };
-
-// Run `body` with `dir` made unwritable, restoring the mode afterwards so the
-// temp-dir cleanup can still remove it. An unwritable parent is the portable way
-// to make an unlink inside it fail (EACCES) without root.
-async function withUnwritableDir(dir, body) {
-  const original = (await stat(dir)).mode & 0o777;
-  await chmod(dir, 0o500);
-  try {
-    await body();
-  } finally {
-    await chmod(dir, original);
-  }
-}
 
 test("attachment files and dirs are created private to the owner (E4)", posixOnly, async () => {
   await withTempDir(async (dir) => {
@@ -435,30 +422,37 @@ test("writeAttachment rewrites identical bytes when the dedup mtime refresh fail
   });
 });
 
-test("a failed expired-orphan delete still counts toward the disk cap (W3)", posixOnly, async () => {
+test("a failed expired-orphan delete still counts toward the disk cap (W3)", async () => {
   await withTempDir(async (dir) => {
-    // `stuck` is expired and unreferenced but sits in a dir we make unwritable, so
-    // its delete fails and its bytes stay on disk. `fresh` lives in another session
-    // dir that stays writable.
+    // `stuck` is expired and unreferenced but sits in a session dir whose deletes
+    // fail, so its bytes stay on disk. `fresh` lives in another session dir whose
+    // deletes succeed. The failure is injected rather than made with chmod, which
+    // root bypasses and Windows does not apply to unlink.
     const stuck = await writeAttachment(dir, KEY, uniquePng("stuck"), {});
     const fresh = await writeAttachment(dir, KEY_B, uniquePng("fresh"), {});
     const old = Date.now() - 10 * 24 * 60 * 60 * 1000;
     await utimes(stuck.path, new Date(old), new Date(old));
+    const stuckDir = attachmentsDir(dir, KEY);
+    const rmFile = async (target, options) => {
+      if (path.dirname(target) === stuckDir) {
+        throw Object.assign(new Error(`EACCES: permission denied, unlink '${target}'`), { code: "EACCES" });
+      }
+      return rm(target, options);
+    };
 
-    await withUnwritableDir(attachmentsDir(dir, KEY), async () => {
-      // The cap fits either file alone but not both, expressed in CHARGED cost.
-      // Dropping the undeletable file from survivors would hide its allocation, leave
-      // the total apparently under cap, and evict nothing - so the cap stays exceeded.
-      const charged = new Map((await listAttachments(dir)).map((f) => [f.id, f.chargedBytes]));
-      const result = await sweepAttachments(dir, {
-        ttlMs: 7 * 24 * 60 * 60 * 1000,
-        maxDiskBytes: charged.get(stuck.id) + charged.get(fresh.id) - 1,
-      });
-
-      assert.ok(await resolveAttachment(dir, KEY, stuck.id), "the undeletable file is still on disk");
-      assert.equal(result.deleted, 1, "the cap evicted a file it could actually delete");
-      assert.equal(await resolveAttachment(dir, KEY_B, fresh.id), null, "disk-cap accounting saw the stuck bytes");
+    // The cap fits either file alone but not both, expressed in CHARGED cost.
+    // Dropping the undeletable file from survivors would hide its allocation, leave
+    // the total apparently under cap, and evict nothing - so the cap stays exceeded.
+    const charged = new Map((await listAttachments(dir)).map((f) => [f.id, f.chargedBytes]));
+    const result = await sweepAttachments(dir, {
+      ttlMs: 7 * 24 * 60 * 60 * 1000,
+      maxDiskBytes: charged.get(stuck.id) + charged.get(fresh.id) - 1,
+      rmFile,
     });
+
+    assert.ok(await resolveAttachment(dir, KEY, stuck.id), "the undeletable file is still on disk");
+    assert.equal(result.deleted, 1, "the cap evicted a file it could actually delete");
+    assert.equal(await resolveAttachment(dir, KEY_B, fresh.id), null, "disk-cap accounting saw the stuck bytes");
   });
 });
 
