@@ -219,6 +219,29 @@ test("open output surfaces unavailable Tailscale phone access", () => {
   assert.equal(output.network_warning, "Tailscale binding failed; there is no phone access.");
 });
 
+test("open output asks the agent to tell the user that their saved sessions were set aside", () => {
+  const stateWarning =
+    "Lavish could not read its saved sessions in /home/u/.lavish-axi/state.json (it is not a JSON object). It moved the file to /home/u/.lavish-axi/state.json.corrupt-x and started with none; earlier sessions and any feedback the agent had not received yet are kept in that file.";
+  const output = createOpenOutput({
+    file: "/tmp/artifact.html",
+    url: "http://127.0.0.1:4387/session/abc123",
+    status: "opened",
+    stateWarning,
+  });
+
+  assert.equal(output.state_warning, stateWarning);
+  assert.match(output.next_step, /^Lavish set aside saved sessions it could not read \(see state_warning\)/);
+  assert.match(output.next_step, /tell them/);
+  assert.match(output.next_step, /Now you must run `lavish-safe poll \/tmp\/artifact\.html`/, "the poll step stays");
+
+  const clean = createOpenOutput({
+    file: "/tmp/artifact.html",
+    url: "http://127.0.0.1:4387/session/abc123",
+    status: "opened",
+  });
+  assert.equal("state_warning" in clean, false);
+});
+
 test("export and share outputs flag an unpainted page surface before it reaches a host", () => {
   const exported = createExportOutput({
     source: "/tmp/report.html",

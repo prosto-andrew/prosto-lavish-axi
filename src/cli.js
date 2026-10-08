@@ -279,6 +279,7 @@ export function createOpenOutput({
   agent = "generic",
   selfPaintWarning = undefined,
   networkWarning = undefined,
+  stateWarning = undefined,
 }) {
   const selfPaintPrefix = selfPaintWarning
     ? `First fix the unpainted page surface flagged in self_paint_warning and save - Lavish live-reloads the artifact automatically, so you do not need to re-run \`lavish-safe ${file}\`. `
@@ -288,11 +289,17 @@ export function createOpenOutput({
   const networkPrefix = networkWarning
     ? "Lavish could not serve every address it was asked to (see network_warning): when you next message the user, tell them, because review links at that address will not load until it clears. "
     : "";
+  // Sessions the user reviewed earlier, and feedback queued in them, are gone from Lavish without
+  // a trace in the browser, so only the agent can tell them where the old file went.
+  const statePrefix = stateWarning
+    ? "Lavish set aside saved sessions it could not read (see state_warning): when you next message the user, tell them, because their earlier review sessions and any feedback queued in them are no longer in Lavish and the old file is kept at that path. "
+    : "";
   return {
     session: { file, url, status },
     ...(networkWarning ? { network_warning: networkWarning } : {}),
+    ...(stateWarning ? { state_warning: stateWarning } : {}),
     ...(selfPaintWarning ? { self_paint_warning: selfPaintWarning } : {}),
-    next_step: `${networkPrefix}${selfPaintPrefix}Do not respond to the user just yet. Now you must run \`lavish-safe poll ${file}\`. This command long-polls until the user sends feedback, ends the session, or leaves every review window disconnected past the reconnect grace period, and it stays silent the whole time - that is normal, never kill it. Layout issues the browser detects do not return this poll; they wait in the user's Layout issues inbox until the user queues them, then arrive as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use. ${pollExecutionGuidance({ agent })} After applying feedback, run \`lavish-safe poll ${file} --agent-reply "<message for the user>"\` without --timeout-ms to show a concise response in Lavish Editor and keep waiting for more feedback. If instead you are handing back a result without starting another long-poll, run \`lavish-safe reply ${file} --agent-reply "<message for the user>"\` to get an acceptance receipt. ${POLL_AGENT_REPLY_RULE} ${POLL_AGENT_REPLY_NEXT_POINTER} If the user ends the session, stop polling and do not reopen it by re-running \`lavish-safe ${file}\` unless the user asks for further review or something genuinely important needs their visual attention - deliver routine updates directly in this conversation instead. When reopening is warranted, run \`lavish-safe ${file} --reopen\`.`,
+    next_step: `${networkPrefix}${statePrefix}${selfPaintPrefix}Do not respond to the user just yet. Now you must run \`lavish-safe poll ${file}\`. This command long-polls until the user sends feedback, ends the session, or leaves every review window disconnected past the reconnect grace period, and it stays silent the whole time - that is normal, never kill it. Layout issues the browser detects do not return this poll; they wait in the user's Layout issues inbox until the user queues them, then arrive as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use. ${pollExecutionGuidance({ agent })} After applying feedback, run \`lavish-safe poll ${file} --agent-reply "<message for the user>"\` without --timeout-ms to show a concise response in Lavish Editor and keep waiting for more feedback. If instead you are handing back a result without starting another long-poll, run \`lavish-safe reply ${file} --agent-reply "<message for the user>"\` to get an acceptance receipt. ${POLL_AGENT_REPLY_RULE} ${POLL_AGENT_REPLY_NEXT_POINTER} If the user ends the session, stop polling and do not reopen it by re-running \`lavish-safe ${file}\` unless the user asks for further review or something genuinely important needs their visual attention - deliver routine updates directly in this conversation instead. When reopening is warranted, run \`lavish-safe ${file} --reopen\`.`,
   };
 }
 
@@ -345,6 +352,7 @@ async function openCommand(args) {
     agent: detectInvokingAgent(process.env),
     selfPaintWarning,
     networkWarning: response.network_warning,
+    stateWarning: response.state_warning,
   });
 }
 
@@ -1117,7 +1125,11 @@ async function serverCommand(args) {
 }
 
 async function visibleSessions() {
-  const store = new SessionStore(stateFile());
+  // Reading the sessions can set an unreadable state file aside; no server is involved to report
+  // it, so say so here, off stdout.
+  const store = new SessionStore(stateFile(), {
+    log: (line) => process.stderr.write(`[lavish] WARNING: ${line}\n`),
+  });
   const sessions = (await store.listSessions()).filter((session) => session.status !== "ended");
   const { health } = await findRunningServer(defaultPort());
   const listeners = new Map(

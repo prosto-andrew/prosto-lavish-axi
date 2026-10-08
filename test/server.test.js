@@ -3736,7 +3736,9 @@ for (const initializeFailure of [false, true]) {
     async () => {
       const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
       const stateFile = path.join(dir, "state.json");
-      if (initializeFailure) await writeFile(stateFile, "invalid json");
+      // A state path that cannot be read at all. An unparseable file would not do: the store sets it
+      // aside and carries on.
+      if (initializeFailure) await mkdir(stateFile);
       const server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
       const socket = netConnect(server.port, "127.0.0.1");
       try {
@@ -4835,7 +4837,10 @@ test("SSE agent-presence returns to waiting when poll feedback storage fails", a
       const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=10`);
       assert.equal(await presence.next(), "listening");
 
-      await writeFile(stateFile, "not json");
+      // A state path that cannot be read at all. An unparseable file would not do: the store sets it
+      // aside and carries on.
+      await rm(stateFile);
+      await mkdir(stateFile);
       const pollResult = await poll;
       assert.equal(pollResult.status, 500);
 

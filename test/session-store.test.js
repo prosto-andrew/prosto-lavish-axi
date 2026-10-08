@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -2575,5 +2577,166 @@ test("an oversized agent reply preserves evicted prompt acks without exceeding t
     });
     const afterRetry = await store.findByKey(session.key);
     assert.equal(afterRetry.prompts.length, 1, "the evicted note must not be delivered twice");
+  });
+});
+
+// Reads state.json from a second process while this one writes it, as a CLI listing sessions does
+// beside a running server. It waits between reads by spinning, never on a timer: timers tick
+// together, so a timed reader would line every read up against every retried rename and starve it,
+// which no real reader does.
+const STATE_READER = `
+const { readFileSync } = require("node:fs");
+let reads = 0;
+let torn = 0;
+let stop = false;
+process.stdin.on("data", () => { stop = true; });
+(async () => {
+  console.log("ready");
+  while (!stop) {
+    try { JSON.parse(readFileSync(process.argv[1], "utf8")); }
+    catch (error) { if (error instanceof SyntaxError) torn += 1; else throw error; }
+    reads += 1;
+    const until = performance.now() + 1 + Math.random() * 3;
+    while (performance.now() < until) {}
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  console.log(JSON.stringify({ reads, torn }));
+})();
+`;
+
+async function startStateReader(file) {
+  const child = spawn(process.execPath, ["-e", STATE_READER, file], { stdio: ["pipe", "pipe", "inherit"] });
+  let output = "";
+  const exited = once(child, "exit");
+  await new Promise((resolve, reject) => {
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+      if (output.includes("ready")) resolve(undefined);
+    });
+    exited.then(() => reject(new Error(`the state reader exited before it started: ${output}`)));
+  });
+  return {
+    async stop() {
+      child.stdin.end("stop");
+      const [code] = await exited;
+      assert.equal(code, 0, `the state reader failed: ${output}`);
+      return JSON.parse(output.trim().split(/\r?\n/).pop());
+    },
+  };
+}
+
+test("a reader in another process never sees state.json half-written", async () => {
+  await withStore(async ({ store, stateFile }) => {
+    // Large enough that one write spans several reads, as a long chat history does.
+    const state = { sessions: {}, padding: "x".repeat(200_000) };
+    await store.writeState(state);
+    const reader = await startStateReader(stateFile);
+    let result;
+    try {
+      for (let sequence = 0; sequence < 60; sequence += 1) await store.writeState({ ...state, sequence });
+    } finally {
+      result = await reader.stop();
+    }
+    assert.ok(result.reads >= 10, `the reader only got ${result.reads} reads in`);
+    assert.equal(result.torn, 0, `${result.torn} of ${result.reads} reads saw a partially written state.json`);
+  });
+});
+
+test(
+  "state.json is readable by its owner only",
+  { skip: process.platform === "win32" && "POSIX file modes" },
+  async () => {
+    await withStore(async ({ stateFile }) => {
+      assert.equal((await stat(stateFile)).mode & 0o777, 0o600);
+    });
+  },
+);
+
+async function withStateFile(content, run) {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    await writeFile(stateFile, content);
+    const logged = [];
+    const pauses = { count: 0 };
+    const store = new SessionStore(stateFile, {
+      log: (line) => logged.push(line),
+      settle: async () => {
+        pauses.count += 1;
+      },
+    });
+    await run({ store, dir, stateFile, logged, pauses });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function setAsideFiles(dir) {
+  return (await readdir(dir)).filter((name) => name.startsWith("state.json.corrupt-"));
+}
+
+test("an unreadable state.json is set aside byte for byte and the store carries on without it", async () => {
+  for (const [label, broken] of [
+    ["truncated JSON", '{\n  "sessions": {\n    "abc": {'],
+    ["JSON that is not an object", "null\n"],
+  ]) {
+    await withStateFile(broken, async ({ store, dir, pauses }) => {
+      assert.deepEqual(await store.listSessions(), [], label);
+      const aside = await setAsideFiles(dir);
+      assert.equal(aside.length, 1, `${label}: one file set aside`);
+      assert.equal(await readFile(path.join(dir, aside[0]), "utf8"), broken, `${label}: its bytes are kept`);
+
+      const artifact = path.join(dir, "artifact.html");
+      await writeFile(artifact, "<h1>Hello</h1>");
+      await store.upsertSession(artifact, "http://localhost:4387/session/test");
+      assert.equal((await store.listSessions()).length, 1, `${label}: writes work again`);
+      assert.equal(pauses.count, 1, `${label}: only the read that found it broken waited`);
+      assert.deepEqual(await setAsideFiles(dir), aside, `${label}: nothing else is set aside`);
+    });
+  }
+});
+
+test("setting state.json aside is logged and reported once, naming where it went", async () => {
+  await withStateFile("{ not json", async ({ store, dir, logged }) => {
+    await store.listSessions();
+    const [aside] = await setAsideFiles(dir);
+    const where = path.join(dir, aside);
+
+    assert.equal(logged.length, 1);
+    assert.ok(logged[0].includes(where), logged[0]);
+    const warning = store.takeStateWarning();
+    assert.ok(warning?.includes(where), warning);
+    assert.equal(store.takeStateWarning(), undefined, "the warning is handed out once");
+  });
+});
+
+test("a state.json that becomes readable while the store waits is used, not set aside", async () => {
+  await withStateFile("{ half written", async ({ stateFile, dir, logged }) => {
+    // An older build rewrote state.json in place, so a read could land in the middle of its write.
+    const finished = { sessions: { abc: { key: "abc", file: "/tmp/a.html", status: "open", prompts: [] } } };
+    const store = new SessionStore(stateFile, {
+      log: (line) => logged.push(line),
+      settle: () => writeFile(stateFile, JSON.stringify(finished)),
+    });
+
+    assert.deepEqual(
+      (await store.listSessions()).map((session) => session.key),
+      ["abc"],
+    );
+    assert.deepEqual(await setAsideFiles(dir), []);
+    assert.deepEqual(logged, []);
+    assert.equal(store.takeStateWarning(), undefined);
+  });
+});
+
+test("an empty state.json holds no sessions and is not set aside", async () => {
+  await withStateFile("", async ({ store, dir, logged, pauses }) => {
+    assert.deepEqual(await store.listSessions(), []);
+    assert.deepEqual(await store.listSessions(), []);
+
+    assert.equal(pauses.count, 1, "a second read does not wait again");
+    assert.deepEqual(await setAsideFiles(dir), []);
+    assert.deepEqual(logged, []);
+    assert.equal(store.takeStateWarning(), undefined);
   });
 });
