@@ -202,11 +202,46 @@ check("artifact responses pin every source to loopback", () => {
   mustContain(dist, "default-src 'none'", "dist/cli.mjs");
   mustContain(dist, "http://127.0.0.1:${port}", "dist/cli.mjs");
   // 'self' matches nothing from an opaque origin - it would silently break the page
-  // rather than protect it, so its presence means someone rewrote this wrongly.
-  const policy = dist.slice(dist.indexOf("default-src 'none'"), dist.indexOf("base-uri 'none'"));
+  // rather than protect it, so its presence means someone rewrote this wrongly. Anchored on
+  // the artifact's own directive list: the chrome page's policy, which rightly uses 'self',
+  // is in the same bundle.
+  const start = dist.indexOf("function artifactSourceDirectives(");
+  if (start === -1) throw new Error(`dist/cli.mjs carries no artifact policy - ${REBUILD}`);
+  const policy = dist.slice(start, dist.indexOf("base-uri 'none'", start));
+  mustContain(policy, "default-src 'none'", "the artifact policy");
   if (policy.includes("'self'"))
     throw new Error("the artifact policy uses 'self', which matches nothing from an opaque origin");
   return "default-src none; every source is this machine";
+});
+
+check("the review chrome loads nothing from another origin", () => {
+  // The chrome page adopts the artifact's tab icon and frames the artifact, whose own
+  // navigations only the chrome's frame-src can stop. Its policy must fall back to nothing and
+  // name no source beyond this server, and an adopted icon must never be a URL it fetches.
+  for (const file of ["src/server.js", "dist/cli.mjs"]) {
+    mustContain(read(file), "if (iconHref && /^data:/i.test(iconHref)) {", file);
+  }
+  const dist = read("dist/cli.mjs");
+  const route = dist.slice(dist.indexOf('app.get("/session/:key"'));
+  if (!route.slice(0, 3000).includes('"content-security-policy", CHROME_CONTENT_SECURITY_POLICY')) {
+    throw new Error(`the /session/:key route does not send the chrome policy - ${REBUILD}`);
+  }
+  const start = dist.indexOf("CHROME_CONTENT_SECURITY_POLICY = [");
+  if (start === -1) throw new Error(`dist/cli.mjs carries no chrome policy - ${REBUILD}`);
+  const policy = dist.slice(start, dist.indexOf('].join("; ")', start));
+  for (const directive of [
+    "default-src 'none'",
+    "connect-src 'self'",
+    "frame-src 'self'",
+    "img-src 'self' data: blob:",
+    "frame-ancestors 'none'",
+  ]) {
+    mustContain(policy, directive, "the chrome policy");
+  }
+  for (const loose of ["http:", "https:", "ws:", "*", "'unsafe-inline'", "'unsafe-eval'"]) {
+    if (policy.includes(loose)) throw new Error(`the chrome policy allows ${loose}`);
+  }
+  return "default-src none; every source is this server; data: icons only";
 });
 
 check("whiteboard frame is served under that policy", () => {

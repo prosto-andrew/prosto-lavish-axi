@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { on, once } from "node:events";
 import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
@@ -1861,6 +1862,63 @@ test("the session chrome page refuses to be framed", async () => {
     const framed = await fetch(artifactUrl);
     assert.equal(framed.status, 200);
     assert.equal(framed.headers.get("x-frame-options"), null);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// LAVISH-HARDENED: the chrome page shows artifact-chosen content (its tab icon) and frames the
+// artifact, whose own navigations only the chrome's frame-src can stop. With no source list it
+// fetched an artifact's external icon on every open and let the artifact frame walk to any host.
+// 'self' names this server however it was reached, and under CSP3 its live-event WebSocket too.
+test("the session chrome page pins every source to this server", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>hi</h1></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    const { key } = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((res) => res.json());
+
+    const chrome = await fetch(`${base}/session/${key}`);
+    const html = await chrome.text();
+    const policy = new Map(
+      String(chrome.headers.get("content-security-policy"))
+        .split(";")
+        .map((directive) => directive.trim().split(/\s+/))
+        .filter(([name]) => name)
+        .map(([name, ...sources]) => [name, sources]),
+    );
+
+    // Everything not listed falls back to nothing.
+    assert.deepEqual(policy.get("default-src"), ["'none'"]);
+    assert.deepEqual(policy.get("frame-ancestors"), ["'none'"]);
+
+    // The only scripts that run inline are the ones this page carries, by hash.
+    const inline = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+    const handlers = [...html.matchAll(/<[a-z][^<>]*?\son[a-z]+="([^"]*)"/g)].map((match) => match[1]);
+    assert.ok(inline.length >= 1 && handlers.length >= 1, "the page carries its boot failsafe and script onerror");
+    const hashes = [...inline, ...handlers].map(
+      (source) => `'sha256-${crypto.createHash("sha256").update(source, "utf8").digest("base64")}'`,
+    );
+    const scriptHashes = policy.get("script-src")?.filter((source) => source.startsWith("'sha256-")) ?? [];
+    assert.deepEqual([...scriptHashes].sort(), [...new Set(hashes)].sort());
+
+    // No directive may name another host, a scheme that reaches one, or a blanket inline/eval.
+    const allowed = new Set(["'self'", "'none'", "data:", "blob:", "'unsafe-hashes'", ...hashes]);
+    for (const [name, sources] of policy) {
+      for (const source of sources) {
+        assert.ok(allowed.has(source), `${name} allows ${source}`);
+      }
+    }
+    for (const name of ["script-src", "style-src", "img-src", "connect-src", "frame-src", "form-action", "base-uri"]) {
+      assert.ok(policy.has(name), `${name} is missing`);
+    }
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -5859,11 +5917,24 @@ test("extractArtifactHead pulls a data-URI favicon and title from the artifact h
   assert.equal(title, "Weekly Board");
 });
 
-test("extractArtifactHead handles shortcut icon and absolute hrefs", () => {
-  const artifact = `<head><link rel="shortcut icon" href="https://example.com/fav.ico"></head>`;
-  const { faviconTag } = extractArtifactHead(artifact);
+// LAVISH-HARDENED: the chrome page loads the adopted icon itself, so an http(s) or
+// protocol-relative href was a request to that host every time the review opened.
+test("extractArtifactHead adopts shortcut icons but never one fetched from a host", () => {
+  const shortcut = extractArtifactHead(
+    '<head><link rel="shortcut icon" href="data:image/png;base64,iVBORw0KGgo="></head>',
+  );
+  assert.equal(shortcut.faviconTag, '<link rel="icon" href="data:image/png;base64,iVBORw0KGgo=">');
 
-  assert.match(faviconTag, /href="https:\/\/example\.com\/fav\.ico"/);
+  for (const href of [
+    "https://example.com/fav.ico",
+    "http://example.com/fav.ico",
+    "//example.com/fav.ico",
+    "HTTPS://example.com/fav.ico",
+  ]) {
+    const { faviconTag } = extractArtifactHead(`<head><link rel="icon" href="${href}"></head>`);
+    assert.doesNotMatch(faviconTag, /example\.com/, `${href} must not reach the chrome page`);
+    assert.match(faviconTag, /data:image\/svg\+xml/, `${href} must fall back to the default icon`);
+  }
 });
 
 test("extractArtifactHead reconstructs a clean tag and drops artifact-supplied attributes", () => {
@@ -5906,11 +5977,11 @@ test("extractArtifactHead reads the real href, not one hidden in another attribu
   assert.match(dataHref.faviconTag, /data:image\/svg\+xml/, "data-href decoy must not be adopted");
 
   // A `href=` sequence inside another attribute's quoted value must not be
-  // adopted either; the genuine absolute href should be used.
+  // adopted either; the genuine href should be used.
   const inValue = extractArtifactHead(
-    '<head><link rel="icon" title="see href=data:image/png,decoy" href="https://cdn.example.com/logo.png"></head>',
+    '<head><link rel="icon" title="see href=data:image/png,decoy" href="data:image/png,genuine"></head>',
   );
-  assert.equal(inValue.faviconTag, '<link rel="icon" href="https://cdn.example.com/logo.png">');
+  assert.equal(inValue.faviconTag, '<link rel="icon" href="data:image/png,genuine">');
 });
 
 // The transcript is server-owned display state: the prompts route answers with it and syncs it

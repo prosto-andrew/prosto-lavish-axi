@@ -27,7 +27,7 @@
 > overview in [`hardening/SETUP.md`](hardening/SETUP.md)
 >
 > **Verify any checkout:** `npx --yes pnpm@11.1.1 install --frozen-lockfile && node verify-hardening.mjs`
-> -> _All 26 checks passed._ The install uses the committed `pnpm-lock.yaml`, so every machine
+> -> _All 27 checks passed._ The install uses the committed `pnpm-lock.yaml`, so every machine
 > gets the exact dependency tree CI tested. The launchers run the same checks before every
 > start and refuse to run a build that fails any of them, including one not rebuilt after a `git pull`.
 >

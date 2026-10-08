@@ -44,7 +44,7 @@ pnpm links `node_modules/` with symlinks or junctions native to the platform tha
 node verify-hardening.mjs
 ```
 
-Twenty-six checks, covering both the sources and the compiled `dist/`. Exit code 0
+Twenty-seven checks, covering both the sources and the compiled `dist/`. Exit code 0
 means the build is hardened; any failure prints what is wrong. Re-run this after every
 install or `git pull`.
 
@@ -124,7 +124,10 @@ one of them, keep it deleted.
 ## What still touches the network
 
 Nothing, during normal use. Artifacts, server state (`~/.lavish-axi/`), and whiteboard
-autosaves stay on this machine, and the server listens on loopback only.
+autosaves stay on this machine, and the server listens on loopback only. The review page
+itself carries a policy that pins every request, and every navigation of the artifact frame,
+to the local server: an artifact cannot make it fetch an icon from another host, and an
+artifact that tries to send its own frame to another site gets a blocked frame instead.
 
 One consequence to know about: because Mermaid now loads from the local server, an
 **exported** artifact containing a Mermaid whiteboard needs the Lavish server running

@@ -79,7 +79,7 @@ node verify-hardening.mjs
 Ожидается:
 
 ```
-All 26 checks passed. This build is hardened.
+All 27 checks passed. This build is hardened.
 ```
 
 Проверки читают и исходники, и собранные `dist/cli.mjs` / `dist/server.mjs`: что телеметрия
@@ -87,7 +87,8 @@ All 26 checks passed. This build is hardened.
 (без `--also-listen` и без поиска по сетевым интерфейсам), что не запускаются внешние
 программы вроде `herdr`, и что в бандле нет ни одного внешнего адреса (`a.kunchenguid.com`,
 `api.ht-ml.app`, `cdn.jsdelivr.net`). А ещё — что `dist` свежее всех исходников, что
-`node_modules` поставлен через pnpm и что сервер запускается из той же сборки `dist`, что и CLI.
+`node_modules` поставлен через pnpm, что сервер запускается из той же сборки `dist`, что и CLI,
+и что страница ревью ничего не загружает с других адресов.
 
 **Если хоть одна проверка упала — дальше не идти.** Сообщение скажет, что именно не так.
 

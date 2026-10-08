@@ -24,6 +24,7 @@ One file: `node --test test/server.test.js`. One name: `node --test --test-name-
 Opt-in browser suites need `chrome-devtools-axi`: `LAVISH_AXI_BROWSER_E2E=1 node --test test/layout-audit-browser.test.js test/layout-warning-inbox.browser.test.js`.
 Seven-tab pool regression: `LAVISH_AXI_BROWSER_E2E=1 node --test test/event-transport.browser.test.js`.
 Vendored Mermaid in the opaque-origin artifact (headless Chrome via `CHROME_PATH`, no `chrome-devtools-axi`): `LAVISH_AXI_BROWSER_E2E=1 node --test test/mermaid-artifact.browser.test.js`.
+The review chrome under its own policy, same setup: `LAVISH_AXI_BROWSER_E2E=1 node --test test/chrome-csp.browser.test.js`.
 `prepack` and `prepare` both run `build`. `pnpm run check` fails if `skills/lavish/SKILL.md` drifts from `createSkillMarkdown()`, or if root `plugin.json` drifts from `pnpm run build:plugin`.
 
 ## Project conventions
@@ -57,7 +58,7 @@ Each line is the rule. [docs/invariants.md](docs/invariants.md) has the failure 
 - The detached server entrypoint logs `uncaughtException` and exits 1 explicitly. Each listener keeps its `error` handler after `listening`. [Process model](docs/invariants.md#process-model).
 - `/api/:key/prompts`, `/share`, whiteboard writes, and attachment upload/delete are same-origin guarded. The key alone must never queue a prompt or publish. [Request flow](docs/invariants.md#request-flow).
 - Poll control `GET` and `POST` requests reject a present foreign Origin or Referer while header-less CLI requests keep working. [Request flow](docs/invariants.md#request-flow).
-- The chrome page (`/session/:key`) answers `X-Frame-Options: DENY` and `frame-ancestors 'none'`. Keep that header off `/artifact/*` and `/whiteboard-frame`, which are framed. [Request flow](docs/invariants.md#request-flow).
+- The chrome page (`/session/:key`) answers `X-Frame-Options: DENY` and `CHROME_CONTENT_SECURITY_POLICY` (`frame-ancestors 'none'`, `default-src 'none'`, every source `'self'`, inline code only by hash), and adopts only `data:` artifact icons. Chrome markup gets no new inline script, handler, or style. Keep that header off `/artifact/*` and `/whiteboard-frame`, which are framed. [Request flow](docs/invariants.md#request-flow).
 - The artifact route injects only the one SDK `<script>` tag. Served artifact bytes otherwise match the file on disk. [Request flow](docs/invariants.md#request-flow).
 - Artifact asset serving (`/artifact/:key/<path>`) resolves with `realpath` and never serves a symlink target outside the artifact directory. [Request flow](docs/invariants.md#request-flow).
 - Layout detection never emits `feedback`. Only a user prompt and the narrow fatal artifact-failure path may wake `lavish-axi poll`. [Request flow](docs/invariants.md#request-flow).
