@@ -33,9 +33,10 @@ The review chrome under its own policy, same setup: `LAVISH_AXI_BROWSER_E2E=1 no
 - Use TDD for bug fixes and new features (see the `test-driven-development` skill).
 - Run `pnpm run check` before pushing.
 - Treat repo-provided `.agents/` skill content as vendored. Prettier ignores it.
-- This fork carries no release automation and no upstream contribution gate: release-please, its config, the no-mistakes PR gate, and the generated-files guard are deleted. `CHANGELOG.md` is upstream history and is not maintained here. A PR into `main` needs `pnpm run check` and `node verify-hardening.mjs` to pass.
+- This fork carries no release automation and no upstream contribution gate: release-please, its config, the no-mistakes PR gate, and the generated-files guard are deleted. `CHANGELOG.md` is upstream history and is not maintained here. A PR into `main` needs `pnpm run check` and `node verify-hardening.mjs` to pass. CI runs the same steps and the verifier on Linux, macOS and Windows, with every action pinned to a full commit SHA.
 - Dependency security overrides are declared twice: `overrides` in `pnpm-workspace.yaml` (pnpm, CI, `pnpm audit`, Dependabot; pnpm 11 ignores the `pnpm` field in `package.json`) and the top-level `overrides` in `package.json` (npm, the hardening docs' fallback; their primary install is `pnpm install --frozen-lockfile`). Change both. `test/dependency-overrides.test.js` fails on drift and on any override of `mermaid` or another exact whiteboard pin.
 - Tests that start the server set `LAVISH_AXI_STATE_DIR` and use an ephemeral port.
+- Tests that need a directory link create a junction on Windows, which needs no privilege. Only a case that needs a file symlink may skip, and only where the OS refuses one (Windows without Developer Mode or elevation).
 - `run()` returns on `--version` / `-v` / `-V` before `ensureStateDir` and telemetry (`test/cli-version.test.js`). New startup work goes after that short-circuit.
 - `canonicalFile` runs `realpath`. Two paths to the same file are one session.
 - `normalizeArgv` must let AXI `RESERVED_COMMANDS` (including `update`) pass through. A bare `lavish-axi update` must not become `open update`. This build shadows `update` with a refusal so the SDK self-updater never reaches the npm registry; `verify-hardening.mjs` checks it.

@@ -36,6 +36,12 @@ async function withTempDir(fn) {
   }
 }
 
+// Windows refuses a symlink without Developer Mode or an elevated shell. Any account can create a
+// junction, and realpath resolves one exactly like a symlink, so directory links use it there.
+function linkDirectory(target, link) {
+  return symlink(target, link, process.platform === "win32" ? "junction" : "dir");
+}
+
 async function writeArtifact(dir, name = "artifact.html") {
   const artifact = path.join(dir, name);
   await writeFile(artifact, "<!doctype html><html><body>review</body></html>");
@@ -229,7 +235,7 @@ test("a foreign loopback listener prevents a pinned server from claiming the sam
 test("a symlinked state directory adopts the daemon started at its target", async () => {
   await withTempDir(async (dir) => {
     const alias = path.join(dir, "alias");
-    await symlink(dir, alias, "dir");
+    await linkDirectory(dir, alias);
     const artifact = await writeArtifact(dir);
     const port = await freePort();
     const owner = await serve({

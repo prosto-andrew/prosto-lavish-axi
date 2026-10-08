@@ -39,6 +39,28 @@ import {
 } from "../src/server.js";
 import { canonicalFile, sessionKey, SessionStore } from "../src/session-store.js";
 
+// Windows refuses a symlink without Developer Mode or an elevated shell. Any account can create a
+// junction, and realpath resolves one exactly like a symlink, so directory links use it there.
+function linkDirectory(target, link) {
+  return symlink(target, link, process.platform === "win32" ? "junction" : "dir");
+}
+
+async function fileSymlinkUnavailable() {
+  const probe = await mkdtemp(path.join(tmpdir(), "lavish-symlink-probe-"));
+  try {
+    await symlink(path.join(probe, "target"), path.join(probe, "link"), "file");
+    return false;
+  } catch (error) {
+    return `file symlinks unavailable (${error.code || error.message}): Windows needs Developer Mode or an elevated shell`;
+  } finally {
+    await rm(probe, { recursive: true, force: true });
+  }
+}
+
+// A file has no junction equivalent, so the cases that need a real file symlink skip where the OS
+// refuses one instead of failing on EPERM.
+const fileSymlinks = { skip: await fileSymlinkUnavailable() };
+
 async function chromeClientSource() {
   return readFile(new URL("../src/chrome-client.js", import.meta.url), "utf8");
 }
@@ -489,7 +511,7 @@ test("artifact assets resolve within the artifact directory", async () => {
   assert.equal(await resolveArtifactAsset(root, "../secret.txt"), null);
 });
 
-test("artifact assets reject a symlink that escapes the artifact directory", async () => {
+test("artifact assets reject a symlink that escapes the artifact directory", fileSymlinks, async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const outside = await mkdtemp(path.join(tmpdir(), "lavish-outside-"));
   try {
@@ -511,7 +533,7 @@ test("artifact assets reject a path that escapes through an intermediate directo
   try {
     await writeFile(path.join(outside, "secret.txt"), "outside-secret\n");
     // The escaping link is a *directory* component, so the leaf name looks ordinary.
-    await symlink(outside, path.join(dir, "vendor"));
+    await linkDirectory(outside, path.join(dir, "vendor"));
 
     assert.equal(await resolveArtifactAsset(dir, "vendor/secret.txt"), null);
   } finally {
@@ -520,7 +542,7 @@ test("artifact assets reject a path that escapes through an intermediate directo
   }
 });
 
-test("artifact assets still resolve a symlink that stays inside the artifact directory", async () => {
+test("artifact assets still resolve a symlink that stays inside the artifact directory", fileSymlinks, async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   try {
     const real = path.join(dir, "real.css");
@@ -540,8 +562,8 @@ test("artifact asset resolution fails closed when realpath errors", async () => 
   try {
     const linkA = path.join(dir, "loop-a");
     const linkB = path.join(dir, "loop-b");
-    await symlink(linkB, linkA);
-    await symlink(linkA, linkB);
+    await linkDirectory(linkB, linkA);
+    await linkDirectory(linkA, linkB);
 
     await assert.rejects(resolveArtifactAsset(dir, "loop-a"), { code: "ELOOP" });
   } finally {
@@ -2252,7 +2274,7 @@ test("/artifact serves files copied under the artifact directory", async () => {
   }
 });
 
-test("/artifact refuses to serve a symlink that escapes the artifact directory", async () => {
+test("/artifact refuses to serve a symlink that escapes the artifact directory", fileSymlinks, async () => {
   const parent = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const outside = await mkdtemp(path.join(tmpdir(), "lavish-outside-"));
   const dir = path.join(parent, ".lavish");
@@ -2290,7 +2312,7 @@ test("/artifact refuses a path that escapes through an intermediate directory sy
   await mkdir(dir);
   await writeFile(artifact, "<!doctype html><html><body></body></html>");
   await writeFile(path.join(outside, "secret.txt"), "outside-secret\n");
-  await symlink(outside, path.join(dir, "vendor"));
+  await linkDirectory(outside, path.join(dir, "vendor"));
   const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
   try {
     const base = `http://127.0.0.1:${server.port}`;
@@ -2348,7 +2370,9 @@ test("/whiteboard-assets refuses escaping symlinks and .. traversal but still se
   await mkdir(assetsDir);
   await writeFile(path.join(assetsDir, "whiteboard.js"), "// fake bundle\n");
   await writeFile(path.join(outside, "secret.txt"), "outside-secret\n");
-  await symlink(path.join(outside, "secret.txt"), path.join(assetsDir, "leak.txt"));
+  // A linked directory rather than a file symlink, so the whole test runs on every Windows
+  // account; resolveArtifactAsset's own tests cover the file symlink.
+  await linkDirectory(outside, path.join(assetsDir, "vendor"));
   await writeFile(path.join(dir, "sibling-secret.txt"), "outside-secret\n");
   const server = await serve({
     port: 0,
@@ -2361,7 +2385,7 @@ test("/whiteboard-assets refuses escaping symlinks and .. traversal but still se
     assert.equal(bundle.status, 200);
     assert.match(await bundle.text(), /fake bundle/);
 
-    const leak = await rawRequest(server.port, "/whiteboard-assets/leak.txt");
+    const leak = await rawRequest(server.port, "/whiteboard-assets/vendor/secret.txt");
     assert.equal(leak.status, 403);
     assert.doesNotMatch(leak.body, /outside-secret/);
 
@@ -3440,7 +3464,9 @@ test("/design/mermaid serves the vendored module graph to the opaque-origin arti
   await writeFile(path.join(mermaidDir, "mermaid.esm.min.mjs"), "export default {}; // fake mermaid\n");
   await writeFile(path.join(mermaidDir, "chunks", "mermaid.esm.min", "chunk-TEST.mjs"), "export const chunk = 1;\n");
   await writeFile(path.join(outside, "secret.txt"), "outside-secret\n");
-  await symlink(path.join(outside, "secret.txt"), path.join(mermaidDir, "leak.txt"));
+  // A linked directory rather than a file symlink, so the whole test runs on every Windows
+  // account; resolveArtifactAsset's own tests cover the file symlink.
+  await linkDirectory(outside, path.join(mermaidDir, "vendor"));
   await writeFile(path.join(dir, "sibling-secret.txt"), "outside-secret\n");
   const server = await serve({
     port: 0,
@@ -3459,7 +3485,7 @@ test("/design/mermaid serves the vendored module graph to the opaque-origin arti
       assert.match(await res.text(), /export/, asset);
     }
 
-    const leak = await rawRequest(server.port, "/design/mermaid/leak.txt");
+    const leak = await rawRequest(server.port, "/design/mermaid/vendor/secret.txt");
     assert.equal(leak.status, 403);
     assert.doesNotMatch(leak.body, /outside-secret/);
 
