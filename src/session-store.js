@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
-import { readFile, realpath, writeFile } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 
+import { renameReplacing, writeFileAtomically } from "./atomic-file.js";
 import {
   applyDiagnosticPass,
   dismissLayoutWarning as dismissWarningRecord,
@@ -48,9 +49,22 @@ export const MAX_REQUEST_ATTACHMENT_REFS = 256;
 // constant is what reopens the hole this retention exists to close.
 export const MAX_DELIVERED_ATTACHMENTS = 256;
 
+// How long a read that finds state.json unparseable waits before reading it once more. A server
+// from before atomic writes may still be running beside a newer CLI, rewriting the file in place,
+// so a read can land in the middle of one of its writes - which finish within milliseconds.
+const STATE_SETTLE_MS = 200;
+
 export class SessionStore {
-  constructor(file) {
+  #stateWarning;
+
+  /**
+   * @param {string} file
+   * @param {{ log?: (line: string) => void, settle?: () => Promise<unknown> }} [options]
+   */
+  constructor(file, { log, settle = () => new Promise((resolve) => setTimeout(resolve, STATE_SETTLE_MS)) } = {}) {
     this.file = file;
+    this.log = log;
+    this.settle = settle;
     // One mutex serializes every state.json read-modify-write and the server's
     // attachment disk lifecycle sections through runExclusive.
     this.lock = new AsyncMutex();
@@ -726,29 +740,87 @@ export class SessionStore {
   }
 
   async readState() {
-    try {
-      const raw = await readFile(this.file, "utf8");
-      const parsed = JSON.parse(raw);
-      const state = { sessions: parsed.sessions || {} };
-      let changed = false;
-      for (const session of Object.values(state.sessions)) {
-        if (!session || typeof session !== "object" || !applyTranscriptBound(session)) continue;
-        session.chat_revision = normalizeRevision(session.chat_revision) + 1;
-        changed = true;
-      }
-      if (changed) await this.writeState(state);
-      return state;
-    } catch (error) {
-      if (error && error.code === "ENOENT") {
+    let parsed = parseStateText(await readStateText(this.file));
+    if (!parsed.state) {
+      await this.settle();
+      parsed = parseStateText(await readStateText(this.file));
+      if (!parsed.state) {
+        // Rewritten or moved out of the way either way, so no later read waits on it again. An empty
+        // file holds nothing to keep; anything else is kept byte for byte for a person to recover.
+        if (parsed.empty) await this.writeState({ sessions: {} });
+        else await this.#setAside(parsed.reason);
         return { sessions: {} };
       }
+    }
+    const state = { sessions: parsed.state.sessions || {} };
+    let changed = false;
+    for (const session of Object.values(state.sessions)) {
+      if (!session || typeof session !== "object" || !applyTranscriptBound(session)) continue;
+      session.chat_revision = normalizeRevision(session.chat_revision) + 1;
+      changed = true;
+    }
+    if (changed) await this.writeState(state);
+    return state;
+  }
+
+  // Every route would otherwise answer 500 until someone repaired the file by hand. Nothing deletes
+  // what is set aside, and the next session open reports where it went (`takeStateWarning`).
+  async #setAside(reason) {
+    const aside = `${this.file}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`;
+    try {
+      await renameReplacing(this.file, aside);
+    } catch (error) {
+      // Another process set it aside first, and reports what it found.
+      if (error?.code === "ENOENT") return;
       throw error;
     }
+    this.#stateWarning = `Lavish could not read its saved sessions in ${this.file} (${reason}). It moved the file to ${aside} and started with none; earlier sessions and any feedback the agent had not received yet are kept in that file.`;
+    this.log?.(this.#stateWarning);
+  }
+
+  takeStateWarning() {
+    const warning = this.#stateWarning;
+    this.#stateWarning = undefined;
+    return warning;
   }
 
   async writeState(state) {
-    await writeFile(this.file, `${JSON.stringify(state, null, 2)}\n`);
+    // Replaced, never rewritten in place: another process (a CLI listing sessions) may be reading it,
+    // and a crash mid-write must leave the previous state whole. Flushed before the rename, so a
+    // power loss cannot leave the new name pointing at unwritten blocks.
+    await writeFileAtomically(this.file, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600, flush: true });
   }
+}
+
+// A state file that does not exist yet is not broken; it is simply no sessions.
+async function readStateText(file) {
+  try {
+    return await readFile(file, "utf8");
+  } catch (error) {
+    if (error && error.code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+/**
+ * `state` is null when the text cannot be the store's state; `empty` and `reason` say why.
+ *
+ * @param {string | undefined} text
+ * @returns {{ state: { sessions?: any } | null, empty?: boolean, reason?: string }}
+ */
+function parseStateText(text) {
+  if (text === undefined) return { state: { sessions: {} } };
+  if (!text.trim()) return { state: null, empty: true };
+  let state;
+  try {
+    state = JSON.parse(text);
+  } catch (error) {
+    return { state: null, reason: error instanceof Error ? error.message : String(error) };
+  }
+  if (!state || typeof state !== "object" || Array.isArray(state)) {
+    return { state: null, reason: "it is not a JSON object" };
+  }
+  return { state };
 }
 
 export async function canonicalFile(file) {

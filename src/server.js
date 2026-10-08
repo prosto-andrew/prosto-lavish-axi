@@ -422,7 +422,6 @@ export async function serve({
   let attachmentSweepTimer = null;
   let bindRecoveryTimer = null;
   const app = express();
-  const store = new SessionStore(stateFile);
   const events = new EventEmitter();
   const watchers = new Map();
   const activePolls = new Map();
@@ -447,6 +446,7 @@ export async function serve({
       : (line) => process.stderr.write(`${serverStdioIsTimestamped() ? line : formatServerLogLine(line)}\n`);
   const logEvent = verbose ? (line) => writeLog(`[lavish] ${line}`) : null;
   if (tailscaleDetectionWarning) writeLog(`[lavish] WARNING: ${tailscaleDetectionWarning}`);
+  const store = new SessionStore(stateFile, { log: (line) => writeLog(`[lavish] WARNING: ${line}`) });
   let publicPort = port;
   let serverReady = false;
   let networkReconcileCheckedAt = 0;
@@ -873,12 +873,16 @@ export async function serve({
       logEvent?.(`session opened key=${key} file=${file}`);
       await syncOutstandingRepairs(key);
       await watchSession(session, watchers, events, logEvent, reloadDebounceMs);
+      // A state file this server had to set aside reset every session, so the agent opening the next
+      // one is told once, to pass on to the user.
+      const stateWarning = store.takeStateWarning();
       res.json({
         key,
         file,
         url,
         status: "opened",
         ...networkWarningField(),
+        ...(stateWarning ? { state_warning: stateWarning } : {}),
       });
     } catch (error) {
       next(error);

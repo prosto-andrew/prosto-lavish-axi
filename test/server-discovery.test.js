@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { networkInterfaces, tmpdir } from "node:os";
@@ -258,6 +258,69 @@ test("a symlinked state directory adopts the daemon started at its target", asyn
     } finally {
       await owner.close();
     }
+  });
+});
+
+async function setAsideStateFiles(dir) {
+  return (await readdir(dir)).filter((name) => name.startsWith("state.json.corrupt-"));
+}
+
+test("an unreadable state.json is set aside and the next open tells the agent where it went", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(path.join(dir, "state.json"), "{ not json");
+    const artifact = await writeArtifact(dir);
+    const port = await freePort();
+    const logged = [];
+    const owner = await serve({
+      port,
+      stateFile: path.join(dir, "state.json"),
+      version: VERSION,
+      env: { LAVISH_AXI_HOST: "127.0.0.1" },
+      detectTailscale: null,
+      log: (line) => logged.push(line),
+      idleTimeoutMs: null,
+    });
+    try {
+      const first = await withEnv(cliEnv(dir, port, "127.0.0.1"), () => captureCli(["open", artifact, "--no-open"]));
+      const [aside] = await setAsideStateFiles(dir);
+      assert.ok(aside, `nothing was set aside: ${first}`);
+      assert.match(first, /state_warning/);
+      // TOON escapes backslashes in quoted Windows paths.
+      assert.ok(first.includes(path.join(dir, aside).replaceAll("\\", "\\\\")), first);
+      assert.ok(
+        logged.some((line) => line.includes("WARNING") && line.includes(aside)),
+        `the server log does not say where it went:\n${logged.join("\n")}`,
+      );
+
+      const second = await withEnv(cliEnv(dir, port, "127.0.0.1"), () => captureCli(["open", artifact, "--no-open"]));
+      assert.doesNotMatch(second, /state_warning/, "the warning is given once");
+      assert.deepEqual(await stateSessions(dir), [artifact]);
+    } finally {
+      await owner.close();
+    }
+  });
+});
+
+test("listing sessions sets an unreadable state.json aside and says so on stderr", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(path.join(dir, "state.json"), "{ not json");
+    const port = await freePort();
+    let stderr = "";
+    const write = process.stderr.write;
+    process.stderr.write = (chunk) => {
+      stderr += String(chunk);
+      return true;
+    };
+    let output;
+    try {
+      output = await withEnv(cliEnv(dir, port, "127.0.0.1"), () => captureCli([]));
+    } finally {
+      process.stderr.write = write;
+    }
+
+    const [aside] = await setAsideStateFiles(dir);
+    assert.ok(aside, `nothing was set aside: ${output}`);
+    assert.ok(stderr.includes(aside), `stderr does not say where it went: ${stderr}`);
   });
 });
 

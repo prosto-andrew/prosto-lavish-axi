@@ -46,6 +46,7 @@ The review chrome under its own policy, same setup: `LAVISH_AXI_BROWSER_E2E=1 no
 Each line is the rule. [docs/invariants.md](docs/invariants.md) has the failure mode.
 
 - The session key is the canonical artifact path. It is not a secret. No route may treat key possession as authorization. [Process model](docs/invariants.md#process-model).
+- `state.json` is only ever replaced through `writeFileAtomically` (temporary file, flush, rename with a bounded retry on Windows), never written in place. A file that still cannot be parsed after one re-read is set aside as `state.json.corrupt-*`, never deleted, and reported once as `state_warning`. [Process model](docs/invariants.md#process-model).
 - Never signal a listener by port alone. Stop only a Lavish PID bound to that exact address, or `POST /shutdown` on an owned server. [Process model](docs/invariants.md#process-model).
 - Adopt, replace, or stop only a server `isOwnedServer` owns. Another installation's server at a control address is a `SERVER_ERROR`, never used, replaced, or stopped. [Process model](docs/invariants.md#process-model).
 - This fork binds and dials loopback only. Never reintroduce `--also-listen` / `extraListenHosts`, host inheritance across replacements, interface-sweep discovery, or any path that binds or probes a non-loopback address; `verify-hardening.mjs` checks for them. [Process model](docs/invariants.md#process-model).
