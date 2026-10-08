@@ -58,6 +58,28 @@ function decodeFirstSvgDataUri(html) {
   return Buffer.from(match[1], "base64").toString("utf8");
 }
 
+// Windows refuses a symlink without Developer Mode or an elevated shell. Any account can create a
+// junction, and realpath resolves one exactly like a symlink, so directory links use it there.
+function linkDirectory(target, link) {
+  return symlink(target, link, process.platform === "win32" ? "junction" : "dir");
+}
+
+async function fileSymlinkUnavailable() {
+  const probe = await mkdtemp(path.join(os.tmpdir(), "lavish-symlink-probe-"));
+  try {
+    await symlink(path.join(probe, "target"), path.join(probe, "link"), "file");
+    return false;
+  } catch (error) {
+    return `file symlinks unavailable (${error.code || error.message}): Windows needs Developer Mode or an elevated shell`;
+  } finally {
+    await rm(probe, { recursive: true, force: true });
+  }
+}
+
+// A file has no junction equivalent, so the cases that need a real file symlink skip where the OS
+// refuses one instead of failing on EPERM.
+const fileSymlinks = { skip: await fileSymlinkUnavailable() };
+
 test("inlines a local stylesheet link as a <style> block", async () => {
   const html =
     '<!doctype html><html><head><link rel="stylesheet" href="theme.css"></head><body><p>Hi</p></body></html>';
@@ -3250,7 +3272,7 @@ test("does not treat property import calls as module imports", async () => {
   );
 });
 
-test("refuses to inline a local symlink that escapes the artifact directory", async () => {
+test("refuses to inline a local symlink that escapes the artifact directory", fileSymlinks, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "lavish-export-"));
   try {
     const artDir = path.join(root, "art");
@@ -3266,6 +3288,30 @@ test("refuses to inline a local symlink that escapes the artifact directory", as
 
     assert.doesNotMatch(out, /TOP SECRET/);
     assert.match(out, /<link rel="stylesheet" href="leak\.css">/);
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0].kind, "outside-root");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("refuses to inline a local asset that escapes through a linked directory", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "lavish-export-"));
+  try {
+    const artDir = path.join(root, "art");
+    const outsideDir = path.join(root, "outside");
+    await mkdir(artDir);
+    await mkdir(outsideDir);
+    await writeFile(path.join(outsideDir, "secret.css"), "TOP SECRET");
+    // The escaping link is a *directory* component, so the leaf name looks ordinary.
+    await linkDirectory(outsideDir, path.join(artDir, "vendor"));
+
+    const html =
+      '<!doctype html><html><head><link rel="stylesheet" href="vendor/secret.css"></head><body></body></html>';
+    const { html: out, warnings } = await buildSelfContainedHtml(html, { baseDir: artDir, confineDir: artDir });
+
+    assert.doesNotMatch(out, /TOP SECRET/);
+    assert.match(out, /<link rel="stylesheet" href="vendor\/secret\.css">/);
     assert.equal(warnings.length, 1);
     assert.equal(warnings[0].kind, "outside-root");
   } finally {
