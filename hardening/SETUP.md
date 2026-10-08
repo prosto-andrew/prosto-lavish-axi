@@ -121,6 +121,11 @@ gate, the generated-files guard, `CONTRIBUTING.md`, the issue templates, the
 committed `task-evidence/` screenshots. If a later merge reports a modify/delete conflict on
 one of them, keep it deleted.
 
+The one workflow kept, `.github/workflows/ci.yml`, lints, type-checks, tests and builds on
+Linux, macOS and Windows, then runs `node verify-hardening.mjs` against that build, so a pull
+request that fails a check fails CI. Its actions are pinned to full commit SHAs, and its token
+can only read the repository.
+
 ## What still touches the network
 
 Nothing, during normal use. Artifacts, server state (`~/.lavish-axi/`), and whiteboard
