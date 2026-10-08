@@ -1426,9 +1426,10 @@ export async function serve({
       // this chrome and a clickjacking surface over Send. Scoped to this route:
       // /artifact/* is framed by this page and /whiteboard-frame is framed by
       // that artifact document, whose sandbox gives it an opaque origin no
-      // frame-ancestors expression can name.
+      // frame-ancestors expression can name. The same policy pins everything this page loads,
+      // and every navigation of the artifact frame, to this server.
       res.setHeader("x-frame-options", "DENY");
-      res.setHeader("content-security-policy", "frame-ancestors 'none'");
+      res.setHeader("content-security-policy", CHROME_CONTENT_SECURITY_POLICY);
       res.type("html").send(
         createChromeHtml(session, {
           layoutGateEnabled: shouldEnableLayoutGate(req.query || {}),
@@ -2877,17 +2878,19 @@ function readTagAttr(tag, name) {
 // Pull a tab favicon + title out of the artifact's own <head>. Lavish renders the
 // artifact in a sandboxed iframe, so the artifact's own <link rel="icon"> and
 // <title> never reach the browser tab; surfacing them here makes a wall of Lavish
-// tabs identifiable. Falls back to the Lavish default favicon. Only data: and
-// absolute (http/https/protocol-relative) icon hrefs are adopted verbatim;
-// artifact-relative hrefs would not resolve against the chrome page, so they fall
-// back to the default.
+// tabs identifiable. Falls back to the Lavish default favicon. Only data: icon
+// hrefs are adopted verbatim; artifact-relative hrefs would not resolve against the
+// chrome page, so they fall back to the default.
+// LAVISH-HARDENED: upstream also adopted http(s) and protocol-relative hrefs, which the
+// chrome page then fetched from that host on every open. The chrome's img-src refuses
+// them anyway; dropping them here keeps the tab icon and the console clean.
 export function extractArtifactHead(html) {
   const head = String(html || "").slice(0, 10000);
   let faviconTag = LAVISH_DEFAULT_FAVICON;
   const linkTags = head.match(/<link\b(?:"[^"]*"|'[^']*'|[^"'>])*>/gi) || [];
   const iconTag = linkTags.find((tag) => /(^|\s)icon(\s|$)/i.test(readTagAttr(tag, "rel")));
   const iconHref = iconTag ? readTagAttr(iconTag, "href") : "";
-  if (iconHref && /^(data:|https?:|\/\/)/i.test(iconHref)) {
+  if (iconHref && /^data:/i.test(iconHref)) {
     const safeHref = iconHref.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
     faviconTag = `<link rel="icon" href="${safeHref}">`;
   }
@@ -2949,6 +2952,32 @@ if(c)c.textContent=outcome==="no-answer"?"Lavish did not answer the check, so th
 });
 }
 })();`;
+
+// The chrome-client.js tag's onerror is the page's only inline event handler; the policy below
+// allows it by hash, so it is one constant shared by the markup and the hash.
+const CHROME_CLIENT_ONERROR = "window.__lavishChromeBootFailed()";
+
+function cspHashSource(source) {
+  return `'sha256-${crypto.createHash("sha256").update(source, "utf8").digest("base64")}'`;
+}
+
+// LAVISH-HARDENED: the chrome is a same-origin page that shows artifact-chosen content (its tab
+// icon) and frames the artifact, whose own navigations only this page's frame-src can stop. With
+// no source list it fetched an artifact's external icon on every open and let the artifact frame
+// walk to any host. 'self' names this server however it was reached (127.0.0.1, localhost, an
+// allowed proxy host) and, under CSP3, its live-event WebSocket. Inline code runs only by hash:
+// the boot failsafe and the chrome-client.js onerror, both constants of this file.
+export const CHROME_CONTENT_SECURITY_POLICY = [
+  "default-src 'none'",
+  `script-src 'self' 'unsafe-hashes' ${cspHashSource(CHROME_BOOT_FAILSAFE_JS)} ${cspHashSource(CHROME_CLIENT_ONERROR)}`,
+  "style-src 'self'",
+  "img-src 'self' data: blob:",
+  "connect-src 'self'",
+  "frame-src 'self'",
+  "form-action 'none'",
+  "base-uri 'none'",
+  "frame-ancestors 'none'",
+].join("; ");
 
 export function createChromeHtml(
   session,
@@ -3018,7 +3047,7 @@ ${faviconTag}
 <div class="whiteboard-overlay" id="whiteboardOverlay" hidden><div class="whiteboard-shell"><div class="whiteboard-error" id="whiteboardError" hidden></div><button class="whiteboard-close" id="whiteboardClose" type="button" aria-label="Close whiteboard"><svg width="14" height="14" viewBox="0 0 10 10" fill="none" aria-hidden="true" focusable="false"><path d="M1 1L9 9M9 1L1 9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button><iframe id="whiteboardFrame" title="Excalidraw whiteboard" sandbox="allow-scripts allow-popups"></iframe></div></div>
 <script id="lavish-session" type="application/json">${sessionJson}</script>
 <script>${CHROME_BOOT_FAILSAFE_JS}</script>
-<script src="/chrome-client.js" onerror="window.__lavishChromeBootFailed()"></script>
+<script src="/chrome-client.js" onerror="${CHROME_CLIENT_ONERROR}"></script>
 </body>
 </html>`;
 }
