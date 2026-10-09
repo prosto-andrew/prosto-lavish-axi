@@ -488,6 +488,32 @@ check("live-event WebSocket upgrades require this server's own Origin", () => {
   return "Host allowlist plus exact Origin";
 });
 
+check("state-changing GETs need proof", () => {
+  // A foreign page can make the browser send any GET here with no Origin or Referer (an <img>, a
+  // hidden <iframe>), so the poll must demand the CLI's header before it claims or takes feedback,
+  // and the review page must not mint the reviewer handoff that displaces the open tab.
+  const server = read("src/server.js");
+  mustContain(server, "    if (req.get(LAVISH_CLIENT_HEADER) !== LAVISH_CLIENT_CLI) {", "src/server.js");
+  const sessionRoute = server.indexOf('app.get("/session/:key"');
+  if (sessionRoute < 0) throw new Error("src/server.js has no GET /session/:key route");
+  const nextRoute = server.indexOf("\n  app.", sessionRoute);
+  const sessionHandler = server.slice(sessionRoute, nextRoute < 0 ? undefined : nextRoute);
+  mustNotContain(sessionHandler, "issueReviewerHandoff", "the GET /session/:key handler");
+  // dist/server.mjs is only the bootstrap that imports dist/cli.mjs, so both halves live there.
+  const dist = read("dist/cli.mjs");
+  if (!/if \(req\.get\(LAVISH_CLIENT_HEADER\d*\) !== LAVISH_CLIENT_CLI\d*\) \{/.test(dist)) {
+    throw new Error(`dist/cli.mjs does not refuse a poll without the CLI header - ${REBUILD}`);
+  }
+  // Both poll requests, the plain GET and the reply/takeover POST.
+  const getPoll = /: \{ headers: \{ \[LAVISH_CLIENT_HEADER\d*\]: LAVISH_CLIENT_CLI\d* \} \};/;
+  const postPoll =
+    /headers: \{ "content-type": "application\/json", \[LAVISH_CLIENT_HEADER\d*\]: LAVISH_CLIENT_CLI\d* \}/;
+  if (!getPoll.test(dist) || !postPoll.test(dist)) {
+    throw new Error(`dist/cli.mjs does not send the CLI header on every poll - ${REBUILD}`);
+  }
+  return "poll needs the CLI header; the review page mints no handoff";
+});
+
 check("mermaid is vendored for offline rendering", () => {
   const mod = path.join(root, "dist/design/mermaid/mermaid.esm.min.mjs");
   const chunks = path.join(root, "dist/design/mermaid/chunks/mermaid.esm.min");

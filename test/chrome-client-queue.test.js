@@ -17,7 +17,7 @@ const servedChromeIds = new Set(
   ),
 );
 
-/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialChat?: any[], initialChatAckIds?: string[], initialChatRevision?: number, initialLayoutWarnings?: any[], chromeLoadToken?: string, initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number, attachmentAcceptedMime?: string[], initialEnded?: boolean, initialEndedBy?: string | null, revisionPalette?: { hex: string, borderStyle: string, pattern: string }[] }} HarnessSessionData */
+/** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialChat?: any[], initialChatAckIds?: string[], initialChatRevision?: number, initialLayoutWarnings?: any[], initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number, attachmentAcceptedMime?: string[], initialEnded?: boolean, initialEndedBy?: string | null, revisionPalette?: { hex: string, borderStyle: string, pattern: string }[] }} HarnessSessionData */
 /** @type {HarnessSessionData} */
 const defaultSessionData = {
   key: "abc",
@@ -110,6 +110,11 @@ async function createChromeHarness({
   let nextTimerId = 1;
   let reloadCount = 0;
   let artifactRevision = 0;
+  // The load the server currently holds for this session, which is what its handoff POST reports.
+  let activeLoad = {
+    revision: Number(sessionData.initialArtifactRevision) || 0,
+    token: String(sessionData.initialArtifactLoadToken || ""),
+  };
 
   function fakeSetTimeout(fn, ms) {
     const timer = {
@@ -339,13 +344,18 @@ async function createChromeHarness({
       if (handoffResponses.length > 0) return handoffResponses.shift();
       return {
         ok: true,
-        json: async () => ({ chrome_load_token: "harness-chrome-refresh", artifact_revision: artifactRevision }),
+        json: async () => ({
+          chrome_load_token: "harness-chrome-refresh",
+          artifact_revision: activeLoad.revision,
+          artifact_load_token: activeLoad.token,
+        }),
       };
     }
     if (String(url).includes("/artifact-loads/begin")) {
       artifactBeginRequests.push({ url, init });
       if (beginLoadResponses.length > 0) return beginLoadResponses.shift();
       artifactRevision += 1;
+      activeLoad = { revision: artifactRevision, token: `harness-load-${artifactRevision}` };
       return {
         ok: true,
         json: async () => ({
@@ -1719,45 +1729,56 @@ function flushPromises() {
 test("chrome client re-handshakes once after a missing reviewer handoff", async () => {
   const chrome = await createChromeHarness({
     artifactSrc: "/artifact/abc/index.html",
-    sessionData: {
-      ...defaultSessionData,
-      chromeLoadToken: "expired-handoff",
-      initialArtifactRevision: 1,
-      initialArtifactLoadToken: "old-load",
-    },
-    beginLoadResponses: [{ ok: false, status: 409, json: async () => ({ status: "no-handoff" }) }],
+    sessionData: { ...defaultSessionData, initialArtifactRevision: 1, initialArtifactLoadToken: "old-load" },
+    beginLoadResponses: [
+      { ok: true, json: async () => ({ artifact_revision: 2, artifact_load_token: "load-2" }) },
+      { ok: false, status: 409, json: async () => ({ status: "no-handoff" }) },
+    ],
     handoffResponses: [
       {
         ok: true,
         json: async () => ({
-          chrome_load_token: "fresh-handoff",
+          chrome_load_token: "expired-handoff",
           artifact_revision: 1,
-          artifact_load_token: "",
+          artifact_load_token: "old-load",
           artifact_load_sequence: 0,
+        }),
+      },
+      {
+        ok: true,
+        json: async () => ({
+          chrome_load_token: "fresh-handoff",
+          artifact_revision: 2,
+          artifact_load_token: "load-2",
+          artifact_load_sequence: 1,
         }),
       },
     ],
   });
   await flushPromises();
   await flushPromises();
+  // A restarted server lost the boot handoff; the next load finds out.
+  chrome.eventSource().listeners.get("reload")();
+  await flushPromises();
+  await flushPromises();
 
-  assert.equal(chrome.beginRequests.length, 1);
-  assert.equal(chrome.artifactBeginRequests.length, 2);
-  assert.match(chrome.artifactBeginRequests[0].init.body, /expired-handoff/);
-  assert.match(chrome.artifactBeginRequests[1].init.body, /fresh-handoff/);
+  assert.equal(chrome.beginRequests.length, 2);
+  assert.equal(chrome.artifactBeginRequests.length, 3);
+  assert.match(chrome.artifactBeginRequests[1].init.body, /expired-handoff/);
+  assert.match(chrome.artifactBeginRequests[2].init.body, /fresh-handoff/);
   assert.equal(chrome.element("handoffBanner").hidden, true);
 });
 
 test("chrome client surfaces a superseded reviewer without re-handshaking", async () => {
   const chrome = await createChromeHarness({
     artifactSrc: "/artifact/abc/index.html",
-    sessionData: { ...defaultSessionData, chromeLoadToken: "old-handoff" },
     beginLoadResponses: [{ ok: false, status: 409, json: async () => ({ status: "superseded" }) }],
   });
   await flushPromises();
   await flushPromises();
 
-  assert.equal(chrome.beginRequests.length, 0);
+  // The boot handshake only: a superseded reviewer never takes another one by itself.
+  assert.equal(chrome.beginRequests.length, 1);
   assert.equal(chrome.artifactBeginRequests.length, 1);
   assert.equal(chrome.element("handoffBanner").hidden, false);
   chrome.element("handoffTakeover").click();
@@ -1772,17 +1793,9 @@ test("stale re-handshake responses cannot overwrite a newer load", async () => {
   });
   const chrome = await createChromeHarness({
     artifactSrc: "/artifact/abc/index.html",
-    sessionData: {
-      ...defaultSessionData,
-      chromeLoadToken: "old-handoff",
-      initialArtifactRevision: 1,
-      initialArtifactLoadToken: "old-load",
-    },
-    beginLoadResponses: [
-      { ok: false, status: 409, json: async () => ({ status: "no-handoff" }) },
-      { ok: false, status: 409, json: async () => ({ status: "no-handoff" }) },
-    ],
+    sessionData: { ...defaultSessionData, initialArtifactRevision: 1, initialArtifactLoadToken: "old-load" },
     handoffResponses: [
+      // The boot handshake's answer, held back until a newer attempt has taken its own.
       { ok: true, json: async () => oldHandoffJson },
       {
         ok: true,
@@ -1819,6 +1832,36 @@ test("stale re-handshake responses cannot overwrite a newer load", async () => {
   assert.match(lastRequest.init.body, /new-handoff/);
   assert.doesNotMatch(lastRequest.init.body, /old-recovery/);
   assert.equal(chrome.element("handoffBanner").hidden, true);
+});
+
+// The review page is a GET that carries no handoff (a foreign <img> or <iframe> could trigger it),
+// so the chrome takes its own through the same-origin POST before it asks for any artifact load.
+test("a chrome boots by obtaining its reviewer handoff before the first artifact load", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(chrome.beginRequests.length, 1);
+  assert.equal(chrome.artifactBeginRequests.length, 1);
+  assert.match(chrome.artifactBeginRequests[0].init.body, /harness-chrome-refresh/);
+});
+
+test("a failed boot handshake waits for the recovery schedule instead of re-handshaking", async () => {
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    handoffResponses: [{ ok: false, json: async () => ({}) }],
+  });
+  await flushPromises();
+  await flushPromises();
+
+  // One handshake per attempt: a server mid-restart is retried on the recovery schedule.
+  assert.equal(chrome.beginRequests.length, 1);
+  assert.equal(chrome.artifactBeginRequests.length, 0);
+  chrome.runTimers(1000);
+  await flushPromises();
+  await flushPromises();
+  assert.equal(chrome.beginRequests.length, 2);
+  assert.equal(chrome.artifactBeginRequests.length, 1);
 });
 
 test("chrome client replaces queued prompts with the same internal key", async () => {
@@ -3928,7 +3971,6 @@ test("a load that asks for the artifact again gets the whole recovery backoff ag
 test("a superseded reviewer is not retried in the background", async () => {
   const chrome = await createChromeHarness({
     artifactSrc: "/artifact/abc/index.html",
-    sessionData: { ...defaultSessionData, chromeLoadToken: "old-handoff" },
     beginLoadResponses: [{ ok: false, status: 409, json: async () => ({ status: "superseded" }) }],
   });
   await flushPromises();
@@ -3945,7 +3987,7 @@ test("a superseded reviewer is not retried in the background", async () => {
 test("a superseded first load names itself on the layout gate instead of holding the spinner", async () => {
   const chrome = await createChromeHarness({
     artifactSrc: "/artifact/abc/index.html",
-    sessionData: { ...defaultSessionData, chromeLoadToken: "old-handoff", layoutGateEnabled: true },
+    sessionData: { ...defaultSessionData, layoutGateEnabled: true },
     beginLoadResponses: [{ ok: false, status: 409, json: async () => ({ status: "superseded" }) }],
   });
   await flushPromises();
@@ -3971,7 +4013,6 @@ test("a superseded reload keeps the artifact already on screen and leaves the ga
     artifactSrc: "/artifact/abc/index.html",
     sessionData: {
       ...defaultSessionData,
-      chromeLoadToken: "old-handoff",
       layoutGateEnabled: true,
       initialArtifactRevision: 4,
       initialArtifactLoadToken: "live-load",

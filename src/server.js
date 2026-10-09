@@ -190,6 +190,13 @@ const ATTACHMENT_SWEEP_INTERVAL_MS = 60 * 60_000;
 const SHUTDOWN_REASONS = new Set(["upgrade", "local-build", "stop"]);
 const AGENT_LISTENER_LABEL = "agent-listener";
 
+// LAVISH-HARDENED: the CLI names itself on /api/poll with this header. A foreign page can make the
+// browser send any GET here with no Origin or Referer (an <img>, a hidden <iframe>, a no-cors
+// fetch), so header-less proves nothing for a GET; but it cannot add this header without a CORS
+// preflight the server never grants.
+export const LAVISH_CLIENT_HEADER = "x-lavish-client";
+export const LAVISH_CLIENT_CLI = "cli";
+
 // Live-reload coalescing. A normal save is one reload after a short debounce. While a queued
 // layout-warning batch is outstanding, the agent is applying several related edits, so widen the
 // window: the user asked for one group of fixes and should get one artifact refresh for it.
@@ -754,7 +761,9 @@ export async function serve({
   // can reach 127.0.0.1 passes the Host check, but the browser attaches the
   // real Origin, so mutating requests with a present, non-matching Origin or
   // Referer are rejected. Header-less CLI control-channel requests have no
-  // Origin and are allowed; the Host allowlist remains their gate. Routes that
+  // Origin and are allowed; the Host allowlist remains their gate. That holds
+  // for non-GET methods only, which browsers always send with an Origin;
+  // /api/poll checks LAVISH_CLIENT_HEADER itself. Routes that
   // already call isSameOriginRequest keep those checks - they also reject
   // header-less callers, and this middleware does not replace them.
   app.use((req, res, next) => {
@@ -905,6 +914,12 @@ export async function serve({
   }
 
   const handlePoll = async (req, res, next) => {
+    // Before anything else: a poll claims the listener and destructively takes the feedback, so a
+    // request that is not the CLI must be refused while nothing has happened yet.
+    if (req.get(LAVISH_CLIENT_HEADER) !== LAVISH_CLIENT_CLI) {
+      res.status(403).json({ error: "poll requires the Lavish CLI client header" });
+      return;
+    }
     const takeover = req.query.takeover === "1";
     const agentReply =
       req.method === "POST" && req.body?.agent_reply !== undefined ? String(req.body.agent_reply) : null;
@@ -1415,7 +1430,10 @@ export async function serve({
 
   app.get("/session/:key", async (req, res, next) => {
     try {
-      const chromeLoad = await store.issueReviewerHandoff(req.params.key);
+      // LAVISH-HARDENED: this page only reads. A foreign page can point an <img> or a hidden <iframe>
+      // here with no Origin or Referer, so issuing the reviewer handoff on this GET let it displace
+      // the open review; the chrome takes its handoff from POST /api/:key/chrome-loads/begin.
+      const chromeLoad = await store.describeReviewerLoad(req.params.key);
       if (!chromeLoad) {
         sendSessionNotFound(req, res);
         return;
@@ -1442,7 +1460,6 @@ export async function serve({
           artifactRevision: chromeLoad.artifact_revision,
           artifactLoadToken: chromeLoad.artifact_load_token,
           artifactLoadSequence: chromeLoad.artifact_load_sequence,
-          chromeLoadToken: chromeLoad.chrome_load_token,
           attachmentMaxBytes: attachmentConfig.maxBytes,
           attachmentMaxCount: attachmentConfig.maxPerPrompt,
         }),
@@ -2992,7 +3009,6 @@ export function createChromeHtml(
     artifactRevision = 0,
     artifactLoadToken = "",
     artifactLoadSequence = 0,
-    chromeLoadToken = "",
     attachmentMaxBytes = 0,
     attachmentMaxCount = 0,
     attachmentAcceptedMime = ACCEPTED_IMAGE_MIME,
@@ -3017,7 +3033,6 @@ export function createChromeHtml(
     initialArtifactRevision: artifactRevision,
     initialArtifactLoadToken: artifactLoadToken,
     initialArtifactLoadSequence: artifactLoadSequence,
-    chromeLoadToken,
     layoutGateEnabled,
     modeToggleHotkeyKey: MODE_TOGGLE_HOTKEY_KEY,
     attachmentMaxBytes,

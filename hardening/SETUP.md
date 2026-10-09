@@ -133,6 +133,11 @@ autosaves stay on this machine, and the server listens on loopback only. The rev
 itself carries a policy that pins every request, and every navigation of the artifact frame,
 to the local server: an artifact cannot make it fetch an icon from another host, and an
 artifact that tries to send its own frame to another site gets a blocked frame instead.
+Other pages open in the same browser cannot drive it from the background either: polling for
+feedback needs a header only the `lavish-safe` CLI sends, and loading the review page in a hidden
+frame or image does not move the review away from the tab that has it. A page can still open the
+review link in a new tab, which takes the review over just as opening the link yourself does; the
+old tab says so and offers **Take over here**.
 
 One consequence to know about: because Mermaid now loads from the local server, an
 **exported** artifact containing a Mermaid whiteboard needs the Lavish server running

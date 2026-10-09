@@ -77,14 +77,14 @@ function normalizeCssForAssertions(css) {
 }
 
 async function beginArtifactLoad(base, key) {
-  const chrome = chromeSessionData(await fetch(`${base}/session/${key}`).then((response) => response.text()));
+  const handoff = await issueHandoff(base, key);
   const response = await fetch(`${base}/api/${key}/artifact-loads/begin`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       request_id: `test-load-${++beginRequestSequence}`,
-      request_sequence: chrome.initialArtifactLoadSequence + 1,
-      chrome_load_token: chrome.chromeLoadToken,
+      request_sequence: handoff.artifact_load_sequence + 1,
+      chrome_load_token: handoff.chrome_load_token,
     }),
   });
   assert.equal(response.status, 200);
@@ -92,6 +92,16 @@ async function beginArtifactLoad(base, key) {
 }
 
 let beginRequestSequence = 0;
+
+// What the chrome does at boot: take the reviewer handoff through the same-origin POST.
+async function issueHandoff(base, key) {
+  const response = await fetch(`${base}/api/${key}/chrome-loads/begin`, {
+    method: "POST",
+    headers: { origin: base },
+  });
+  assert.equal(response.status, 200);
+  return response.json();
+}
 
 function artifactLoadUrl(base, key, load, { probe = false } = {}) {
   const query = `artifact_revision=${load.artifact_revision}&artifact_load_token=${encodeURIComponent(load.artifact_load_token)}`;
@@ -1562,6 +1572,19 @@ function rawRequest(port, pathname, { method = "GET", host, headers = {}, body }
   });
 }
 
+// The CLI proves itself on /api/poll with this header. A browser page sends its GETs with no
+// Origin or Referer, and cannot add a custom header without a CORS preflight the server never
+// grants, so the header is what separates the CLI from a foreign page.
+const CLI_CLIENT_HEADERS = { "x-lavish-client": "cli" };
+
+/**
+ * @param {string} url
+ * @param {RequestInit & { headers?: Record<string, string> }} [init]
+ */
+function pollFetch(url, init = {}) {
+  return fetch(url, { ...init, headers: { ...init.headers, ...CLI_CLIENT_HEADERS } });
+}
+
 test("loopback server rejects forged non-loopback Host headers (DNS rebinding)", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
@@ -1602,13 +1625,17 @@ test("loopback server rejects forged non-loopback Host headers (DNS rebinding)",
     assert.equal(promptForged.status, 403);
 
     // Poll for queued feedback.
+    // A rebound page is same-origin to itself, so it can send the CLI header without a preflight:
+    // only the Host allowlist stops this one.
     const pollForged = await rawRequest(server.port, `/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`, {
       host: evilHost,
+      headers: CLI_CLIENT_HEADERS,
     });
     assert.equal(pollForged.status, 403);
+    assert.deepEqual(JSON.parse(pollForged.body), { error: "forbidden host" });
 
     // The rejected prompt must not have been queued: a legitimate poll sees nothing.
-    const pollCheck = await fetch(
+    const pollCheck = await pollFetch(
       `http://127.0.0.1:${server.port}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`,
     );
     assert.equal((await pollCheck.json()).status, "waiting");
@@ -1661,7 +1688,7 @@ test("POST /api/:key/prompts rejects non-same-origin callers and queues nothing"
     });
     assert.equal(originless.status, 403);
 
-    const pollAfterRejects = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then(
+    const pollAfterRejects = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then(
       (res) => res.json(),
     );
     assert.equal(pollAfterRejects.status, "waiting");
@@ -1673,7 +1700,7 @@ test("POST /api/:key/prompts rejects non-same-origin callers and queues nothing"
       body: JSON.stringify({ prompts: [{ prompt: "real reviewer feedback", tag: "message" }] }),
     });
     assert.equal(legitimate.status, 200);
-    const delivered = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((res) =>
+    const delivered = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((res) =>
       res.json(),
     );
     assert.equal(delivered.status, "feedback");
@@ -1681,6 +1708,128 @@ test("POST /api/:key/prompts rejects non-same-origin callers and queues nothing"
       delivered.prompts.map((prompt) => prompt.prompt),
       ["real reviewer feedback"],
     );
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// Regression: a foreign page could point an <img> at /api/poll. The browser sends that GET with
+// no Origin or Referer, so the poll claimed the listener or destructively took the queued
+// feedback before the agent saw it.
+test("poll refuses a request without the CLI client header before claiming or consuming anything", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>hi</h1></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    const { key } = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((res) => res.json());
+    const queued = await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({ prompts: [{ prompt: "real reviewer feedback", tag: "message" }] }),
+    });
+    assert.equal(queued.status, 200);
+    const pollUrl = `${base}/api/poll?file=${encodeURIComponent(artifact)}`;
+
+    const headerless = await fetch(`${pollUrl}&timeoutMs=0`);
+    assert.equal(headerless.status, 403);
+    assert.deepEqual(await headerless.json(), { error: "poll requires the Lavish CLI client header" });
+    const wrongValue = await fetch(`${pollUrl}&timeoutMs=0`, { headers: { "x-lavish-client": "browser" } });
+    assert.equal(wrongValue.status, 403);
+    // Without timeoutMs the poll would long-poll; the refusal still answers at once.
+    const headerlessLongPoll = await fetch(pollUrl);
+    assert.equal(headerlessLongPoll.status, 403);
+
+    // Nothing was taken and no listener was left behind: a stray claim would answer 409.
+    const delivered = await pollFetch(`${pollUrl}&timeoutMs=0`).then((res) => res.json());
+    assert.equal(delivered.status, "feedback");
+    assert.deepEqual(
+      delivered.prompts.map((prompt) => prompt.prompt),
+      ["real reviewer feedback"],
+    );
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("poll POST without the CLI client header neither takes over nor publishes a reply", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>hi</h1></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    const { key } = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((res) => res.json());
+    const pollUrl = `${base}/api/poll?file=${encodeURIComponent(artifact)}`;
+    const held = pollFetch(`${pollUrl}&owner=worker-7`).then((res) => res.json());
+    for (let attempt = 0; ; attempt += 1) {
+      const health = await fetch(`${base}/health`).then((res) => res.json());
+      if (health.listeners.some((listener) => listener.key === key)) break;
+      assert.ok(attempt < 100, "the CLI poll never became the listener");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+
+    const takeover = await fetch(`${pollUrl}&takeover=1`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    assert.equal(takeover.status, 403);
+    const reply = await fetch(pollUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent_reply: "forged reply" }),
+    });
+    assert.equal(reply.status, 403);
+    const chrome = chromeSessionData(await fetch(`${base}/session/${key}`).then((res) => res.text()));
+    assert.equal(
+      chrome.initialChat.some((entry) => String(entry.text).includes("forged reply")),
+      false,
+    );
+
+    // The original listener still holds the session and receives the next feedback.
+    await fetch(`${base}/api/${key}/prompts`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: base },
+      body: JSON.stringify({ prompts: [{ prompt: "after the forged requests", tag: "message" }] }),
+    });
+    const result = await held;
+    assert.equal(result.status, "feedback");
+    assert.deepEqual(
+      result.prompts.map((prompt) => prompt.prompt),
+      ["after the forged requests"],
+    );
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("poll preflight grants no cross-origin access to the CLI client header", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const preflight = await fetch(`http://127.0.0.1:${server.port}/api/poll`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "http://evil.example",
+        "access-control-request-method": "GET",
+        "access-control-request-headers": "x-lavish-client",
+      },
+    });
+    assert.equal(preflight.headers.get("access-control-allow-origin"), null);
+    assert.equal(preflight.headers.get("access-control-allow-headers"), null);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -1727,7 +1876,7 @@ test("proxied same-origin prompt submissions use only an allowlisted forwarded o
       });
       assert.equal(rejected.status, 403);
     }
-    const pollAfterRejects = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then(
+    const pollAfterRejects = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then(
       (res) => res.json(),
     );
     assert.equal(pollAfterRejects.status, "waiting");
@@ -1743,7 +1892,7 @@ test("proxied same-origin prompt submissions use only an allowlisted forwarded o
       body,
     });
     assert.equal(submitted.status, 200);
-    const delivered = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((res) =>
+    const delivered = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((res) =>
       res.json(),
     );
     assert.equal(delivered.status, "feedback");
@@ -1787,7 +1936,7 @@ test("wildcard hosts accept proxied prompts but still reject malformed authoriti
       body,
     });
     assert.equal(malformed.status, 403);
-    const pollAfterReject = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then(
+    const pollAfterReject = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then(
       (res) => res.json(),
     );
     assert.equal(pollAfterReject.status, "waiting");
@@ -1803,7 +1952,7 @@ test("wildcard hosts accept proxied prompts but still reject malformed authoriti
       body,
     });
     assert.equal(submitted.status, 200);
-    const delivered = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((res) =>
+    const delivered = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((res) =>
       res.json(),
     );
     assert.equal(delivered.status, "feedback");
@@ -2415,7 +2564,7 @@ test("detected layout warnings leave the long-poll pending and never wake an age
     const load = await beginArtifactLoad(base, key);
     await fetch(artifactLoadUrl(base, key, load));
 
-    const pollPromise = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=600`).then((res) =>
+    const pollPromise = pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=600`).then((res) =>
       res.json(),
     );
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -2512,7 +2661,7 @@ test("queueing selected warnings wakes the poll as one ordinary prompt", async (
     const afterSend = await fetch(`${base}/api/${key}/layout-warnings`).then((res) => res.json());
     assert.equal(afterSend.warnings[0].status, "queued");
 
-    const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=1000`).then((res) =>
+    const poll = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=1000`).then((res) =>
       res.json(),
     );
     assert.equal(poll.status, "feedback");
@@ -2556,7 +2705,7 @@ test("warning-only layout observations never enter the inbox", async () => {
     assert.equal(recorded.active_count, 0);
     assert.deepEqual(recorded.warnings, []);
 
-    const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=25`).then((res) =>
+    const poll = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=25`).then((res) =>
       res.json(),
     );
     assert.deepEqual(poll, { status: "waiting" });
@@ -2581,7 +2730,7 @@ test("a fatal artifact failure still wakes the poll without user action", async 
     const { key } = await open.json();
     const load = await beginArtifactLoad(base, key);
 
-    const pollPromise = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=5000`).then((res) =>
+    const pollPromise = pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=5000`).then((res) =>
       res.json(),
     );
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -2678,7 +2827,7 @@ test("an older overlapping begin request cannot replace the current epoch", asyn
       body: JSON.stringify({ file: artifact }),
     });
     const { key } = await open.json();
-    const chrome = chromeSessionData(await fetch(`${base}/session/${key}`).then((response) => response.text()));
+    const handoff = await issueHandoff(base, key);
     const begin = (requestId, requestSequence) =>
       fetch(`${base}/api/${key}/artifact-loads/begin`, {
         method: "POST",
@@ -2686,7 +2835,7 @@ test("an older overlapping begin request cannot replace the current epoch", asyn
         body: JSON.stringify({
           request_id: requestId,
           request_sequence: requestSequence,
-          chrome_load_token: chrome.chromeLoadToken,
+          chrome_load_token: handoff.chrome_load_token,
         }),
       });
 
@@ -2718,7 +2867,7 @@ test("begin-load requires the current chrome handoff before any first or direct 
       body: JSON.stringify({ file: artifact }),
     });
     const { key } = await open.json();
-    const chrome = chromeSessionData(await fetch(`${base}/session/${key}`).then((response) => response.text()));
+    const handoff = await issueHandoff(base, key);
     const begin = (body) =>
       fetch(`${base}/api/${key}/artifact-loads/begin`, {
         method: "POST",
@@ -2735,7 +2884,7 @@ test("begin-load requires the current chrome handoff before any first or direct 
     const firstLoad = await begin({
       request_id: "first",
       request_sequence: 1,
-      chrome_load_token: chrome.chromeLoadToken,
+      chrome_load_token: handoff.chrome_load_token,
     }).then((response) => response.json());
     assert.equal((await fetch(artifactLoadUrl(base, key, firstLoad))).status, 200);
 
@@ -2766,7 +2915,7 @@ test("reopening a session preserves the existing chrome handoff and artifact loa
       body: JSON.stringify({ file: artifact }),
     });
     const { key } = await open.json();
-    const chrome = chromeSessionData(await fetch(`${base}/session/${key}`).then((response) => response.text()));
+    const handoff = await issueHandoff(base, key);
     const begin = (requestId, requestSequence) =>
       fetch(`${base}/api/${key}/artifact-loads/begin`, {
         method: "POST",
@@ -2774,7 +2923,7 @@ test("reopening a session preserves the existing chrome handoff and artifact loa
         body: JSON.stringify({
           request_id: requestId,
           request_sequence: requestSequence,
-          chrome_load_token: chrome.chromeLoadToken,
+          chrome_load_token: handoff.chrome_load_token,
         }),
       });
 
@@ -2793,6 +2942,68 @@ test("reopening a session preserves the existing chrome handoff and artifact loa
     assert.equal(preservedDocument.status, 200);
     assert.equal(secondLoad.artifact_revision, firstLoad.artifact_revision + 1);
     assert.equal((await fetch(artifactLoadUrl(base, key, secondLoad))).status, 200);
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// Regression: GET /session/:key minted a fresh handoff, so a foreign page's <img> or hidden
+// <iframe> pointed at it (sent with no Origin or Referer) left the open review tab superseded.
+test("loading the review page does not displace the reviewer that holds the handoff", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const { key } = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    const begin = (handoff, requestSequence) =>
+      fetch(`${base}/api/${key}/artifact-loads/begin`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          request_id: `tab-a-${requestSequence}`,
+          request_sequence: requestSequence,
+          chrome_load_token: handoff.chrome_load_token,
+        }),
+      });
+
+    const tabA = await issueHandoff(base, key);
+    assert.equal((await begin(tabA, 1)).status, 200);
+    const headerlessPage = await fetch(`${base}/session/${key}`);
+    assert.equal(headerlessPage.status, 200);
+    assert.equal((await begin(tabA, 2)).status, 200);
+
+    // A real second tab still takes the review over, through the same-origin POST.
+    await issueHandoff(base, key);
+    const displaced = await begin(tabA, 3);
+    assert.equal(displaced.status, 409);
+    assert.deepEqual(await displaced.json(), { status: "superseded" });
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the review page carries no reviewer handoff token", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const { key } = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((response) => response.json());
+    const page = chromeSessionData(await fetch(`${base}/session/${key}`).then((response) => response.text()));
+    assert.equal("chromeLoadToken" in page, false);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -2849,8 +3060,12 @@ test("a refreshed chrome receives a new handoff and establishes the newest load"
       body: JSON.stringify({ file: artifact }),
     });
     const { key } = await open.json();
-    const loadChrome = async () =>
-      chromeSessionData(await fetch(`${base}/session/${key}`).then((response) => response.text()));
+    // A chrome load is the page (what it renders from) plus the handoff its boot takes through
+    // the same-origin POST; the page itself carries no handoff.
+    const loadChrome = async (origin = base) => ({
+      page: chromeSessionData(await fetch(`${origin}/session/${key}`).then((response) => response.text())),
+      handoff: await issueHandoff(origin, key),
+    });
     const begin = (chrome, requestId, requestSequence) =>
       fetch(`${base}/api/${key}/artifact-loads/begin`, {
         method: "POST",
@@ -2858,24 +3073,24 @@ test("a refreshed chrome receives a new handoff and establishes the newest load"
         body: JSON.stringify({
           request_id: requestId,
           request_sequence: requestSequence,
-          chrome_load_token: chrome.chromeLoadToken,
+          chrome_load_token: chrome.handoff.chrome_load_token,
         }),
       });
 
     const firstChrome = await loadChrome();
-    const firstLoad = await begin(firstChrome, "first-load", firstChrome.initialArtifactLoadSequence + 1).then(
+    const firstLoad = await begin(firstChrome, "first-load", firstChrome.page.initialArtifactLoadSequence + 1).then(
       (response) => response.json(),
     );
     assert.equal(firstLoad.artifact_revision, 1);
-    const secondLoad = await begin(firstChrome, "second-load", firstChrome.initialArtifactLoadSequence + 2).then(
+    const secondLoad = await begin(firstChrome, "second-load", firstChrome.page.initialArtifactLoadSequence + 2).then(
       (response) => response.json(),
     );
-    const staleOld = await begin(firstChrome, "delayed-old-load", firstChrome.initialArtifactLoadSequence + 1);
+    const staleOld = await begin(firstChrome, "delayed-old-load", firstChrome.page.initialArtifactLoadSequence + 1);
     assert.equal(staleOld.status, 409);
 
     const refreshedChrome = await loadChrome();
-    assert.equal(refreshedChrome.initialArtifactLoadToken, secondLoad.artifact_load_token);
-    assert.equal(refreshedChrome.initialArtifactLoadSequence, firstChrome.initialArtifactLoadSequence + 2);
+    assert.equal(refreshedChrome.page.initialArtifactLoadToken, secondLoad.artifact_load_token);
+    assert.equal(refreshedChrome.page.initialArtifactLoadSequence, firstChrome.page.initialArtifactLoadSequence + 2);
     const refreshedLoad = await begin(refreshedChrome, "refreshed-load", 1).then((response) => response.json());
     assert.equal(refreshedLoad.artifact_revision, secondLoad.artifact_revision + 1);
     assert.equal((await fetch(artifactLoadUrl(base, key, refreshedLoad))).status, 200);
@@ -2883,13 +3098,11 @@ test("a refreshed chrome receives a new handoff and establishes the newest load"
     await server.close();
     server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
     const restartedBase = `http://127.0.0.1:${server.port}`;
-    const restartedChrome = chromeSessionData(
-      await fetch(`${restartedBase}/session/${key}`).then((response) => response.text()),
-    );
+    const restartedChrome = await loadChrome(restartedBase);
     // The replacement server adopts the live load from state.json, so a chrome that renders
     // against it is handed the same token the previous server issued, and the artifact the
     // reviewer already has open keeps answering.
-    assert.equal(restartedChrome.initialArtifactLoadToken, refreshedLoad.artifact_load_token);
+    assert.equal(restartedChrome.page.initialArtifactLoadToken, refreshedLoad.artifact_load_token);
     assert.equal((await fetch(artifactLoadUrl(restartedBase, key, refreshedLoad))).status, 200);
     const restartedLoad = await fetch(`${restartedBase}/api/${key}/artifact-loads/begin`, {
       method: "POST",
@@ -2897,7 +3110,7 @@ test("a refreshed chrome receives a new handoff and establishes the newest load"
       body: JSON.stringify({
         request_id: "restarted-load",
         request_sequence: 1,
-        chrome_load_token: restartedChrome.chromeLoadToken,
+        chrome_load_token: restartedChrome.handoff.chrome_load_token,
       }),
     }).then((response) => response.json());
     assert.equal(restartedLoad.artifact_revision, refreshedLoad.artifact_revision + 1);
@@ -2974,7 +3187,7 @@ test("a newer begun load fences stale document and artifact mutations", async ()
     assert.equal(currentDocument.status, 200);
     assert.match(await currentDocument.text(), new RegExp(`artifact_load_token=${secondLoad.artifact_load_token}`));
 
-    const pollPromise = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=100`).then((res) =>
+    const pollPromise = pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=100`).then((res) =>
       res.json(),
     );
     const staleDiagnostic = await fetch(`${base}/api/${key}/layout-diagnostics`, {
@@ -3128,7 +3341,7 @@ test("stale layout prompts return a conflict without entering feedback", async (
     assert.equal(conflict.status, "conflict");
     assert.equal(conflict.warnings[0].status, "resolved");
     assert.equal(
-      (await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=100`).then((res) => res.json()))
+      (await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=100`).then((res) => res.json()))
         .status,
       "waiting",
     );
@@ -3258,7 +3471,7 @@ test("long-poll sends heartbeat bytes before feedback arrives", async () => {
 
     const controller = new AbortController();
     const res = await Promise.race([
-      fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`, { signal: controller.signal }),
+      pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`, { signal: controller.signal }),
       new Promise((_, reject) => setTimeout(() => reject(new Error("poll did not send headers")), 500)),
     ]);
     // LAVISH-HARDENED: no Lavish-Poll-State header - it only existed to drive the Herdr chime.
@@ -4118,7 +4331,7 @@ test("a user-initiated end via the keyed route blocks a plain reopen but honors 
     assert.equal(blockedBody.url, originalUrl);
 
     // A blocked open must not resurrect the session or wake a poll.
-    const stillEnded = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+    const stillEnded = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
     assert.equal((await stillEnded.json()).status, "ended");
 
     const reopened = await fetch(`${base}/api/sessions`, {
@@ -4129,7 +4342,7 @@ test("a user-initiated end via the keyed route blocks a plain reopen but honors 
     const reopenedBody = await reopened.json();
     assert.equal(reopenedBody.status, "opened");
 
-    const afterReopen = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+    const afterReopen = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
     assert.equal((await afterReopen.json()).status, "waiting");
   } finally {
     await server.close();
@@ -4219,7 +4432,7 @@ test("an agent cleanup after a user end still blocks a plain reopen", async () =
     assert.equal(blockedBody.key, key);
     assert.equal(blockedBody.url, originalUrl);
 
-    const ended = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+    const ended = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
     const endedBody = await ended.json();
     assert.equal(endedBody.status, "ended");
     assert.equal(endedBody.ended_by, "user");
@@ -4266,7 +4479,7 @@ test("an agent-initiated end via the file-based route reopens normally without t
     const reopenedBody = await reopened.json();
     assert.equal(reopenedBody.status, "opened");
 
-    const afterReopen = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+    const afterReopen = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
     assert.equal((await afterReopen.json()).status, "waiting");
   } finally {
     await server.close();
@@ -4299,7 +4512,7 @@ test("poll on an ended session reports who ended it", async () => {
 
     await fetch(`${base}/api/${key}/end`, { method: "POST" });
 
-    const polled = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+    const polled = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
     const body = await polled.json();
     assert.equal(body.status, "ended");
     assert.equal(body.ended_by, "user");
@@ -4325,7 +4538,7 @@ test("send-and-end prompt submissions wake active polls with ended attribution",
     const presence = await startPresenceStream(base, key);
     try {
       assert.equal(await presence.next(), "waiting");
-      const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`).then((res) => res.json());
+      const poll = pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`).then((res) => res.json());
       assert.equal(await presence.next(), "listening");
 
       const submitted = await fetch(`${base}/api/${key}/prompts`, {
@@ -4347,7 +4560,7 @@ test("send-and-end prompt submissions wake active polls with ended attribution",
       assert.equal(await presence.next(), "working");
       assert.equal(await presence.next(), "waiting");
 
-      const ended = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+      const ended = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
       const endedBody = await ended.json();
       assert.equal(endedBody.status, "ended");
       assert.equal(endedBody.ended_by, "user");
@@ -4383,7 +4596,7 @@ test("ending an active poll without final feedback leaves presence waiting", asy
     const presence = await startPresenceStream(base, key);
     try {
       assert.equal(await presence.next(), "waiting");
-      const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`).then((res) => res.json());
+      const poll = pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`).then((res) => res.json());
       assert.equal(await presence.next(), "listening");
 
       await fetch(`${base}/api/${key}/end`, { method: "POST" });
@@ -4421,7 +4634,9 @@ test("closing the last review WebSocket releases an active poll without ending t
     assert.equal(await lastBrowser.next(), "waiting");
 
     let pollSettled = false;
-    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`, { signal: AbortSignal.timeout(1000) })
+    const poll = pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`, {
+      signal: AbortSignal.timeout(1000),
+    })
       .then((response) => response.json())
       .finally(() => {
         pollSettled = true;
@@ -4434,7 +4649,7 @@ test("closing the last review WebSocket releases an active poll without ending t
     await lastBrowser.close();
 
     assert.deepEqual(await poll, { status: "browser_disconnected" });
-    const stillOpen = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then(
+    const stillOpen = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then(
       (response) => response.json(),
     );
     assert.deepEqual(stillOpen, { status: "waiting" });
@@ -4466,7 +4681,7 @@ test("a poll that starts after a browser disconnect receives its own full wait",
     await browser.close();
 
     await new Promise((resolve) => setTimeout(resolve, 80));
-    const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=80`);
+    const poll = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=80`);
     assert.deepEqual(await poll.json(), { status: "waiting" });
   } finally {
     await server.close();
@@ -4495,7 +4710,7 @@ test("a review WebSocket reconnect within the grace period keeps the active poll
     const browser = await startPresenceStream(base, opened.key);
     assert.equal(await browser.next(), "waiting");
 
-    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=180`).then((response) =>
+    const poll = pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=180`).then((response) =>
       response.json(),
     );
     assert.equal(await browser.next(), "listening");
@@ -4530,7 +4745,7 @@ test("event WebSocket agent-presence reflects waiting, listening, and working tr
     const initial = await presence.next();
     assert.equal(initial, "waiting", "first WebSocket handshake should report waiting before any poll");
 
-    const pollPromise = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`).then((res) => res.json());
+    const pollPromise = pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`).then((res) => res.json());
     const listening = await presence.next();
     assert.equal(listening, "listening", "should switch to listening when poll attaches");
 
@@ -4565,7 +4780,7 @@ test("exclusive listener ownership rejects a loser and reports a takeover", asyn
       body: JSON.stringify({ file: artifact }),
     });
     const { key } = await open.json();
-    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-7`);
+    const poll = pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-7`);
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     const health = await fetch(`${base}/health`).then((response) => response.json());
@@ -4575,21 +4790,23 @@ test("exclusive listener ownership rejects a loser and reports a takeover", asyn
     );
     const state = JSON.parse(await readFile(stateFile, "utf8"));
     assert.equal("listener" in state.sessions[key], false);
-    const refused = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-8`);
+    const refused = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-8`);
     assert.equal(refused.status, 409);
     const refusedBody = await refused.json();
     assert.equal(refusedBody.code, "LISTENER_ACTIVE");
     assert.equal(refusedBody.holder.label, "worker-7");
     assert.equal(typeof refusedBody.holder.age_ms, "number");
 
-    const rejectedGet = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-8&takeover=1`);
+    const rejectedGet = await pollFetch(
+      `${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-8&takeover=1`,
+    );
     assert.equal(rejectedGet.status, 405);
     assert.deepEqual(await rejectedGet.json(), { error: "poll takeover requires POST" });
-    const stillHeld = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-9`);
+    const stillHeld = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-9`);
     assert.equal((await stillHeld.json()).holder.label, "worker-7");
 
     const takeover = new AbortController();
-    const replacement = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-8&takeover=1`, {
+    const replacement = pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-8&takeover=1`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({}),
@@ -4624,7 +4841,7 @@ test("owner-labeled listeners publish external presence instead of an idle capta
     try {
       assert.deepEqual(await stream.next(), { state: "waiting" });
       const controller = new AbortController();
-      const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-7`, {
+      const poll = pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-7`, {
         signal: controller.signal,
       }).catch((error) => error);
       assert.deepEqual(await stream.next(), { state: "listening", mode: "external-listener" });
@@ -4653,15 +4870,15 @@ test("bare polls have a visible agent listener identity and none is reserved", a
     });
     const { key } = await open.json();
     const controller = new AbortController();
-    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`, { signal: controller.signal }).catch(
-      (error) => error,
-    );
+    const poll = pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`, {
+      signal: controller.signal,
+    }).catch((error) => error);
     await new Promise((resolve) => setTimeout(resolve, 20));
     const health = await fetch(`${base}/health`).then((response) => response.json());
     assert.equal(health.listeners.find((listener) => listener.key === key).label, "agent-listener");
-    const conflict = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-8`);
+    const conflict = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-8`);
     assert.equal((await conflict.json()).holder.label, "agent-listener");
-    const reserved = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=none&timeoutMs=0`);
+    const reserved = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=none&timeoutMs=0`);
     assert.equal(reserved.status, 400);
     assert.equal((await reserved.json()).code, "VALIDATION_ERROR");
     controller.abort();
@@ -4687,12 +4904,12 @@ test("a refused reply poll does not publish its reply before takeover", async ()
     });
     const { key } = await open.json();
     const firstController = new AbortController();
-    const firstPoll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-7`, {
+    const firstPoll = pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-7`, {
       signal: firstController.signal,
     }).catch((error) => error);
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    const refused = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-8`, {
+    const refused = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-8`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ agent_reply: "must not publish" }),
@@ -4704,7 +4921,7 @@ test("a refused reply poll does not publish its reply before takeover", async ()
       false,
     );
 
-    const takeover = await fetch(
+    const takeover = await pollFetch(
       `${base}/api/poll?file=${encodeURIComponent(artifact)}&owner=worker-8&takeover=1&timeoutMs=1`,
       {
         method: "POST",
@@ -4767,7 +4984,7 @@ test("event WebSocket agent-presence returns to waiting when a poll times out wi
     try {
       assert.equal(await presence.next(), "waiting");
 
-      const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=1`);
+      const poll = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=1`);
       assert.deepEqual(await poll.json(), { status: "waiting" });
 
       assert.equal(await presence.next(), "listening");
@@ -4799,7 +5016,7 @@ test("SSE agent-presence returns to waiting when a poll disconnects without feed
       assert.equal(await presence.next(), "waiting");
 
       const pollController = new AbortController();
-      const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`, {
+      const poll = pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`, {
         signal: pollController.signal,
       }).then((res) => res.text());
       assert.equal(await presence.next(), "listening");
@@ -4834,7 +5051,7 @@ test("SSE agent-presence returns to waiting when poll feedback storage fails", a
     try {
       assert.equal(await presence.next(), "waiting");
 
-      const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=10`);
+      const poll = pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=10`);
       assert.equal(await presence.next(), "listening");
 
       // A state path that cannot be read at all. An unparseable file would not do: the store sets it
@@ -4890,7 +5107,7 @@ test("a poll dropped before it arms never leaves presence listening", async () =
     await new Promise((resolve, reject) => {
       const socket = netConnect(server.port, "127.0.0.1", () => {
         const target = `/api/poll?file=${encodeURIComponent(artifact)}`;
-        socket.write(`GET ${target} HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\n\r\n`, () => {
+        socket.write(`GET ${target} HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\nX-Lavish-Client: cli\r\n\r\n`, () => {
           socket.destroy();
           resolve();
         });
@@ -4913,7 +5130,7 @@ test("a poll dropped before it arms never leaves presence listening", async () =
       headers: { "content-type": "application/json", origin: base },
       body: JSON.stringify({ prompts: [{ prompt: "still here", tag: "message" }] }),
     });
-    const next = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+    const next = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
     const feedback = await next.json();
     assert.equal(feedback.status, "feedback");
     assert.deepEqual(
@@ -4950,7 +5167,7 @@ test("immediate poll delivery leaves presence working and preserves the next sen
       headers: { "content-type": "application/json", origin: base },
       body: JSON.stringify({ prompts: [{ prompt: "hello", tag: "message" }] }),
     });
-    const immediate = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`);
+    const immediate = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`);
     assert.equal(immediate.headers.get("lavish-poll-state"), null);
     assert.deepEqual(
       (await immediate.json()).prompts.map((prompt) => prompt.prompt),
@@ -4971,7 +5188,7 @@ test("immediate poll delivery leaves presence working and preserves the next sen
     });
     assert.equal(submitted.status, 200);
 
-    const nextPoll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+    const nextPoll = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
     assert.equal(nextPoll.headers.get("lavish-poll-state"), null);
     const nextFeedback = await nextPoll.json();
     assert.equal(nextFeedback.status, "feedback");
@@ -5004,7 +5221,7 @@ test("a fresh poll attaching alone retires the previous round's working presence
       headers: { "content-type": "application/json", origin: base },
       body: JSON.stringify({ prompts: [{ prompt: "hello", tag: "message" }] }),
     });
-    const delivered = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+    const delivered = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
     assert.equal((await delivered.json()).status, "feedback");
 
     const presence = await startPresenceStream(base, key);
@@ -5014,7 +5231,7 @@ test("a fresh poll attaching alone retires the previous round's working presence
       // The agent came back and attached with no other poll in flight: that starts a new round,
       // so the poll ending without feedback has to leave presence waiting - not stuck on
       // "working", which hides the "your agent is not listening" banner while nothing is attached.
-      const next = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=1`);
+      const next = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=1`);
       assert.deepEqual(await next.json(), { status: "waiting" });
 
       const afterRound = await startPresenceStream(base, key);
@@ -5092,7 +5309,7 @@ test("a disconnect during immediate feedback take requeues the batch without wor
     const socket = await new Promise((resolve, reject) => {
       const client = netConnect(server.port, "127.0.0.1", () => {
         client.write(
-          `GET /api/poll?file=${encodeURIComponent(artifact)} HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\n\r\n`,
+          `GET /api/poll?file=${encodeURIComponent(artifact)} HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\nX-Lavish-Client: cli\r\n\r\n`,
           () => resolve(client),
         );
       });
@@ -5111,7 +5328,7 @@ test("a disconnect during immediate feedback take requeues the batch without wor
       await presence.close();
     }
 
-    const next = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+    const next = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
     const feedback = await next.json();
     assert.equal(feedback.status, "feedback");
     assert.deepEqual(feedback.dom_snapshot, queued.domSnapshot);
@@ -5170,7 +5387,7 @@ test("a disconnect during event-driven feedback take requeues the batch without 
       const socket = await new Promise((resolve, reject) => {
         const client = netConnect(server.port, "127.0.0.1", () => {
           client.write(
-            `GET /api/poll?file=${encodeURIComponent(artifact)} HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\n\r\n`,
+            `GET /api/poll?file=${encodeURIComponent(artifact)} HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\nX-Lavish-Client: cli\r\n\r\n`,
             () => resolve(client),
           );
         });
@@ -5215,7 +5432,7 @@ test("a disconnect during event-driven feedback take requeues the batch without 
       } finally {
         await afterRestorePresence.close();
       }
-      const next = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+      const next = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
       const feedback = await next.json();
       assert.equal(feedback.status, "feedback");
       assert.equal(feedback.dom_snapshot, queued.domSnapshot);
@@ -5295,7 +5512,7 @@ test("a restore that fails to persist is logged instead of silently dropping the
     const socket = await new Promise((resolve, reject) => {
       const client = netConnect(server.port, "127.0.0.1", () => {
         client.write(
-          `GET /api/poll?file=${encodeURIComponent(artifact)} HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\n\r\n`,
+          `GET /api/poll?file=${encodeURIComponent(artifact)} HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\nX-Lavish-Client: cli\r\n\r\n`,
           () => resolve(client),
         );
       });
@@ -5345,7 +5562,7 @@ test("SSE agent-presence resets to waiting after ending and reopening a session"
         headers: { "content-type": "application/json", origin: base },
         body: JSON.stringify({ prompts: [{ prompt: "hello", tag: "message" }] }),
       });
-      await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`);
+      await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`);
 
       await fetch(`${base}/api/${key}/end`, { method: "POST" });
       // The browser end above is user-initiated, so reopening requires the explicit opt-in.
@@ -5488,7 +5705,7 @@ test("POST /api/:key/prompts rejects a batch queued after the session already en
 
       // No prompt was actually stored: a poll of the ended session reports plain `ended`,
       // never `feedback` with `session_ended: true`.
-      const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+      const poll = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
       const polled = await poll.json();
       assert.equal(polled.status, "ended");
       assert.equal(polled.ended_by, "agent");
@@ -5564,7 +5781,7 @@ test("immediate send-and-end delivery clears working presence without an active 
       });
       assert.equal(submitted.status, 200);
 
-      const immediate = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`);
+      const immediate = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`);
       const feedback = await immediate.json();
       assert.equal(feedback.status, "feedback");
       assert.equal(feedback.session_ended, true);
@@ -5596,7 +5813,9 @@ test("SSE agent-presence returns to waiting after an agent reply", async () => {
     try {
       assert.equal(await presence.next(), "waiting");
 
-      const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`).then((response) => response.json());
+      const poll = pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`).then((response) =>
+        response.json(),
+      );
       assert.equal(await presence.next(), "listening");
       await fetch(`${base}/api/${key}/prompts`, {
         method: "POST",
@@ -5643,7 +5862,7 @@ test("SSE agent-presence stays working when resuming after immediate feedback", 
       headers: { "content-type": "application/json", origin: base },
       body: JSON.stringify({ prompts: [{ prompt: "hello", tag: "message" }] }),
     });
-    await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`);
+    await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}`);
 
     await fetch(`${base}/api/sessions`, {
       method: "POST",
@@ -6102,12 +6321,12 @@ test("retrying an acknowledged prompt does not wake an unrelated poll", async ()
 
     assert.equal((await post(accepted)).status, 200);
     assert.equal(
-      (await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((res) => res.json()))
+      (await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((res) => res.json()))
         .status,
       "feedback",
     );
 
-    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=1000`).then((res) =>
+    const poll = pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=1000`).then((res) =>
       res.json(),
     );
     await new Promise((resolve) => setTimeout(resolve, 50));

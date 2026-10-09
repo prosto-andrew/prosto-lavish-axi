@@ -1300,6 +1300,71 @@ test("poll feedback and the next step are emitted before the bulky DOM snapshot"
   }
 });
 
+test("poll sends the CLI client header on GET and on takeover POST", async () => {
+  const stateDir = await mkdtemp(`${os.tmpdir()}/lavish-axi-poll-header-test-`);
+  const artifact = `${stateDir}/artifact.html`;
+  await writeFile(artifact, "<html><body>hello</body></html>", "utf8");
+  const polls = [];
+  const server = createServer((req, res) => {
+    if (new URL(req.url || "/", "http://localhost").pathname === "/health") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, app: "lavish-axi", version: VERSION }));
+      return;
+    }
+    if (req.url?.startsWith("/api/poll?")) {
+      polls.push({ method: req.method, client: req.headers["x-lavish-client"] });
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ status: "waiting" }));
+      });
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const runPoll = (extraArgs) =>
+      new Promise((resolve) => {
+        const child = spawn(
+          process.execPath,
+          [
+            fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)),
+            "poll",
+            artifact,
+            ...extraArgs,
+            "--timeout-ms",
+            "1000",
+          ],
+          {
+            cwd: fileURLToPath(new URL("..", import.meta.url)),
+            env: { ...process.env, LAVISH_AXI_STATE_DIR: stateDir, LAVISH_AXI_PORT: String(address.port) },
+          },
+        );
+        let stderr = "";
+        child.stderr?.on("data", (chunk) => {
+          stderr += chunk.toString();
+        });
+        child.on("close", (status) => resolve({ status, stderr }));
+      });
+
+    const plain = await runPoll([]);
+    assert.equal(plain.status, 0, plain.stderr);
+    const takeover = await runPoll(["--takeover"]);
+    assert.equal(takeover.status, 0, takeover.stderr);
+    assert.deepEqual(polls, [
+      { method: "GET", client: "cli" },
+      { method: "POST", client: "cli" },
+    ]);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(stateDir, { force: true, recursive: true });
+  }
+});
+
 test("feedback next step is Codex-aware when requested", () => {
   const output = createPollOutput({
     file: "/tmp/report.html",

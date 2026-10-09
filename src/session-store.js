@@ -338,15 +338,29 @@ export class SessionStore {
       }
       const chromeLoadToken = crypto.randomBytes(24).toString("base64url");
       this.chromeLoadContexts.set(key, chromeLoadToken);
-      const activeLoad = this.#activeArtifactLoad(session);
-      return {
-        session,
-        chrome_load_token: chromeLoadToken,
-        artifact_revision: activeLoad?.artifactRevision ?? normalizeRevision(session.artifact_revision),
-        artifact_load_token: activeLoad?.artifactLoadToken || "",
-        artifact_load_sequence: activeLoad?.requestSequence || 0,
-      };
+      return { ...this.#reviewerLoad(session), chrome_load_token: chromeLoadToken };
     });
+  }
+
+  // LAVISH-HARDENED: what the review page renders from. It issues no handoff, because the page is a
+  // GET a foreign page can trigger with an <img> or a hidden <iframe>; the chrome takes its handoff
+  // from the same-origin POST instead.
+  async describeReviewerLoad(key) {
+    return this.runExclusive(async () => {
+      const state = await this.readState();
+      const session = state.sessions[key];
+      return session ? this.#reviewerLoad(session) : null;
+    });
+  }
+
+  #reviewerLoad(session) {
+    const activeLoad = this.#activeArtifactLoad(session);
+    return {
+      session,
+      artifact_revision: activeLoad?.artifactRevision ?? normalizeRevision(session.artifact_revision),
+      artifact_load_token: activeLoad?.artifactLoadToken || "",
+      artifact_load_sequence: activeLoad?.requestSequence || 0,
+    };
   }
 
   /** @returns {Promise<any>} */
