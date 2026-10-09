@@ -354,6 +354,42 @@ test("reopening a session preserves the live reviewer handoff and artifact load"
   }
 });
 
+// The review page is a GET any foreign page can trigger with an <img> or a hidden <iframe>, so
+// describing the load for it must never mint a handoff that displaces the reviewer.
+test("describing the reviewer load issues no handoff", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
+  try {
+    const stateFile = path.join(dir, "state.json");
+    const artifact = path.join(dir, "artifact.html");
+    await writeFile(artifact, "<h1>Hello</h1>");
+
+    const store = new SessionStore(stateFile);
+    const session = await store.upsertSession(artifact, "http://localhost:4387/session/test");
+    const handoff = await store.issueReviewerHandoff(session.key);
+    const load = await store.beginArtifactLoad(session.key, {
+      requestId: "first-load",
+      requestSequence: 1,
+      handoffToken: handoff.chrome_load_token,
+    });
+
+    const described = await store.describeReviewerLoad(session.key);
+    assert.equal(described.artifact_load_token, load.artifact_load_token);
+    assert.equal(described.artifact_revision, load.artifact_revision);
+    assert.equal(described.artifact_load_sequence, 1);
+    assert.equal("chrome_load_token" in described, false);
+
+    const next = await store.beginArtifactLoad(session.key, {
+      requestId: "second-load",
+      requestSequence: 2,
+      handoffToken: handoff.chrome_load_token,
+    });
+    assert.equal(next.stale, undefined);
+    assert.equal(await store.describeReviewerLoad("missing"), null);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("a replacement server preserves the live reviewer handoff and artifact load", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-store-"));
   try {
@@ -378,9 +414,9 @@ test("a replacement server preserves the live reviewer handoff and artifact load
     assert.equal(verified.artifact_load_token, load.artifact_load_token);
 
     // A chrome rendering against a replacement server is handed the surviving load rather than a
-    // blank one, so it has something to keep on screen. (Its own store: issuing a handoff is what
-    // supersedes the reviewer below, and a render is not what this test is about.)
-    const rendered = await new SessionStore(stateFile).issueReviewerHandoff(session.key);
+    // blank one, so it has something to keep on screen. Rendering issues no handoff, so it cannot
+    // supersede the reviewer below.
+    const rendered = await restarted.describeReviewerLoad(session.key);
     assert.equal(rendered.artifact_load_token, load.artifact_load_token);
     assert.equal(rendered.artifact_load_sequence, 1);
 

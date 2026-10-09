@@ -56,6 +56,15 @@ async function withSession(run, { env, allowedHosts } = {}) {
   }
 }
 
+// Polls carry the header the CLI sends; the server refuses a poll without it.
+/**
+ * @param {string} url
+ * @param {RequestInit & { headers?: Record<string, string> }} [init]
+ */
+function pollFetch(url, init = {}) {
+  return fetch(url, { ...init, headers: { ...init.headers, "x-lavish-client": "cli" } });
+}
+
 function uploadImage(base, key, body, { origin = base, contentType = "image/png" } = {}) {
   return fetch(`${base}/api/${key}/attachments`, {
     method: "POST",
@@ -147,7 +156,7 @@ test("DELETE keeps a content-addressed file still referenced by a queued prompt 
     // Delivering the feedback does NOT release the reference: the agent has just
     // been handed this path and is only now reading it, so the file stays protected
     // for the delivery read grace rather than becoming collectable mid-read.
-    await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+    await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
     const del2 = await fetch(`${base}/api/${key}/attachments/${attachment.id}`, {
       method: "DELETE",
       headers: { origin: base },
@@ -326,7 +335,7 @@ test("a queued prompt carries the server-vetted attachment path, not the client'
       }),
     });
     assert.equal(queued.status, 200);
-    const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+    const poll = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
     const feedback = await poll.json();
     const attachments = feedback.prompts[0].attachments;
     assert.equal(attachments.length, 1);
@@ -365,7 +374,7 @@ test("prompts POST rejects the batch atomically (400) when an attachment can't b
       [{ id: unknown, reason: "not-found" }],
     );
     // Persist nothing: the poll sees no feedback, so the valid image is not half-delivered.
-    const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+    const poll = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
     const feedback = await poll.json();
     assert.notEqual(feedback.status, "feedback");
   });

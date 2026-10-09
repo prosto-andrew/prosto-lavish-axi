@@ -27,7 +27,7 @@
 > overview in [`hardening/SETUP.md`](hardening/SETUP.md)
 >
 > **Verify any checkout:** `npx --yes pnpm@11.1.1 install --frozen-lockfile && node verify-hardening.mjs`
-> -> _All 27 checks passed._ The install uses the committed `pnpm-lock.yaml`, so every machine
+> -> _All 28 checks passed._ The install uses the committed `pnpm-lock.yaml`, so every machine
 > gets the exact dependency tree CI tested. The launchers run the same checks before every
 > start and refuse to run a build that fails any of them, including one not rebuilt after a `git pull`.
 >
@@ -300,7 +300,7 @@ pnpm link
 - **Server port** - Set `LAVISH_AXI_PORT` to choose the server port; it defaults to `4387`.
 - **Network binding** - This hardened build listens on loopback (`127.0.0.1`) only. `LAVISH_AXI_HOST` is ignored, Tailscale is never probed, and `lavish-safe server --also-listen <host>` is refused, so no setting can expose the server - an unauthenticated server that can read and serve local files - on a LAN, a VPN, or a tailnet. If loopback cannot be bound, startup fails rather than claiming a reachable server.
 - **One server per port** - Every agent on this machine shares one server: before starting one, the CLI looks for a running server on loopback only, never on other local addresses. Another server of the same installation (the same state directory) on that port is reused, and replaced on an upgrade. A server belonging to another state directory that reports its installation identity is never used, replaced, or stopped: the CLI fails with an error naming its state directory, so pick another `LAVISH_AXI_PORT`.
-- **Allowed hosts** - To defend against DNS rebinding, the server rejects (`403`) any request whose `Host` header is missing or not one it answers to: loopback names plus the concrete Tailscale IPv4 address and MagicDNS name when the Tailscale listener is successfully bound. If you configure a reverse proxy or another intentional hostname, list it in `LAVISH_AXI_ALLOWED_HOSTS` (whitespace-separated). Behind a reverse proxy, the forwarded `X-Forwarded-Host` is validated against the same list, so add the public hostname there and have the proxy send it together with `X-Forwarded-Proto`. Set `LAVISH_AXI_ALLOWED_HOSTS` to `*` to disable the check entirely, only when the server sits behind your own authentication or proxy. Mutating routes also reject a present foreign `Origin` or `Referer` (`403`); header-less CLI control requests remain allowed where supported.
+- **Allowed hosts** - To defend against DNS rebinding, the server rejects (`403`) any request whose `Host` header is missing or not one it answers to: loopback names plus the concrete Tailscale IPv4 address and MagicDNS name when the Tailscale listener is successfully bound. If you configure a reverse proxy or another intentional hostname, list it in `LAVISH_AXI_ALLOWED_HOSTS` (whitespace-separated). Behind a reverse proxy, the forwarded `X-Forwarded-Host` is validated against the same list, so add the public hostname there and have the proxy send it together with `X-Forwarded-Proto`. Set `LAVISH_AXI_ALLOWED_HOSTS` to `*` to disable the check entirely, only when the server sits behind your own authentication or proxy. Mutating routes also reject a present foreign `Origin` or `Referer` (`403`); header-less CLI POSTs remain allowed, and `/api/poll` requires the `X-Lavish-Client: cli` header that only the CLI sends.
 - **Browser opening** - Set `LAVISH_AXI_NO_OPEN=1`, equivalent to `--no-open`, to create or resume a session without launching a browser window.
 
 ## CLI Reference

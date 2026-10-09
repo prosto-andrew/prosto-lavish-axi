@@ -321,7 +321,9 @@ const HEALTH_NO_ANSWER_COPY =
 let artifactLoadToken = "";
 let artifactLoadRevision = Number(sessionData.initialArtifactRevision) || 0;
 let artifactLoadRequestSequence = Number(sessionData.initialArtifactLoadSequence) || 0;
-let chromeLoadToken = String(sessionData.chromeLoadToken || "");
+// LAVISH-HARDENED: the page carries no handoff (it is a GET any foreign page can trigger), so the
+// first artifact load takes one through the same-origin POST.
+let chromeLoadToken = "";
 artifactLoadToken = String(sessionData.initialArtifactLoadToken || "");
 let artifactSpokeToken = "";
 let artifactMessageSequence = 0;
@@ -1441,6 +1443,8 @@ function renderRetiredDraft(text, stored = true) {
   scrollElementIntoView(el);
 }
 
+// Takes this chrome's reviewer handoff: at boot, when the page carried none, and again when a
+// begin-load reports `no-handoff` because a restarted server lost it.
 async function refreshChromeLoadHandoff(requestSequence) {
   const response = await fetch("/api/" + key + "/chrome-loads/begin", {
     method: "POST",
@@ -3438,6 +3442,16 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
   let handoffRefreshAttempted = false;
   while (true) {
     if (requestSequence !== artifactLoadRequestSequence || ended) return false;
+    // A chrome with no handoff yet takes one first. It counts as this attempt's one handshake.
+    if (!chromeLoadToken && !handoffRefreshAttempted) {
+      handoffRefreshAttempted = true;
+      try {
+        const refreshed = await refreshChromeLoadHandoff(requestSequence);
+        if (!refreshed) return false;
+      } catch {
+        return recoverLater();
+      }
+    }
     try {
       const response = await fetch("/api/" + key + "/artifact-loads/begin", {
         method: "POST",

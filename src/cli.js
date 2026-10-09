@@ -29,7 +29,7 @@ import {
 import {} from "./plugin.js";
 import { findPlaybook, listPlaybooks, playbookIds, PLAYBOOK_ROUTER_HELP } from "./playbooks.js";
 import { analyzeSelfPaint, SELF_PAINT_WARNING } from "./self-paint.js";
-import { resolveDesignAssetPath, serve } from "./server.js";
+import { LAVISH_CLIENT_CLI, LAVISH_CLIENT_HEADER, resolveDesignAssetPath, serve } from "./server.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
 import { generateSharePassword } from "./share-password.js";
 import { initDefaultTelemetry } from "./telemetry.js";
@@ -417,14 +417,15 @@ async function pollCommand(args) {
         narrateTicks: shouldNarratePollWaitTicks({ isTTY: process.stderr.isTTY }),
       });
   try {
+    // The server refuses a poll without this header, which a browser page cannot send.
     const request =
       agentReply || takeover
         ? {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: { "content-type": "application/json", [LAVISH_CLIENT_HEADER]: LAVISH_CLIENT_CLI },
             body: JSON.stringify(agentReply ? { agent_reply: agentReply } : {}),
           }
-        : {};
+        : { headers: { [LAVISH_CLIENT_HEADER]: LAVISH_CLIENT_CLI } };
     const response = await fetchJson(`${baseUrl}/api/poll?${query}`, {
       ...request,
       // Poll ownership is claimed before the response is available. Retrying a transport failure
