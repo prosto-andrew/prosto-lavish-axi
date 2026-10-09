@@ -426,6 +426,7 @@ export async function serve({
   // the moment the first listener binds, while later addresses are still retrying. Declaring them
   // after the bind loop made that window a TDZ ReferenceError that crashed restarted servers.
   let idleTimer = null;
+  let inFlightRequests = 0;
   let attachmentSweepTimer = null;
   let bindRecoveryTimer = null;
   const app = express();
@@ -757,6 +758,20 @@ export async function serve({
     });
   }
 
+  // A request in flight is activity: the idle countdown pauses for it and starts over when it
+  // ends. The idle shutdown used to cut off an open whose state write outlasted the budget, and an
+  // open answered just before the deadline left a server that stopped before its page connected.
+  // Counted after the Host allowlist, so a rebound foreign host cannot keep the server alive.
+  app.use((req, res, next) => {
+    inFlightRequests += 1;
+    refreshIdleTimer();
+    res.once("close", () => {
+      inFlightRequests -= 1;
+      refreshIdleTimer();
+    });
+    next();
+  });
+
   // CSRF defense-in-depth on top of the Host allowlist. A foreign page that
   // can reach 127.0.0.1 passes the Host check, but the browser attaches the
   // real Origin, so mutating requests with a present, non-matching Origin or
@@ -881,7 +896,7 @@ export async function serve({
       }
       logEvent?.(`session opened key=${key} file=${file}`);
       await syncOutstandingRepairs(key);
-      await watchSession(session, watchers, events, logEvent, reloadDebounceMs);
+      await watchSessionUntilShutdown(session);
       // A state file this server had to set aside reset every session, so the agent opening the next
       // one is told once, to pass on to the user.
       const stateWarning = store.takeStateWarning();
@@ -1439,7 +1454,7 @@ export async function serve({
         return;
       }
       const session = chromeLoad.session;
-      await watchSession(session, watchers, events, logEvent, reloadDebounceMs);
+      await watchSessionUntilShutdown(session);
       const artifactHtml = await readFile(session.file, "utf8").catch(() => "");
       const { faviconTag, title } = extractArtifactHead(artifactHtml);
       // Nothing legitimately frames the review chrome - it is the top-level
@@ -2233,18 +2248,19 @@ export async function serve({
     }
   }
 
-  // Idle self-shutdown: the timer only runs while nothing is connected. Any live event chrome or
-  // active long-poll cancels it; losing the last connection (re)arms it.
+  // Idle self-shutdown: the timer only runs while nothing is connected and no request is in
+  // flight. Any live event chrome, active long-poll, or request cancels it; losing the last of
+  // them (re)arms it with the full budget.
   function refreshIdleTimer() {
     if (idleTimer) {
       clearTimeout(idleTimer);
       idleTimer = null;
     }
     if (shuttingDown || idleTimeoutMs == null) return;
-    if (liveEventClients.size > 0 || activePolls.size > 0) return;
+    if (liveEventClients.size > 0 || activePolls.size > 0 || inFlightRequests > 0) return;
     idleTimer = setTimeout(() => {
       idleTimer = null;
-      if (!shuttingDown && liveEventClients.size === 0 && activePolls.size === 0) {
+      if (!shuttingDown && liveEventClients.size === 0 && activePolls.size === 0 && inFlightRequests === 0) {
         shutdown("", "", `idle-timeout after ${idleTimeoutMs}ms with no connections`);
       }
     }, idleTimeoutMs);
@@ -2284,6 +2300,12 @@ export async function serve({
 
   function reloadDebounceMs(key) {
     return outstandingRepairBatches.has(key) ? BATCH_RELOAD_DEBOUNCE_MS : RELOAD_DEBOUNCE_MS;
+  }
+
+  // Every route that watches an artifact goes through here, so none starts a watcher once
+  // shutdown() has closed them.
+  function watchSessionUntilShutdown(session) {
+    return watchSession(session, watchers, events, logEvent, reloadDebounceMs, () => shuttingDown);
   }
 
   // Reference-aware attachment cleanup: reap files that are both past their TTL
@@ -2651,13 +2673,23 @@ export async function resolveArtifactAsset(root, assetPath) {
 
 /**
  * @param {(key: string) => number} reloadDebounceMs
+ * @param {() => boolean} isShuttingDown
  */
-async function watchSession(session, watchers, events, logEvent, reloadDebounceMs = () => RELOAD_DEBOUNCE_MS) {
+async function watchSession(
+  session,
+  watchers,
+  events,
+  logEvent,
+  reloadDebounceMs = () => RELOAD_DEBOUNCE_MS,
+  isShuttingDown,
+) {
   if (watchers.has(session.key)) {
     return;
   }
   const target = await resolveWatchTarget(session);
-  if (watchers.has(session.key)) {
+  // A handler can still be running when shutdown() closes every watcher. One started after that
+  // is never closed, and its handle keeps the process alive with nothing left to serve.
+  if (watchers.has(session.key) || isShuttingDown()) {
     return;
   }
   logEvent?.(`watch session=${session.key} scope=${target.scope} path=${target.path}`);

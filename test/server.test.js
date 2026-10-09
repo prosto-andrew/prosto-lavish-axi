@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import crypto from "node:crypto";
 import { on, once } from "node:events";
 import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
@@ -4145,16 +4146,20 @@ test("resolveIdleTimeoutMs defaults, parses, and only explicit opt-outs disable"
   assert.equal(resolveIdleTimeoutMs({ LAVISH_AXI_IDLE_TIMEOUT_MS: "later" }), 30 * 60_000);
 });
 
-async function expectDoneWithin(server, ms) {
+async function settleWithin(promise, ms, message) {
   let timer;
   const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`server did not shut down within ${ms}ms`)), ms);
+    timer = setTimeout(() => reject(new Error(message)), ms);
   });
   try {
-    await Promise.race([server.done, timeout]);
+    return await Promise.race([promise, timeout]);
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function expectDoneWithin(server, ms) {
+  await settleWithin(server.done, ms, `server did not shut down within ${ms}ms`);
 }
 
 test("server shuts itself down after the idle timeout with no connections", async () => {
@@ -4233,6 +4238,133 @@ test("an open event WebSocket keeps the server alive past the idle timeout", asy
   } finally {
     socket?.close();
     await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// A request is activity too. On a busy Windows runner an open whose state write outlasted the
+// idle budget was cut off mid-flight by the idle shutdown.
+test("the idle timer never shuts the server down while a request is in flight", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const originalUpsertSession = SessionStore.prototype.upsertSession;
+  /** @type {() => void} */
+  let releaseUpsert = () => {};
+  const upsertReleased = new Promise((resolve) => {
+    releaseUpsert = () => resolve();
+  });
+  let upsertStarted;
+  const upsertPending = new Promise((resolve) => {
+    upsertStarted = resolve;
+  });
+  SessionStore.prototype.upsertSession = async function (...args) {
+    upsertStarted();
+    await upsertReleased;
+    return originalUpsertSession.apply(this, args);
+  };
+  const server = await serve({
+    port: 0,
+    stateFile: path.join(dir, "state.json"),
+    version: "9.9.9-test",
+    idleTimeoutMs: 500,
+  });
+  let stopped = false;
+  server.done.then(() => {
+    stopped = true;
+  });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const opening = fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    opening.catch(() => {});
+    await upsertPending;
+    // Twice the idle budget, counted from the moment the server holds the request.
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    assert.equal(stopped, false, "the idle timer shut the server down under an in-flight request");
+
+    releaseUpsert();
+    assert.equal((await opening).status, 200);
+    // The finished request re-arms the countdown, so a server nothing uses still stops.
+    await expectDoneWithin(server, 2000);
+  } finally {
+    SessionStore.prototype.upsertSession = originalUpsertSession;
+    releaseUpsert();
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// Runs in its own process: an open is held until the server has shut down, then let finish.
+const OPEN_FINISHING_AFTER_SHUTDOWN = `
+const [serverModule, storeModule, stateFile, artifact] = process.argv.slice(1);
+const { serve } = await import(serverModule);
+const { SessionStore } = await import(storeModule);
+let upsertStarted;
+const upsertPending = new Promise((resolve) => { upsertStarted = resolve; });
+let releaseUpsert;
+const upsertReleased = new Promise((resolve) => { releaseUpsert = resolve; });
+const upsertSession = SessionStore.prototype.upsertSession;
+SessionStore.prototype.upsertSession = async function (...args) {
+  upsertStarted();
+  await upsertReleased;
+  return upsertSession.apply(this, args);
+};
+const takeStateWarning = SessionStore.prototype.takeStateWarning;
+SessionStore.prototype.takeStateWarning = function (...args) {
+  process.stdout.write("open handler finished\\n");
+  return takeStateWarning.apply(this, args);
+};
+const server = await serve({ port: 0, stateFile, version: "9.9.9-test", idleTimeoutMs: null, log: () => {} });
+fetch("http://127.0.0.1:" + server.port + "/api/sessions", {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ file: artifact }),
+}).catch(() => {});
+await upsertPending;
+await server.close();
+releaseUpsert();
+`;
+
+// The detached server exits only once its event loop drains (`serverCommand` awaits `done` and
+// returns), so a file watcher an unfinished handler starts after shutdown kept that process running
+// for good, with no listener left to stop it through.
+test("a request finishing after shutdown starts no watcher that keeps the process alive", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  const child = spawn(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      OPEN_FINISHING_AFTER_SHUTDOWN,
+      new URL("../src/server.js", import.meta.url).href,
+      new URL("../src/session-store.js", import.meta.url).href,
+      path.join(dir, "state.json"),
+      artifact,
+    ],
+    { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, LAVISH_AXI_STATE_DIR: dir } },
+  );
+  let output = "";
+  child.stdout.on("data", (chunk) => {
+    output += chunk;
+  });
+  child.stderr.on("data", (chunk) => {
+    output += chunk;
+  });
+  const exited = once(child, "exit");
+  // Only a process that never exits waits this long.
+  const deadline = setTimeout(() => child.kill(), 20_000);
+  try {
+    const [code] = await exited;
+    assert.match(output, /open handler finished/);
+    assert.equal(code, 0, `the process kept running after shutdown:\n${output}`);
+  } finally {
+    clearTimeout(deadline);
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -5256,6 +5388,9 @@ test("a disconnect during immediate feedback take requeues the batch without wor
   await writeFile(artifact, "<!doctype html><html><body></body></html>");
   const server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
   const originalTakeFeedback = SessionStore.prototype.takeFeedback;
+  const originalQueuePrompts = SessionStore.prototype.queuePrompts;
+  /** @type {() => void} */
+  let releaseRestore = () => {};
   try {
     const base = `http://127.0.0.1:${server.port}`;
     const open = await fetch(`${base}/api/sessions`, {
@@ -5305,6 +5440,23 @@ test("a disconnect during immediate feedback take requeues the batch without wor
       }
       return originalTakeFeedback.call(this, sessionKey);
     };
+    // Putting the batch back is a state write too, and on a busy Windows runner it outlasted a
+    // fixed pause. Holding it makes every run cross the window that run hit.
+    const restoreReleased = new Promise((resolve) => {
+      releaseRestore = () => resolve();
+    });
+    let restoreStarted;
+    const restorePending = new Promise((resolve) => {
+      restoreStarted = resolve;
+    });
+    SessionStore.prototype.queuePrompts = async function (...args) {
+      const [sessionKey, , options] = args;
+      if (options?.restore && sessionKey === key) {
+        restoreStarted();
+        await restoreReleased;
+      }
+      return originalQueuePrompts.apply(this, args);
+    };
 
     const socket = await new Promise((resolve, reject) => {
       const client = netConnect(server.port, "127.0.0.1", () => {
@@ -5319,11 +5471,17 @@ test("a disconnect during immediate feedback take requeues the batch without wor
     socket.on("error", () => {});
     socket.destroy();
     releaseTake();
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Bounded so a poll that drops the batch fails here rather than hanging the run.
+    await settleWithin(restorePending, 5000, "the closed poll never put its batch back");
 
     const presence = await startPresenceStream(base, key);
     try {
-      assert.equal(await presence.next(), "waiting");
+      // The closed poll may still count as listening until its batch is back, but presence has to
+      // settle on waiting without ever reading working: nothing reached an agent.
+      const states = [await presence.next()];
+      releaseRestore();
+      while (states.at(-1) === "listening") states.push(await presence.next());
+      assert.equal(states.at(-1), "waiting", `presence went ${states.join(" -> ")}`);
     } finally {
       await presence.close();
     }
@@ -5336,6 +5494,8 @@ test("a disconnect during immediate feedback take requeues the batch without wor
     assert.deepEqual(JSON.parse(await readFile(stateFile, "utf8")).sessions[key].chat, beforeState.chat);
   } finally {
     SessionStore.prototype.takeFeedback = originalTakeFeedback;
+    SessionStore.prototype.queuePrompts = originalQueuePrompts;
+    releaseRestore();
     await server.close();
     await rm(dir, { recursive: true, force: true });
   }
