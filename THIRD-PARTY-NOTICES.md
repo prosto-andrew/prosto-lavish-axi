@@ -48,7 +48,7 @@ SOFTWARE.
 | Liberation Sans | SIL Open Font License 1.1                    |
 | Lilita One      | SIL Open Font License 1.1                    |
 
-The Xiaolai family (CJK glyphs) is intentionally not vendored; Excalidraw falls back to its CDN or the system font for those glyphs.
+The Xiaolai family (CJK glyphs) is intentionally not vendored; Excalidraw falls back to the system font for those glyphs. Its CDN fallback is stripped from the whiteboard build, and the whiteboard frame's policy would block it anyway.
 
 ## Bundled into `dist/design/` (pre-existing)
 
