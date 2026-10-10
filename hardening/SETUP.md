@@ -139,7 +139,9 @@ frame or image does not move the review away from the tab that has it. A page ca
 review link in a new tab, which takes the review over just as opening the link yourself does; the
 old tab says so and offers **Take over here**.
 
-One consequence to know about: because Mermaid now loads from the local server, an
-**exported** artifact containing a Mermaid whiteboard needs the Lavish server running
-to render its diagrams. Exported artifacts using only Tailwind/DaisyUI are fully
+One consequence to know about: Mermaid now loads from the local server by a root path
+(`/design/mermaid/...`), so Mermaid diagrams render only inside a Lavish review. An
+**exported** or directly opened copy shows each diagram's Mermaid source as text, whether
+or not the server is running, and `export` lists that import under
+`unresolved_local_assets`. Exported artifacts using only Tailwind/DaisyUI are fully
 self-contained — those files are inlined by `export`.

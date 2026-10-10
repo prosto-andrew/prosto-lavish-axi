@@ -132,6 +132,16 @@ test("createSkillMarkdown forbids setup rather than documenting it", () => {
   assert.match(md, /removed/i);
 });
 
+test("createSkillMarkdown says where styling and Mermaid render and where autosaves live", () => {
+  // LAVISH-HARDENED: the snippets load from this machine's server by root paths. The stub
+  // promised that an exported Mermaid artifact draws while the server runs, which a file never
+  // does, and put whiteboard autosaves in browser storage, while they are files in the state dir.
+  const md = createSkillMarkdown();
+  assert.match(md, /render only inside a Lavish review/);
+  assert.match(md, /Opened directly from disk, an artifact that uses them is unstyled/);
+  assert.match(md, /whiteboard autosaves and attached images in `~\/\.lavish-axi\/`/);
+});
+
 test("createSkillMarkdown never hands the agent a package runner", () => {
   // The whole point of the stub: an installed copy must not teach an agent to fetch the
   // upstream package. Every invocation it shows goes through the local launcher. The

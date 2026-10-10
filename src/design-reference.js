@@ -169,7 +169,7 @@ export const DESIGN_PRIORITY_RULE =
   "Decide the design direction in this strict priority order, and only move to the next step when the current one truly yields nothing: (1) if the user asked for a specific look or named design system, use that; (2) otherwise you must first inspect the project the artifact is about - the subject or product whose content or UI it represents, which may differ from your current working directory - and match that project's design system: Tailwind or theme config, shared CSS variables or design tokens, component library, brand assets, or existing styled pages. If the artifact previews, proposes, or mocks a specific app's UI, render it in that app's own design system so it faithfully shows the product, even when you are running in a different repo; (3) only when both steps come up empty, use the Lavish-recommended Tailwind CSS browser runtime v4 + DaisyUI v5, served locally by this machine's own Lavish server (no CDN), and prefer that local snippet over hand-writing styles unless explicitly instructed otherwise by the user.";
 
 export const DESIGN_SYSTEM_HINT =
-  "Lavish does not auto-inject any design system - artifacts stay portable so they render identically when opened directly without lavish-safe running. Before writing any HTML: " +
+  "Lavish does not auto-inject any design system. Its local design snippet loads from this machine's Lavish server, so an artifact that uses it is styled in a Lavish review and in a `lavish-safe export` copy, but not when the file is opened directly from disk. Before writing any HTML: " +
   DESIGN_PRIORITY_RULE +
   " Run `lavish-safe design` for a content-to-playbook router, a copy-pasteable local design snippet, the whiteboard (Mermaid) opt-in snippet, and the DaisyUI component reference. When you deliver the artifact, state which of the three design sources you used and why.";
 
@@ -219,15 +219,14 @@ export function createDesignOutput() {
     },
     design: {
       summary:
-        "Use this Lavish local design fallback only if (1) the user gave no design direction and (2) you already inspected the project the artifact is about and found no design system or style conventions to match. If you have not checked the subject project yet, check first. Lavish does not auto-inject any design system; artifacts stay portable HTML. Paint an explicit page background and readable text. " +
+        "Use this Lavish local design fallback only if (1) the user gave no design direction and (2) you already inspected the project the artifact is about and found no design system or style conventions to match. If you have not checked the subject project yet, check first. Lavish does not auto-inject any design system. Paint an explicit page background and readable text. " +
         DESIGN_PRIORITY_RULE +
-        " Paste the local design snippet below into your `<head>`. It loads from this machine's Lavish server, so the artifact makes no outbound request; `export` inlines these files into the standalone copy.",
+        " Paste the local design snippet below into your `<head>`. It loads from this machine's Lavish server, so the artifact makes no outbound request; `export` inlines these files into the standalone copy, while the source file opened directly from disk is unstyled.",
       cdn_snippet: DESIGN_CDN_SNIPPET,
       cdn_urls: DESIGN_CDN_URLS,
       versions: { tailwind: TAILWIND_BROWSER_VERSION, daisyui: DAISYUI_VERSION },
-      latest_docs: "https://daisyui.com/components/",
       docs_note:
-        "Use this command for common syntax. Read the latest DaisyUI docs for full details when using advanced or unfamiliar components.",
+        "The component reference below covers the classes artifacts need; no external documentation is required.",
       layout_safety_snippet: LAYOUT_SAFETY_CSS_SNIPPET,
       layout_safety_note:
         "Optional copy-paste CSS for artifacts with dense nested grid/flex layouts, badges, wide monospace or pixel fonts, or local media. Paste it into the artifact yourself when useful. Lavish never auto-injects it, so direct-open portability stays intact.",
@@ -236,7 +235,7 @@ export function createDesignOutput() {
     },
     whiteboard_tooling: {
       use_when:
-        "Opt-in only: author a diagram as Mermaid in a `.mermaid` container solely when the user asks for an editable whiteboard - Lavish turns it into an Excalidraw whiteboard whose edits come back as feedback. Every other figure is hand-authored inline SVG per the diagram playbook.",
+        "Opt-in only: author a diagram as Mermaid in a `.mermaid` container solely when the user asks for an editable whiteboard - Lavish turns it into an Excalidraw whiteboard whose edits come back as feedback. The Mermaid module loads from this machine's Lavish server, so the diagram renders only inside a Lavish review; an exported or directly opened copy shows its source text. Every other figure is hand-authored inline SVG per the diagram playbook.",
       mermaid_cdn_snippet: MERMAID_CDN_SNIPPET,
       cdn_urls: { mermaid: MERMAID_CDN_URL },
       versions: { mermaid: MERMAID_VERSION },

@@ -434,6 +434,45 @@ check("CLI guidance names the launcher, never the upstream binary", () => {
   return "help, next_step and hints all point at lavish-safe";
 });
 
+check("user docs never send the reader to the upstream package", () => {
+  // README's Quick Start told the reader to install the upstream skill, which runs the
+  // unhardened package through a package runner, and its other sections installed that
+  // package globally. These files come from upstream, so a merge can bring such text back.
+  // A line that names the upstream package after a runner must be a warning against it.
+  const upstream = "lavish" + "-axi";
+  const fetches = new RegExp(
+    `(?:\\b(?:npx|pnpm dlx|bunx|yarn dlx|npm (?:install|i) (?:-g|--global))\\b[^\\n]*\\b${upstream}\\b)` +
+      `|skills add kunchenguid/${upstream}|git clone [^\\n]*kunchenguid/${upstream}`,
+  );
+  const startsWithRunner = /^\s*(?:[-*>]\s*)?`?(?:npx|pnpm dlx|bunx|yarn dlx|npm (?:install|i) (?:-g|--global))\b/;
+  // The same subcommand shapes the CLI guidance check refuses: the upstream binary run with
+  // a command, a file argument or a flag. docs/invariants.md keeps upstream's binary name
+  // for its internals and says so, so only the reader-facing files are held to this.
+  const runs = new RegExp(
+    `${upstream}(?= (?:design|poll|reply|playbook|end|export|stop|share|setup|server|update|<|--))`,
+  );
+  const docs = readdirSync(path.join(root, "docs"))
+    .filter((name) => name.endsWith(".md"))
+    .map((name) => `docs/${name}`);
+  const hits = [];
+  for (const file of ["README.md", "AGENTS.md", ...docs]) {
+    read(file)
+      .split("\n")
+      .forEach((line, index) => {
+        const fetchesUpstream = fetches.test(line);
+        if (fetchesUpstream && (startsWithRunner.test(line) || !/\bnever\b/i.test(line))) {
+          hits.push(`${file}:${index + 1} fetches the upstream package`);
+        } else if (!file.startsWith("docs/") && runs.test(line)) {
+          hits.push(`${file}:${index + 1} runs the upstream binary`);
+        }
+      });
+  }
+  if (hits.length) {
+    throw new Error(`${hits.length} line(s) send the reader to the upstream package: ${hits.slice(0, 3).join("; ")}`);
+  }
+  return "README, AGENTS.md and docs/ name only the launcher";
+});
+
 check("server binds and dials loopback only after the upstream merge", () => {
   // Upstream 0.1.78 added `server --also-listen <host>`, host inheritance across server
   // replacements, and CLI discovery that dialed every local interface address. The flag is

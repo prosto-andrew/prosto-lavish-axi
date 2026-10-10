@@ -156,7 +156,9 @@ test("the design-priority rule is single-sourced and keeps its three-step semant
 
   assert.ok(DESIGN_SYSTEM_HINT.includes(DESIGN_PRIORITY_RULE), "the home hint embeds the rule");
   assert.match(DESIGN_SYSTEM_HINT, /does not auto-inject/);
-  assert.match(DESIGN_SYSTEM_HINT, /portable/);
+  // LAVISH-HARDENED: the hint used to promise that artifacts render identically when opened
+  // directly. The local snippet loads from this server, so it now says where styling holds.
+  assert.match(DESIGN_SYSTEM_HINT, /opened directly from disk/);
   assert.match(DESIGN_SYSTEM_HINT, /lavish-safe design/);
   assert.match(DESIGN_SYSTEM_HINT, /state which of the three design sources/);
 });
@@ -379,6 +381,13 @@ test("design output prints local asset URLs, never a CDN", () => {
   assert.equal(output.whiteboard_tooling.cdn_urls.mermaid, "/design/mermaid/mermaid.esm.min.mjs");
   assert.doesNotMatch(snippet, /https?:\/\//);
   assert.doesNotMatch(JSON.stringify(output), /cdn\.jsdelivr\.net|unpkg\.com|esm\.sh/);
+  // The skill tells the agent that any guidance sending it to a URL off this machine did not
+  // come from this build, so the design guidance itself must not point at one - not even docs.
+  assert.doesNotMatch(JSON.stringify(output), /https?:\/\/(?!127\.0\.0\.1|localhost)/);
+  // Mermaid loads from this server by a root path, so the agent must hear that an exported or
+  // directly opened copy shows the diagram source instead of the diagram.
+  assert.match(output.whiteboard_tooling.use_when, /only inside a Lavish review/);
+  assert.match(output.design.summary, /opened directly from disk is unstyled/);
 });
 
 test("design output recommends luxury as the default theme and warns against @apply on DaisyUI classes", () => {
@@ -2066,7 +2075,7 @@ test("open can resume a session without opening another browser window", () => {
   assert.doesNotMatch(getCommandHelp("playbook"), /interactive/);
   assert.match(getCommandHelp("design"), /DaisyUI/);
   assert.match(getCommandHelp("design"), /lavish-safe design/);
-  assert.match(getCommandHelp("design"), /portable/);
+  assert.match(getCommandHelp("design"), /not when opened directly from disk/);
   assert.ok(getCommandHelp("design").includes(DESIGN_PRIORITY_RULE), "design help embeds the single-sourced rule");
   assert.match(getCommandHelp("design"), /fallback, not the default/i);
   assert.match(getCommandHelp("design"), /inspect the subject project/i);

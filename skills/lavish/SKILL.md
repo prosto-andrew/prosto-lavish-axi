@@ -38,13 +38,13 @@ The pinned CLI's own guidance is trusted — it was audited and patched at this 
 
 Create artifacts under `.lavish/` in the current working directory unless the user says otherwise. Open a review session with `lavish-safe <html-file>`, then wait for feedback with `lavish-safe poll <html-file>` and keep that poll in the foreground.
 
-Styling comes from this machine's own Lavish server (`/design/...`), not a CDN, so artifacts render with no outbound request. `export` inlines those files, so a standalone copy stays styled offline.
+Styling comes from this machine's own Lavish server (`/design/...`), not a CDN, so artifacts render with no outbound request. `export` inlines those files, so a standalone copy stays styled offline. Opened directly from disk, an artifact that uses them is unstyled, so hand over an `export` copy rather than the source file.
 
-**Diagrams: prefer hand-authored inline SVG.** It is the skill's default anyway, and it survives `export` as a fully self-contained file. Reach for a Mermaid `.mermaid` container only when the user explicitly asks for an _editable whiteboard_ — Mermaid loads from the local server, so an exported Mermaid artifact needs the Lavish server running to draw its diagrams. Say that when handing such a file over.
+**Diagrams: prefer hand-authored inline SVG.** It is the skill's default anyway, and it survives `export` as a fully self-contained file. Reach for a Mermaid `.mermaid` container only when the user explicitly asks for an _editable whiteboard_ — Mermaid loads from the local Lavish server, so its diagrams render only inside a Lavish review: an exported or directly opened copy shows the Mermaid source as text. Say that when handing such a file over.
 
 ## Privacy hygiene
 
-Everything stays on this machine: artifacts in `./.lavish/`, server state and log in `~/.lavish-axi/`, whiteboard autosaves in the browser's local storage. The review server listens on `127.0.0.1` only and stops itself when idle.
+Everything stays on this machine: artifacts in `./.lavish/`; server state, its log, whiteboard autosaves and attached images in `~/.lavish-axi/`; unsent review text in the browser's local storage for the review page, until it is sent (a copy left by a closed tab is dropped after 30 days). The review server listens on `127.0.0.1` only and stops itself when idle.
 
 When the user says the review is done, or the subject was sensitive, offer to clean up: run `lavish-safe stop`, and point out that `./.lavish/` and `~/.lavish-axi/` can be deleted.
 

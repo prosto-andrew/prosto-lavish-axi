@@ -2,8 +2,8 @@
 
 This file is loaded every session. It keeps only rules that apply to almost every change. Detail lives in the doc that owns it.
 
-- [README.md](README.md) owns the user-facing contract: features, CLI flags, environment variables, keyboard shortcuts, export and share, and session-end etiquette.
-- CLI output owns what agents are told while using Lavish: `lavish-axi --help`, `lavish-axi design`, and `lavish-axi playbook <id>` (`src/cli.js`, `src/design-reference.js`, `src/playbooks.js`). The generated skill (`src/skill.js` to `skills/lavish/SKILL.md`) stays a stub that points at those commands. Do not copy CLI-owned instructions into the skill.
+- [README.md](README.md) owns the user-facing contract: features, CLI flags, environment variables, keyboard shortcuts, export, and session-end etiquette.
+- CLI output owns what agents are told while using Lavish: `lavish-safe --help`, `lavish-safe design`, and `lavish-safe playbook <id>` (`src/cli.js`, `src/design-reference.js`, `src/playbooks.js`). The generated skill (`src/skill.js` to `skills/lavish/SKILL.md`) stays a stub that points at those commands. Do not copy CLI-owned instructions into the skill.
 - [VISION.md](VISION.md) owns the acceptance policy. Change it only through the author.
 - [docs/invariants.md](docs/invariants.md) owns architecture internals, security rationale, and easy-to-reintroduce failure modes. Read the section for the area you are editing before changing it.
 - Update the owner when a contract changes. Edit this file only when an every-session rule changes.
@@ -37,9 +37,9 @@ The review chrome under its own policy, same setup: `LAVISH_AXI_BROWSER_E2E=1 no
 - Dependency security overrides are declared twice: `overrides` in `pnpm-workspace.yaml` (pnpm, CI, `pnpm audit`, Dependabot; pnpm 11 ignores the `pnpm` field in `package.json`) and the top-level `overrides` in `package.json` (npm, the hardening docs' fallback; their primary install is `pnpm install --frozen-lockfile`). Change both. `test/dependency-overrides.test.js` fails on drift and on any override of `mermaid` or another exact whiteboard pin.
 - Tests that start the server set `LAVISH_AXI_STATE_DIR` and use an ephemeral port.
 - Tests that need a directory link create a junction on Windows, which needs no privilege. Only a case that needs a file symlink may skip, and only where the OS refuses one (Windows without Developer Mode or elevation).
-- `run()` returns on `--version` / `-v` / `-V` before `ensureStateDir` and telemetry (`test/cli-version.test.js`). New startup work goes after that short-circuit.
+- `run()` returns on `--version` / `-v` / `-V` before `ensureStateDir` and the rest of startup (`test/cli-version.test.js`). New startup work goes after that short-circuit.
 - `canonicalFile` runs `realpath`. Two paths to the same file are one session.
-- `normalizeArgv` must let AXI `RESERVED_COMMANDS` (including `update`) pass through. A bare `lavish-axi update` must not become `open update`. This build shadows `update` with a refusal so the SDK self-updater never reaches the npm registry; `verify-hardening.mjs` checks it.
+- `normalizeArgv` must let AXI `RESERVED_COMMANDS` (including `update`) pass through. A bare `lavish-safe update` must not become `open update`. This build shadows `update` with a refusal so the SDK self-updater never reaches the npm registry; `verify-hardening.mjs` checks it.
 
 ## Safety and correctness
 
@@ -58,13 +58,13 @@ Each line is the rule. [docs/invariants.md](docs/invariants.md) has the failure 
 - Host allowlist, then Origin/Referer guard. Header-less CLI POSTs must keep working; `/api/poll` also requires `X-Lavish-Client: cli`. `*` skips hostname membership and still rejects a malformed forwarded authority. [Process model](docs/invariants.md#process-model).
 - Live-event WebSockets keep the ping/pong heartbeat so half-open sockets terminate. Idle self-shutdown keys off tracked live connections and requests in flight, not session status. Nothing starts a watcher after `shutdown()`. [Process model](docs/invariants.md#process-model).
 - The detached server entrypoint logs `uncaughtException` and exits 1 explicitly. Each listener keeps its `error` handler after `listening`. [Process model](docs/invariants.md#process-model).
-- `/api/:key/prompts`, `/share`, whiteboard writes, and attachment upload/delete are same-origin guarded. The key alone must never queue a prompt or publish. [Request flow](docs/invariants.md#request-flow).
+- `/api/:key/prompts`, whiteboard writes, and attachment upload/delete are same-origin guarded. The key alone must never queue a prompt. [Request flow](docs/invariants.md#request-flow).
 - Poll control `GET` and `POST` requests require `X-Lavish-Client: cli` before any claim or take, and still reject a present foreign Origin or Referer. [Request flow](docs/invariants.md#request-flow).
 - No `GET` route changes state. `/session/:key` never issues the reviewer handoff; only the same-origin `POST /api/:key/chrome-loads/begin` does. A new `GET` route is classified in `test/get-routes.test.js`. [Request flow](docs/invariants.md#request-flow).
 - The chrome page (`/session/:key`) answers `X-Frame-Options: DENY` and `CHROME_CONTENT_SECURITY_POLICY` (`frame-ancestors 'none'`, `default-src 'none'`, every source `'self'`, inline code only by hash), and adopts only `data:` artifact icons. Chrome markup gets no new inline script, handler, or style. Keep that header off `/artifact/*` and `/whiteboard-frame`, which are framed. [Request flow](docs/invariants.md#request-flow).
 - The artifact route injects only the one SDK `<script>` tag. Served artifact bytes otherwise match the file on disk. [Request flow](docs/invariants.md#request-flow).
 - Artifact asset serving (`/artifact/:key/<path>`) resolves with `realpath` and never serves a symlink target outside the artifact directory. [Request flow](docs/invariants.md#request-flow).
-- Layout detection never emits `feedback`. Only a user prompt and the narrow fatal artifact-failure path may wake `lavish-axi poll`. [Request flow](docs/invariants.md#request-flow).
+- Layout detection never emits `feedback`. Only a user prompt and the narrow fatal artifact-failure path may wake `lavish-safe poll`. [Request flow](docs/invariants.md#request-flow).
 - Layout-diagnostics reports are fire-and-forget and never hold the artifact behind a round-trip. Ordinary layout findings are never relabelled fatal. [Request flow](docs/invariants.md#request-flow).
 - The chrome mints each queued prompt's `prompt_id` (never from the iframe) and removes a queued note only when the transcript acknowledges that id. Evicted ids stay on `chat_ack_ids`. [Request flow](docs/invariants.md#request-flow).
 - Only agent chat entries render as HTML. User entries are always escaped. [Request flow](docs/invariants.md#request-flow).
@@ -109,19 +109,16 @@ Each line is the rule. [docs/invariants.md](docs/invariants.md) has the failure 
 - A dedup upload's mtime refresh is never swallowed into success. Env limits floor before the bounds check and require `>= 1`, and only `0`/`off` disables one. [Image attachments](docs/invariants.md#image-attachments).
 - Attachment files and dirs are owner-only (`0600`/`0700`), set explicitly at creation and re-asserted by `ensureAttachmentDir`. [Image attachments](docs/invariants.md#image-attachments).
 - Export makes no outbound requests. Local reads stay inside the artifact directory after `realpath`. A symlink must not escape. [Export (local-asset inlining)](docs/invariants.md#export-local-asset-inlining).
-- Export and share inline confined same-directory resources and redact every other absolute `file://` URL to `about:blank` so local paths never leak. [Export (local-asset inlining)](docs/invariants.md#export-local-asset-inlining).
-- Exports strip the injected SDK and escape inlined `</script>`/`</style>`. Hosted shares never include the SDK. [Export (local-asset inlining)](docs/invariants.md#export-local-asset-inlining).
-- `--unpublish` is not a deletion. There is no clear-password path. Empty share flag values are refused. A lost create response must not offer a recovery the host cannot perform. Suggested commands never contain a password placeholder. [Hosted sharing (ht-ml.app)](docs/invariants.md#hosted-sharing-ht-mlapp).
-- Share passwords are minted only in `src/share-password.js`. Lavish persists neither the password nor `update_key`. [Hosted sharing (ht-ml.app)](docs/invariants.md#hosted-sharing-ht-mlapp).
-- The share route echoes a password only when it minted one. [Hosted sharing (ht-ml.app)](docs/invariants.md#hosted-sharing-ht-mlapp).
-- Share writes classify failure through `hostRejectedShareWrite`, where only a 4xx proves nothing landed. An echoed `site_id` is untrusted, and recovery commands come only from `republishCommand`/`unpublishCommand`. [Hosted sharing (ht-ml.app)](docs/invariants.md#hosted-sharing-ht-mlapp).
-- Every surface reporting a page as newly gated carries the CDN public-to-private caveat. [Hosted sharing (ht-ml.app)](docs/invariants.md#hosted-sharing-ht-mlapp).
+- Export inlines confined same-directory resources and redacts every other absolute `file://` URL to `about:blank` so local paths never leak. [Export (local-asset inlining)](docs/invariants.md#export-local-asset-inlining).
+- Exports strip the injected SDK and escape inlined `</script>`/`</style>`. [Export (local-asset inlining)](docs/invariants.md#export-local-asset-inlining).
+- Nothing publishes. `share`, its route, the chrome's publish action and the host client are removed, and no change may add a path that sends an artifact off this machine; `verify-hardening.mjs` checks it. [Hosted sharing (ht-ml.app)](docs/invariants.md#hosted-sharing-ht-mlapp).
 - `DESIGN_PRIORITY_RULE` is stated once in `src/design-reference.js`. Do not restate it. Do not hardcode one Mermaid theme. [AXI integration](docs/invariants.md#axi-integration).
 - Poll wake-path guidance comes only from `POLL_WAKE_PATH_RULES`. [AXI integration](docs/invariants.md#axi-integration).
 - The internal brand skill keeps `metadata.internal: true`. The generated skill omits a `version` frontmatter field. [AXI integration](docs/invariants.md#axi-integration).
-- `plugin.json` and `skills/lavish` stay in `package.json` `files`. Skill frontmatter stays inside `validateSkillMarkdown`'s allowed shape. An unlinkable plugin client is reported, never thrown. Do not ship `mcp.json`. [Agent Plugins packaging](docs/invariants.md#agent-plugins-packaging).
-- Plugin setup runs only on explicit invocation, drops only locations `isStalePluginLocation` attributes to this plugin, and never rewrites unparseable VS Code settings. [Agent Plugins packaging](docs/invariants.md#agent-plugins-packaging).
-- Telemetry is best-effort and must never affect CLI behavior. Users opt out with `LAVISH_AXI_TELEMETRY=0`. [Telemetry](docs/invariants.md#telemetry).
+- `plugin.json` and `skills/lavish` stay in `package.json` `files`. Skill frontmatter stays inside `validateSkillMarkdown`'s allowed shape. Do not ship `mcp.json`. [Agent Plugins packaging](docs/invariants.md#agent-plugins-packaging).
+- `setup` is removed: nothing installs hooks or registers this build with an agent client, and nothing writes agent configuration outside the project; `verify-hardening.mjs` checks it. [Agent Plugins packaging](docs/invariants.md#agent-plugins-packaging).
+- Telemetry is permanently disabled: `resolveTelemetryConfig` always returns disabled. Never add a config path that enables it; `verify-hardening.mjs` checks it. [Telemetry](docs/invariants.md#telemetry).
+- README, AGENTS.md, and `docs/` never tell the reader to fetch the upstream package or run the upstream binary; a warning against it says "never". `verify-hardening.mjs` checks it. [AXI integration](docs/invariants.md#axi-integration).
 - Every artifact-to-chrome message goes through `postArtifactMessage`. The artifact iframe stays sandboxed without `allow-same-origin`. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
 - Every `/artifact/*` and `/whiteboard-frame` response carries the CSP `sandbox` policy matching its iframe, so an escaped popup stays opaque-origin. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
 - SDK helpers that the browser must call are exported functions in a module `serializeModuleHelpers` inlines. No module-level constants. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
