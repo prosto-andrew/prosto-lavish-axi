@@ -110,6 +110,7 @@ function bootSdk({
   revisionMarkElements = [],
   mermaidSvgs = [],
   mermaidContainers = [],
+  baseURI = "http://127.0.0.1/artifact/abc/index.html",
 } = {}) {
   const posted = [];
   const documentListeners = [];
@@ -142,12 +143,14 @@ function bootSdk({
       observe() {}
       disconnect() {}
     },
-    URL: {
+    // The real constructor (the SDK resolves asset URLs against document.baseURI), with the object
+    // URL statics stubbed.
+    URL: Object.assign(class extends URL {}, {
       createObjectURL() {
         return "blob:lavish-test";
       },
       revokeObjectURL() {},
-    },
+    }),
     getComputedStyle: () => ({}),
     URLSearchParams,
     setTimeout: scheduleTimer,
@@ -159,7 +162,7 @@ function bootSdk({
       head,
       body,
       activeElement: body,
-      baseURI: "http://127.0.0.1/artifact/abc/index.html",
+      baseURI,
       addEventListener: (type, handler) => documentListeners.push({ type, handler }),
       removeEventListener() {},
       createElement,
@@ -226,6 +229,18 @@ function bootSdk({
         }
       }
       assert.fail("the SDK timer queue did not settle");
+    },
+    // A subresource of the artifact failing to load, as the window's capture-phase `error` sees it.
+    assetError({ tag = "img", src }) {
+      const element = Object.create(sandbox.Element.prototype);
+      Object.assign(element, {
+        tagName: tag.toUpperCase(),
+        getAttribute: (name) => (name === "src" ? src : null),
+        closest: () => null,
+      });
+      for (const listener of windowListeners.filter((entry) => entry.type === "error")) {
+        listener.handler({ target: element });
+      }
     },
     // The chrome is the only legitimate sender, so its messages arrive with `source: parent`.
     sendChromeMessage(data) {
@@ -297,6 +312,19 @@ test("the served SDK echoes the snapshot request id", () => {
 // readArtifactRevisions calls parseRevisionRegistry and collectRevisionMarks, which in turn call
 // the rest of the revision helper chain; a helper left out of the bundle only ReferenceErrors on
 // this real read, which a source-grep over the bundle text cannot catch.
+// The document lives under its load token (/artifact/<key>/<token>/), so a failed relative asset
+// resolves under it too. The report reaches the agent and state.json, which have no use for a
+// one-load secret: they get the path as it was before the token moved into it.
+test("an asset failure report names the file without the load token", () => {
+  const sdk = bootSdk({ baseURI: "http://127.0.0.1/artifact/abc/load-token/index.html" });
+  sdk.assetError({ src: "assets/x.png" });
+  sdk.assetError({ src: "/design/x.png" });
+  const details = sdk.posted
+    .filter((message) => message.type === "lavish:artifactAssetFailure")
+    .map((message) => message.detail);
+  assert.deepEqual(details, ["<img> could not load /artifact/abc/assets/x.png", "<img> could not load /design/x.png"]);
+});
+
 test("the served SDK bundle reports the artifact's own revision registry and marks", () => {
   const revisionsScript = createElement("script");
   revisionsScript.textContent = JSON.stringify([

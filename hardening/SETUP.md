@@ -137,7 +137,9 @@ Other pages open in the same browser cannot drive it from the background either:
 feedback needs a header only the `lavish-safe` CLI sends, and loading the review page in a hidden
 frame or image does not move the review away from the tab that has it. A page can still open the
 review link in a new tab, which takes the review over just as opening the link yourself does; the
-old tab says so and offers **Take over here**.
+old tab says so and offers **Take over here**. Nor can they read the files beside an artifact,
+which are served only under a secret path the review receives for each load, or the images you
+attached, which only the review page itself may load.
 
 One consequence to know about: Mermaid now loads from the local server by a root path
 (`/design/mermaid/...`), so Mermaid diagrams render only inside a Lavish review. An

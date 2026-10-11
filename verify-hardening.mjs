@@ -553,6 +553,47 @@ check("state-changing GETs need proof", () => {
   return "poll needs the CLI header; the review page mints no handoff";
 });
 
+check("other pages cannot read an artifact's files or attachments", () => {
+  // A foreign page's <script>, <img> or <link> reaches these routes with no header that tells it
+  // apart from the artifact's own request: Chrome sends the sandboxed frame's loads with neither
+  // Origin nor Referer, exactly like an HTML file opened from disk. So a file beside an artifact is
+  // served only under the current load's secret path, and a token-less file route must not return.
+  const server = read("src/server.js");
+  const entryRoute = "/^\\/artifact\\/([^/]+)\\/index\\.html$/";
+  const documentRoute = "/^\\/artifact\\/([^/]+)\\/([^/]+)\\/index\\.html$/";
+  const filesRoute = "/^\\/artifact\\/([^/]+)\\/([^/]+)\\/(.+)$/";
+  const tokenlessRoute = "/^\\/artifact\\/([^/]+)\\/(.+)$/";
+  const expected = [entryRoute, documentRoute, filesRoute];
+  const mounted = [...server.matchAll(/app\.get\(\s*(\/\^\\\/artifact[^\s,]*\/),/g)].map((match) => match[1]);
+  if (JSON.stringify(mounted) !== JSON.stringify(expected)) {
+    throw new Error(`src/server.js mounts ${mounted.join(" ")} under /artifact, expected ${expected.join(" ")}`);
+  }
+  const filesAt = server.indexOf(`app.get(${filesRoute},`);
+  const nextRoute = server.indexOf("\n  app.", filesAt);
+  const filesHandler = server.slice(filesAt, nextRoute < 0 ? undefined : nextRoute);
+  mustContain(filesHandler, "store.verifyArtifactAssetLoad(", "the /artifact file handler");
+  // Attachments are rendered only by the same-origin review page, so there the browser's own
+  // Sec-Fetch-Site does tell them apart; Vary keeps the cached image from answering a page on
+  // another loopback port, which shares the review's cache partition (ports are not part of a site).
+  const attachmentsAt = server.indexOf('app.get("/api/:key/attachments/:id"');
+  if (attachmentsAt < 0) throw new Error("src/server.js has no GET /api/:key/attachments/:id route");
+  const afterAttachments = server.indexOf("\n  app.", attachmentsAt);
+  const attachmentsHandler = server.slice(attachmentsAt, afterAttachments < 0 ? undefined : afterAttachments);
+  const diskAt = attachmentsHandler.indexOf("statAttachmentForServe(");
+  for (const guard of ['res.vary("Sec-Fetch-Site")', "isOwnPageFetch(req)"]) {
+    const guardAt = attachmentsHandler.indexOf(guard);
+    if (guardAt < 0 || diskAt < 0 || guardAt > diskAt) {
+      throw new Error(`the attachment GET handler does not run ${guard} before it touches the disk`);
+    }
+  }
+  const dist = read("dist/cli.mjs");
+  if (!dist.includes(filesRoute) || dist.includes(tokenlessRoute)) {
+    throw new Error(`dist/cli.mjs does not serve artifact files only under the load token - ${REBUILD}`);
+  }
+  mustContain(dist, 'res.vary("Sec-Fetch-Site")', "dist/cli.mjs");
+  return "files only under the current load token; attachments only for the review page";
+});
+
 check("mermaid is vendored for offline rendering", () => {
   const mod = path.join(root, "dist/design/mermaid/mermaid.esm.min.mjs");
   const chunks = path.join(root, "dist/design/mermaid/chunks/mermaid.esm.min");

@@ -109,6 +109,12 @@ function artifactLoadUrl(base, key, load, { probe = false } = {}) {
   return `${base}/artifact/${key}/index.html?${query}${probe ? "&probe=1" : ""}`;
 }
 
+// A file beside the artifact, under the load's own path segment, the way a relative URL in the
+// loaded document resolves.
+function artifactAssetUrl(base, key, load, rel) {
+  return `${base}/artifact/${key}/${encodeURIComponent(load.artifact_load_token)}/${encodeURI(rel)}`;
+}
+
 function artifactMutation(load, body = {}) {
   return {
     artifact_load_token: load.artifact_load_token,
@@ -1644,9 +1650,11 @@ test("loopback server rejects forged non-loopback Host headers (DNS rebinding)",
     // Sanity: the same routes still work for a loopback Host.
     const load = await beginArtifactLoad(`http://127.0.0.1:${server.port}`, key);
     const artifactUrl = new URL(artifactLoadUrl(`http://127.0.0.1:${server.port}`, key, load));
-    const artifactOk = await rawRequest(server.port, artifactUrl.pathname + artifactUrl.search, {
-      host: `127.0.0.1:${server.port}`,
-    });
+    const loopbackHost = { host: `127.0.0.1:${server.port}` };
+    // The entry hands the document over to the load's own path; both answer a loopback Host.
+    const artifactEntry = await rawRequest(server.port, artifactUrl.pathname + artifactUrl.search, loopbackHost);
+    assert.equal(artifactEntry.status, 302);
+    const artifactOk = await rawRequest(server.port, artifactEntry.headers.location, loopbackHost);
     assert.equal(artifactOk.status, 200);
     assert.match(artifactOk.body, /top secret/);
   } finally {
@@ -2347,6 +2355,121 @@ test("served content security policies name only sources the CSP host-source gra
   }
 });
 
+// One artifact in its own .lavish directory beside the given files, served by a fresh server whose
+// state lives outside that directory.
+async function withArtifactFiles(files, run) {
+  const parent = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const dir = path.join(parent, ".lavish");
+  const artifact = path.join(dir, "artifact.html");
+  await mkdir(dir);
+  await writeFile(artifact, "<!doctype html><html><body><p>artifact</p></body></html>");
+  for (const [rel, content] of Object.entries(files)) {
+    await mkdir(path.dirname(path.join(dir, rel)), { recursive: true });
+    await writeFile(path.join(dir, rel), content);
+  }
+  const server = await serve({ port: 0, stateFile: path.join(parent, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const { key } = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((res) => res.json());
+    await run({ base, key });
+  } finally {
+    await server.close();
+    await rm(parent, { recursive: true, force: true });
+  }
+}
+
+// LAVISH-HARDENED: any page can point a <script>, <img> or <link> at this server, and the artifact's
+// own requests carry no header that tells them apart, so the load token in the path is the only
+// thing that separates the two.
+test("artifact files are served only under the current load token", async () => {
+  const clip = Buffer.from(Array.from({ length: 1000 }, (_, i) => i % 256));
+  await withArtifactFiles(
+    {
+      "assets/style.css": "body { color: rgb(1 2 3); }\n",
+      "assets/фото 1.png": Buffer.from([1, 2, 3]),
+      "assets/clip.mp4": clip,
+      "top.css": "p { color: rgb(4 5 6); }\n",
+    },
+    async ({ base, key }) => {
+      const load = await beginArtifactLoad(base, key);
+      const css = await fetch(artifactAssetUrl(base, key, load, "assets/style.css"));
+      assert.equal(css.status, 200);
+      assert.equal(await css.text(), "body { color: rgb(1 2 3); }\n");
+      assert.match(css.headers.get("content-security-policy") || "", /^sandbox allow-scripts/);
+      const photo = await fetch(artifactAssetUrl(base, key, load, "assets/фото 1.png"));
+      assert.equal(photo.status, 200);
+      assert.deepEqual([...Buffer.from(await photo.arrayBuffer())], [1, 2, 3]);
+      const seek = await fetch(artifactAssetUrl(base, key, load, "assets/clip.mp4"), {
+        headers: { range: "bytes=10-19" },
+      });
+      assert.equal(seek.status, 206);
+      assert.equal(seek.headers.get("content-range"), "bytes 10-19/1000");
+      assert.deepEqual([...Buffer.from(await seek.arrayBuffer())], [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
+
+      const flat = await fetch(`${base}/artifact/${key}/top.css`);
+      assert.equal(flat.status, 404);
+      assert.doesNotMatch(await flat.text(), /rgb\(4 5 6\)/);
+      const tokenless = await fetch(`${base}/artifact/${key}/assets/style.css`);
+      assert.equal(tokenless.status, 409);
+      assert.doesNotMatch(await tokenless.text(), /rgb\(1 2 3\)/);
+      const forged = await fetch(`${base}/artifact/${key}/not-the-token/assets/style.css`);
+      assert.equal(forged.status, 409);
+      assert.match(forged.headers.get("content-security-policy") || "", /^sandbox allow-scripts/);
+      assert.match(await forged.text(), /Artifact load expired/);
+      assert.equal((await fetch(artifactAssetUrl(base, "0000000000000000", load, "assets/style.css"))).status, 404);
+
+      const newer = await beginArtifactLoad(base, key);
+      assert.equal((await fetch(artifactAssetUrl(base, key, load, "assets/style.css"))).status, 409);
+      assert.equal((await fetch(artifactAssetUrl(base, key, newer, "assets/style.css"))).status, 200);
+    },
+  );
+});
+
+test("the artifact entry redirects to the load's own path", async () => {
+  await withArtifactFiles({}, async ({ base, key }) => {
+    const load = await beginArtifactLoad(base, key);
+    const rev = load.artifact_revision;
+    const token = load.artifact_load_token;
+    const entry = (query) => fetch(`${base}/artifact/${key}/index.html?${query}`, { redirect: "manual" });
+
+    const plain = await entry(`artifact_revision=${rev}&artifact_load_token=${token}&probe=1&lavish_reload=1`);
+    assert.equal(plain.status, 302);
+    assert.equal(
+      plain.headers.get("location"),
+      `/artifact/${key}/${token}/index.html?artifact_revision=${rev}&probe=1&lavish_reload=1`,
+    );
+    const messy = await entry(`artifact_load_token=${token}&artifact_revision=${rev}&x=%20y&artifact_load_token=other`);
+    assert.equal(messy.status, 302);
+    assert.equal(messy.headers.get("location"), `/artifact/${key}/${token}/index.html?artifact_revision=${rev}&x=+y`);
+    assert.equal((await entry(`artifact_revision=${rev}&artifact_load_token=`)).status, 409);
+
+    const followed = await fetch(artifactLoadUrl(base, key, load));
+    assert.equal(followed.status, 200);
+    assert.ok(
+      followed.url.endsWith(`/artifact/${key}/${token}/index.html?artifact_revision=${rev}`),
+      `the document was served at ${followed.url}`,
+    );
+    assert.match(await followed.text(), /\/sdk\.js\?key=/);
+
+    await beginArtifactLoad(base, key);
+    assert.equal((await fetch(artifactLoadUrl(base, key, load))).status, 409);
+  });
+});
+
+test("the path document still checks the revision", async () => {
+  await withArtifactFiles({}, async ({ base, key }) => {
+    const load = await beginArtifactLoad(base, key);
+    const doc = (revision) =>
+      fetch(`${base}/artifact/${key}/${load.artifact_load_token}/index.html?artifact_revision=${revision}`);
+    assert.equal((await doc(load.artifact_revision + 1)).status, 409);
+    assert.equal((await doc(load.artifact_revision)).status, 200);
+  });
+});
+
 test("/artifact serves files copied under the artifact directory", async () => {
   const parent = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const dir = path.join(parent, ".lavish");
@@ -2375,9 +2498,9 @@ test("/artifact serves files copied under the artifact directory", async () => {
     const session = await sessionRes.json();
     const load = await beginArtifactLoad(base, session.key);
     const documentResponse = await fetch(artifactLoadUrl(base, session.key, load));
-    const popup = await fetch(`${base}/artifact/${session.key}/assets/popup.html`);
-    const css = await fetch(`${base}/artifact/${session.key}/assets/style.css`);
-    const svg = await fetch(`${base}/artifact/${session.key}/assets/icon.svg`);
+    const popup = await fetch(artifactAssetUrl(base, session.key, load, "assets/popup.html"));
+    const css = await fetch(artifactAssetUrl(base, session.key, load, "assets/style.css"));
+    const svg = await fetch(artifactAssetUrl(base, session.key, load, "assets/icon.svg"));
     // The policy now carries the sandbox directive AND a source list pinned to this
     // server's own loopback origin, so it is asserted by shape: the sandbox prefix,
     // a closed default, and no source that leaves this machine.
@@ -2443,7 +2566,8 @@ test("/artifact refuses to serve a symlink that escapes the artifact directory",
       body: JSON.stringify({ file: artifact }),
     });
     const session = await sessionRes.json();
-    const leak = await fetch(`${base}/artifact/${session.key}/leak.txt`);
+    const load = await beginArtifactLoad(base, session.key);
+    const leak = await fetch(artifactAssetUrl(base, session.key, load, "leak.txt"));
 
     assert.equal(leak.status, 403);
     assert.doesNotMatch(await leak.text(), /outside-secret/);
@@ -2472,7 +2596,8 @@ test("/artifact refuses a path that escapes through an intermediate directory sy
       body: JSON.stringify({ file: artifact }),
     });
     const session = await sessionRes.json();
-    const leak = await fetch(`${base}/artifact/${session.key}/vendor/secret.txt`);
+    const load = await beginArtifactLoad(base, session.key);
+    const leak = await fetch(artifactAssetUrl(base, session.key, load, "vendor/secret.txt"));
 
     assert.equal(leak.status, 403);
     assert.doesNotMatch(await leak.text(), /outside-secret/);
@@ -2501,9 +2626,12 @@ test("/artifact still rejects lexical .. traversal that reaches the server unnor
       body: JSON.stringify({ file: artifact }),
     });
     const session = await sessionRes.json();
+    // A current token, so that what refuses each request is the traversal guard itself.
+    const load = await beginArtifactLoad(`http://127.0.0.1:${server.port}`, session.key);
+    const token = encodeURIComponent(load.artifact_load_token);
 
     for (const suffix of ["../secret.txt", "%2e%2e/secret.txt", "assets/../../secret.txt"]) {
-      const res = await rawRequest(server.port, `/artifact/${session.key}/${suffix}`);
+      const res = await rawRequest(server.port, `/artifact/${session.key}/${token}/${suffix}`);
       assert.equal(res.status, 403, `expected 403 for ${suffix}`);
       assert.doesNotMatch(res.body, /outside-secret/);
     }
@@ -3130,6 +3258,7 @@ test("a live artifact load survives the server restart the reviewer never asked 
   const stateFile = path.join(dir, "state.json");
   const artifact = path.join(dir, "artifact.html");
   await writeFile(artifact, "<!doctype html><html><body></body></html>");
+  await writeFile(path.join(dir, "style.css"), "body { color: rgb(1 2 3); }\n");
   let server = await serve({ port: 0, stateFile, version: "9.9.9-test" });
   try {
     const base = `http://127.0.0.1:${server.port}`;
@@ -3154,12 +3283,15 @@ test("a live artifact load survives the server restart the reviewer never asked 
       `${restartedBase}/sdk.js?key=${key}&artifact_revision=${load.artifact_revision}&artifact_load_token=${encodeURIComponent(load.artifact_load_token)}`,
     );
     assert.equal(sdk.status, 200);
+    // So do the files beside it, which the document reaches under the same token.
+    assert.equal((await fetch(artifactAssetUrl(restartedBase, key, load, "style.css"))).status, 200);
 
     // Only the restart stopped fencing the old token. A newer begun load still does.
     const newer = await beginArtifactLoad(restartedBase, key);
     assert.notEqual(newer.artifact_load_token, load.artifact_load_token);
     assert.equal((await fetch(artifactLoadUrl(restartedBase, key, newer))).status, 200);
     assert.equal((await fetch(artifactLoadUrl(restartedBase, key, load))).status, 409);
+    assert.equal((await fetch(artifactAssetUrl(restartedBase, key, load, "style.css"))).status, 409);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

@@ -737,6 +737,17 @@ export async function serve({
     });
   }
 
+  // What a document or file under a retired (or never issued) artifact load answers. A page the
+  // artifact opened keeps its URL after the review moves on, so this is what that page shows.
+  function sendArtifactLoadExpired(res) {
+    res
+      .status(409)
+      .type("html")
+      .send(
+        "<!doctype html><title>Artifact load expired</title><p>This artifact load is no longer current. Reload Lavish to continue.</p>",
+      );
+  }
+
   if (!allowAnyHostname) {
     app.use((req, res, next) => {
       const requestHost = { host: req.headers.host, forwardedHost: req.headers["x-forwarded-host"] };
@@ -1531,11 +1542,43 @@ export async function serve({
     }
   });
 
+  // LAVISH-HARDENED: any page can point a <script>, <img> or <link> at these routes, and the
+  // artifact's own requests carry no header that tells them apart: Chrome sends the sandboxed
+  // frame's loads with neither Origin nor Referer, exactly like an HTML file opened from disk. So the
+  // document and every file beside it live under the active load's token, /artifact/<key>/<token>/,
+  // which the document's relative URLs inherit. See docs/invariants.md (Request flow, step 4).
+  //
+  // The entry the chrome navigates to still carries the token in its query and redirects to the
+  // path form, so a page still running an older chrome against this server keeps loading.
   app.get(/^\/artifact\/([^/]+)\/index\.html$/, async (req, res, next) => {
     try {
       res.setHeader("content-security-policy", artifactContentSecurityPolicy(publicPort));
       const key = req.params[0];
-      const token = String(req.query.artifact_load_token || "");
+      const query = new URL(req.originalUrl, "http://lavish.local").searchParams;
+      const token = query.get("artifact_load_token") || "";
+      if (token) {
+        query.delete("artifact_load_token");
+        const rest = query.toString();
+        res.redirect(
+          `/artifact/${encodeURIComponent(key)}/${encodeURIComponent(token)}/index.html${rest ? `?${rest}` : ""}`,
+        );
+        return;
+      }
+      if (!(await store.verifyArtifactLoad(key, "", query.get("artifact_revision")))) {
+        sendSessionNotFound(req, res);
+        return;
+      }
+      sendArtifactLoadExpired(res);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get(/^\/artifact\/([^/]+)\/([^/]+)\/index\.html$/, async (req, res, next) => {
+    try {
+      res.setHeader("content-security-policy", artifactContentSecurityPolicy(publicPort));
+      const key = req.params[0];
+      const token = req.params[1];
       const revision = req.query.artifact_revision;
       const beforeRead = await store.verifyArtifactLoad(key, token, revision);
       if (!beforeRead) {
@@ -1543,23 +1586,13 @@ export async function serve({
         return;
       }
       if (!beforeRead.valid) {
-        res
-          .status(409)
-          .type("html")
-          .send(
-            "<!doctype html><title>Artifact load expired</title><p>This artifact load is no longer current. Reload Lavish to continue.</p>",
-          );
+        sendArtifactLoadExpired(res);
         return;
       }
       const html = await readFile(beforeRead.session.file, "utf8");
       const verified = await store.verifyArtifactLoad(key, token, revision);
       if (!verified?.valid) {
-        res
-          .status(409)
-          .type("html")
-          .send(
-            "<!doctype html><title>Artifact load expired</title><p>This artifact load is no longer current. Reload Lavish to continue.</p>",
-          );
+        sendArtifactLoadExpired(res);
         return;
       }
       res.type("html").send(injectLavishSdk(html, key, verified.artifact_revision, verified.artifact_load_token));
@@ -1568,18 +1601,20 @@ export async function serve({
     }
   });
 
-  app.get(/^\/artifact\/([^/]+)\/(.+)$/, async (req, res, next) => {
+  app.get(/^\/artifact\/([^/]+)\/([^/]+)\/(.+)$/, async (req, res, next) => {
     try {
       res.setHeader("content-security-policy", artifactContentSecurityPolicy(publicPort));
-      const key = req.params[0];
-      const assetPath = req.params[1];
-      const session = await store.findByKey(key);
-      if (!session) {
+      const verified = await store.verifyArtifactAssetLoad(req.params[0], req.params[1]);
+      if (!verified) {
         sendSessionNotFound(req, res);
         return;
       }
-      const root = path.dirname(session.file);
-      const file = await resolveArtifactAsset(root, assetPath);
+      if (!verified.valid) {
+        sendArtifactLoadExpired(res);
+        return;
+      }
+      const root = path.dirname(verified.session.file);
+      const file = await resolveArtifactAsset(root, req.params[2]);
       if (!file) {
         res.status(403).send("Forbidden");
         return;
@@ -1858,6 +1893,11 @@ export async function serve({
 
   app.get("/api/:key/attachments/:id", async (req, res, next) => {
     try {
+      res.vary("Sec-Fetch-Site");
+      if (!isOwnPageFetch(req)) {
+        res.status(403).json({ error: "cross-site attachment read rejected" });
+        return;
+      }
       // D6: a render is one stat + one streamed read. `statAttachmentForServe`
       // confirms existence and derives the mime from the validated id extension
       // WITHOUT re-parsing the image to recover dimensions the route never uses.
@@ -2583,6 +2623,19 @@ export function isAllowedRequestHost({ host, forwardedHost }, allowedHostnames) 
 
 function hasPresentOriginOrReferer(req) {
   return Boolean(req.get("origin") || req.get("referer"));
+}
+
+// LAVISH-HARDENED: whether a read comes from this server's own review page. Only that same-origin
+// page renders attachments, so the Sec-Fetch-Site a browser sets on its own (a page cannot forge
+// it) separates it from a page on another site, on another loopback port, or opened from disk.
+// `none` is the user opening the image in a tab of their own. No header at all is a client that
+// is not a browser, and the unguessable content id is what guards those. Callers must also send
+// `Vary: Sec-Fetch-Site`: the browser cache is partitioned by site and a port is not part of a
+// site, so without it another loopback port is answered from the review's cached copy and never
+// reaches this check.
+function isOwnPageFetch(req) {
+  const site = req.get("sec-fetch-site");
+  return site === undefined || site === "same-origin" || site === "none";
 }
 
 // Guard state-changing, outward-facing routes (publishing to a third-party host) against CSRF: a

@@ -4026,6 +4026,81 @@ test("a superseded reload keeps the artifact already on screen and leaves the ga
   // enough once there is something to read behind it.
   assert.equal(chrome.element("handoffBanner").hidden, false);
   assert.notEqual(chrome.element("layoutGateTitle").textContent, "This review is already open in another tab.");
+  // What is behind it is the load the page was rendered with, shown because no newer one began.
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    ["/artifact/abc/index.html?artifact_revision=4&artifact_load_token=live-load"],
+  );
+});
+
+// A second iframe.src assignment that lands just as the previous navigation commits can be lost
+// (Chrome 155), which left a reopened review on the load it retired, its files refused. So a load
+// that begins is the frame's one navigation: the rendered load is not shown first.
+test("a reopened review navigates its frame once, to the load it begins", async () => {
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    sessionData: { ...defaultSessionData, initialArtifactRevision: 4, initialArtifactLoadToken: "rendered-load" },
+  });
+  await flushPromises();
+  await flushPromises();
+
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    ["/artifact/abc/index.html?artifact_revision=1&artifact_load_token=harness-load-1"],
+  );
+});
+
+test("an ended review still shows the load it was rendered with", async () => {
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    sessionData: {
+      ...defaultSessionData,
+      initialEnded: true,
+      initialArtifactRevision: 4,
+      initialArtifactLoadToken: "rendered-load",
+    },
+  });
+  await flushPromises();
+  await flushPromises();
+
+  // An ended review begins no new load, so the one it was rendered with is all there is to show.
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    ["/artifact/abc/index.html?artifact_revision=4&artifact_load_token=rendered-load"],
+  );
+});
+
+test("a reopened review shows its rendered load while a failing begin recovers", async () => {
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    sessionData: { ...defaultSessionData, initialArtifactRevision: 4, initialArtifactLoadToken: "rendered-load" },
+    beginLoadResponses: [
+      { ok: false, status: 503 },
+      { ok: false, status: 503 },
+      { ok: false, status: 503 },
+    ],
+  });
+  await flushPromises();
+  chrome.runTimers(100);
+  await flushPromises();
+  chrome.runTimers(300);
+  await flushPromises();
+  // The in-call retries ran out: show the rendered load rather than an empty frame meanwhile.
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    ["/artifact/abc/index.html?artifact_revision=4&artifact_load_token=rendered-load"],
+  );
+
+  chrome.runTimers(1000);
+  await flushPromises();
+  await flushPromises();
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [
+      "/artifact/abc/index.html?artifact_revision=4&artifact_load_token=rendered-load",
+      "/artifact/abc/index.html?artifact_revision=1&artifact_load_token=harness-load-1",
+    ],
+  );
 });
 
 test("a chrome told to reload after a server restart waits for the replacement to answer", async () => {

@@ -454,6 +454,24 @@ export class SessionStore {
     });
   }
 
+  // LAVISH-HARDENED: a file beside the artifact is served only under the active load's token, which
+  // the document's own relative URLs carry in their path. The revision does not matter here: the
+  // token alone already names one load, and it survives a restart because the load is durable.
+  async verifyArtifactAssetLoad(key, artifactLoadToken) {
+    return this.runExclusive(async () => {
+      const state = await this.readState();
+      const session = state.sessions[key];
+      if (!session) {
+        return null;
+      }
+      const load = this.#activeArtifactLoad(session);
+      const valid = Boolean(
+        load && String(artifactLoadToken || "") && String(artifactLoadToken) === load.artifactLoadToken,
+      );
+      return { session, valid };
+    });
+  }
+
   // Fold one browser diagnostic pass into the passive warning inbox. This deliberately does NOT
   // touch session status or queue feedback: detection alone must never wake an agent.
   /**
