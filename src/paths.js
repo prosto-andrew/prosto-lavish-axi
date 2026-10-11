@@ -116,8 +116,8 @@ export function linkHost(env = process.env) {
 
 // Extra Host header values the server's DNS-rebinding guard accepts beyond the
 // loopback names and the resolved bind/link host, set via LAVISH_AXI_ALLOWED_HOSTS
-// (whitespace-separated). A lone "*" disables the guard entirely - an explicit
-// opt-out for operators fronting the server with their own auth/proxy.
+// (whitespace-separated). LAVISH-HARDENED: a lone "*" is ignored, not an opt-out
+// of the guard (see allowsAllHosts in ./server.js).
 export function extraAllowedHosts(env = process.env) {
   return (env.LAVISH_AXI_ALLOWED_HOSTS || "").split(/\s+/).filter(Boolean);
 }

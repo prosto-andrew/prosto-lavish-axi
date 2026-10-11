@@ -1915,7 +1915,9 @@ test("proxied same-origin prompt submissions use only an allowlisted forwarded o
   }
 });
 
-test("wildcard hosts accept proxied prompts but still reject malformed authorities", async () => {
+// LAVISH-HARDENED: upstream let a lone "*" admit any proxied host. Here it admits none: a host that
+// should reach this server through a proxy is listed by name.
+test("a '*' entry admits no proxied host and still rejects malformed authorities", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
   await writeFile(artifact, "<!doctype html><html><body><h1>hi</h1></body></html>");
@@ -1933,6 +1935,9 @@ test("wildcard hosts accept proxied prompts but still reject malformed authoriti
       body: JSON.stringify({ file: artifact }),
     }).then((res) => res.json());
     const body = JSON.stringify({ prompts: [{ prompt: "wildcard proxied feedback", tag: "message" }] });
+    const waiting = async () =>
+      (await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((res) => res.json()))
+        .status;
 
     const malformed = await fetch(`${base}/api/${key}/prompts`, {
       method: "POST",
@@ -1945,12 +1950,9 @@ test("wildcard hosts accept proxied prompts but still reject malformed authoriti
       body,
     });
     assert.equal(malformed.status, 403);
-    const pollAfterReject = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then(
-      (res) => res.json(),
-    );
-    assert.equal(pollAfterReject.status, "waiting");
+    assert.equal(await waiting(), "waiting");
 
-    const submitted = await fetch(`${base}/api/${key}/prompts`, {
+    const proxied = await fetch(`${base}/api/${key}/prompts`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -1960,15 +1962,8 @@ test("wildcard hosts accept proxied prompts but still reject malformed authoriti
       },
       body,
     });
-    assert.equal(submitted.status, 200);
-    const delivered = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((res) =>
-      res.json(),
-    );
-    assert.equal(delivered.status, "feedback");
-    assert.deepEqual(
-      delivered.prompts.map((prompt) => prompt.prompt),
-      ["wildcard proxied feedback"],
-    );
+    assert.equal(proxied.status, 403);
+    assert.equal(await waiting(), "waiting");
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
@@ -2204,22 +2199,39 @@ test("server validates X-Forwarded-Host so it works behind a reverse proxy", asy
   }
 });
 
-test("a '*' entry in allowedHosts disables the Host guard entirely", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
-  const server = await serve({
-    port: 0,
-    stateFile: path.join(dir, "state.json"),
-    version: "9.9.9-test",
-    host: "127.0.0.1",
-    linkHost: "127.0.0.1",
-    allowedHosts: ["*"],
-  });
-  try {
-    const forged = await rawRequest(server.port, "/health", { host: `evil.example:${server.port}` });
-    assert.equal(forged.status, 200);
-  } finally {
-    await server.close();
-    await rm(dir, { recursive: true, force: true });
+// LAVISH-HARDENED: the server listens on loopback only, so "*" could admit no legitimate client; all
+// it did was reopen DNS rebinding. A rebound page is same-origin to itself, so it could then take the
+// poll with the CLI's header and open the live events with an Origin that matches its own Host.
+test("a '*' in LAVISH_AXI_ALLOWED_HOSTS does not switch off the Host guard", async () => {
+  for (const options of [{ env: { LAVISH_AXI_ALLOWED_HOSTS: "*" } }, { allowedHosts: ["*"] }]) {
+    const label = JSON.stringify(options);
+    const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+    const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test", ...options });
+    try {
+      const rebound = `evil.example:${server.port}`;
+      assert.equal((await rawRequest(server.port, "/health")).status, 200, label);
+      assert.equal((await rawRequest(server.port, "/health", { host: rebound })).status, 403, label);
+      const poll = await rawRequest(server.port, "/api/poll?timeoutMs=0", {
+        host: rebound,
+        headers: CLI_CLIENT_HEADERS,
+      });
+      assert.equal(poll.status, 403, label);
+      const events = await new Promise((resolve, reject) => {
+        const socket = new WebSocket(`ws://127.0.0.1:${server.port}/events/0123456789abcdef`, {
+          headers: { host: rebound, origin: `http://${rebound}` },
+        });
+        socket.once("unexpected-response", (_request, response) => resolve(response.statusCode));
+        socket.once("open", () => {
+          socket.close();
+          reject(new Error(`${label}: a rebound page opened the live events`));
+        });
+        socket.once("error", () => {});
+      });
+      assert.equal(events, 403, label);
+    } finally {
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 });
 
@@ -2310,9 +2322,10 @@ test("buildAllowedHostnames covers loopback, bind/link host, and explicit extras
   assert.equal(extras.has("*"), false);
 });
 
-test("allowsAllHosts detects the '*' opt-out sentinel", () => {
-  assert.equal(allowsAllHosts(["*"]), true);
-  assert.equal(allowsAllHosts([" * "]), true);
+// LAVISH-HARDENED: upstream's "*" opt-out sentinel opts out of nothing here.
+test("allowsAllHosts never opts out of the Host allowlist", () => {
+  assert.equal(allowsAllHosts(["*"]), false);
+  assert.equal(allowsAllHosts([" * "]), false);
   assert.equal(allowsAllHosts(["proxy.example"]), false);
   assert.equal(allowsAllHosts([]), false);
 });

@@ -695,9 +695,9 @@ export async function serve({
   // so an operator who intentionally exposes the server on a specific interface
   // keeps rebinding protection while their chosen hostname works. Additional
   // names (a reverse-proxy hostname, extra interfaces) are an explicit opt-in via
-  // LAVISH_AXI_ALLOWED_HOSTS; a lone "*" there disables the guard for operators
-  // who front the server with their own authentication. When a reverse proxy sits
-  // in front, X-Forwarded-Host is validated too (see isAllowedRequestHost).
+  // LAVISH_AXI_ALLOWED_HOSTS. LAVISH-HARDENED: a lone "*" there no longer disables
+  // the guard (allowsAllHosts). When a reverse proxy sits in front, X-Forwarded-Host
+  // is validated too (see isAllowedRequestHost).
   //
   // This guard is installed as the first middleware so every route - including the
   // attachment upload/fetch/remove endpoints below - is behind the Host allowlist.
@@ -2551,9 +2551,9 @@ function encodeRfc5987Value(value) {
 }
 
 // The set of Host header hostnames this server answers to: loopback names plus
-// every concrete listener and the resolved link host. Wildcard bind values and the
-// explicit "*" opt-out never become hostnames. Lowercased for case-insensitive
-// comparison against the incoming Host.
+// every concrete listener and the resolved link host. Wildcard bind values and a
+// "*" entry (which opts out of nothing; see allowsAllHosts) never become hostnames.
+// Lowercased for case-insensitive comparison against the incoming Host.
 export function buildAllowedHostnames({ host, hosts = [], linkHost: linkHostName, allowedHosts = [] }) {
   return new Set(
     [LOOPBACK_HOST, IPV6_LOOPBACK_HOST, "localhost", host, ...hosts, linkHostName, ...allowedHosts]
@@ -2566,10 +2566,13 @@ export function buildAllowedHostnames({ host, hosts = [], linkHost: linkHostName
   );
 }
 
-// A lone "*" in LAVISH_AXI_ALLOWED_HOSTS is an explicit opt-out of the Host
-// allowlist, for operators who front the server with their own auth/proxy.
-export function allowsAllHosts(allowedHosts = []) {
-  return allowedHosts.some((value) => String(value).trim() === "*");
+// LAVISH-HARDENED: upstream treated a lone "*" in LAVISH_AXI_ALLOWED_HOSTS as an opt-out of the
+// Host allowlist, for operators fronting the server with their own auth. This build listens on
+// loopback only, so "*" admitted no legitimate client and only reopened DNS rebinding: a page on an
+// attacker's hostname is same-origin to itself, so it could send the CLI's poll header and read the
+// live events. Nothing opts out; a proxy's hostname is listed by name. verify-hardening.mjs checks it.
+export function allowsAllHosts(..._ignored) {
+  return false;
 }
 
 function parseHostAuthority(value) {
