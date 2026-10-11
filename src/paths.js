@@ -160,8 +160,10 @@ export function serverLogFile() {
   return path.join(stateDir(), "server.log");
 }
 
+// A state dir Lavish creates is owner-only. An existing one keeps its mode: LAVISH_AXI_STATE_DIR
+// may name a dir the user shares on purpose, and the files kept in it are owner-only one by one.
 export async function ensureStateDir() {
-  await mkdir(stateDir(), { recursive: true });
+  await mkdir(stateDir(), { recursive: true, mode: 0o700 });
 }
 
 export function defaultPort() {

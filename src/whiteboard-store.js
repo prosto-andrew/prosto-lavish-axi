@@ -1,4 +1,4 @@
-import { mkdir, readFile } from "node:fs/promises";
+import { chmod, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { writeFileAtomically } from "./atomic-file.js";
@@ -13,6 +13,12 @@ import { sanitizeWhiteboardScene } from "./whiteboard-core.js";
 
 const KEY_RE = /^[0-9a-f]{16}$/;
 const writeTails = new Map();
+
+// A scene is whatever the reviewer drew, so like attachments these files are owner-only: under
+// the usual 0022 umask they would otherwise land 0644 in 0755 dirs, readable by every other local
+// user. A file gets its mode at creation and the atomic rename keeps it.
+const WHITEBOARD_FILE_MODE = 0o600;
+const WHITEBOARD_DIR_MODE = 0o700;
 
 export function isValidWhiteboardKey(key) {
   return KEY_RE.test(String(key || ""));
@@ -34,6 +40,17 @@ export function whiteboardDir(stateDir, key) {
 
 function workingFile(stateDir, key, index) {
   return path.join(whiteboardDir(stateDir, key), `${Number(index)}.json`);
+}
+
+// `mkdir` applies its mode only to dirs it creates, so the modes are also re-asserted: an install
+// that saved scenes before this hardening already has 0755 dirs on disk.
+async function ensureWhiteboardDir(stateDir, key) {
+  const dir = whiteboardDir(stateDir, key);
+  await mkdir(dir, { recursive: true, mode: WHITEBOARD_DIR_MODE });
+  for (const target of [path.join(stateDir, "whiteboards"), dir]) {
+    // Best effort, as for attachments: a dir owned by another user can't be chmod'ed.
+    await chmod(target, WHITEBOARD_DIR_MODE).catch(() => {});
+  }
 }
 
 function writeQueueKey(stateDir, key, index) {
@@ -78,8 +95,10 @@ export async function saveWhiteboard(
     baseline: baseline ?? null,
   };
   return queueWhiteboardWrite(stateDir, key, index, async () => {
-    await mkdir(whiteboardDir(stateDir, key), { recursive: true });
-    await writeFileAtomically(workingFile(stateDir, key, index), `${JSON.stringify(record)}\n`);
+    await ensureWhiteboardDir(stateDir, key);
+    await writeFileAtomically(workingFile(stateDir, key, index), `${JSON.stringify(record)}\n`, {
+      mode: WHITEBOARD_FILE_MODE,
+    });
     return record;
   });
 }
@@ -120,10 +139,10 @@ export async function writeWhiteboardFeedbackFiles(stateDir, key, index, { scene
   };
   const png = decodePngDataUrl(pngDataUrl);
   return queueWhiteboardWrite(stateDir, key, index, async () => {
-    await mkdir(whiteboardDir(stateDir, key), { recursive: true });
-    await writeFileAtomically(scenePath, `${JSON.stringify(sceneJson, null, 2)}\n`);
+    await ensureWhiteboardDir(stateDir, key);
+    await writeFileAtomically(scenePath, `${JSON.stringify(sceneJson, null, 2)}\n`, { mode: WHITEBOARD_FILE_MODE });
     if (png) {
-      await writeFileAtomically(previewPath, png);
+      await writeFileAtomically(previewPath, png, { mode: WHITEBOARD_FILE_MODE });
       return { scenePath, previewPath };
     }
     return { scenePath, previewPath: "" };

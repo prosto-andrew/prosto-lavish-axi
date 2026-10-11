@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, open, readFile, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -180,6 +180,55 @@ test("on Windows republishing feedback files lands once a reader of the preview 
     assert.equal(JSON.parse(await readFile(scenePath, "utf8")).elements[0].id, "second");
     assert.deepEqual(await readFile(previewPath), secondPng);
   });
+});
+
+// POSIX file modes have no Windows equivalent (chmod there only toggles a read-only flag).
+const posixOnly = { skip: process.platform === "win32" ? "POSIX file modes" : false };
+
+// Both writers create the session's whiteboard dir on their own, so each is checked in a fresh
+// state dir.
+const WHITEBOARD_WRITERS = [
+  {
+    name: "saveWhiteboard",
+    write: (dir) => saveWhiteboard(dir, KEY, 0, { sourceHash: "hash", scene: { elements: [] } }),
+    files: ["0.json"],
+  },
+  {
+    name: "writeWhiteboardFeedbackFiles",
+    write: (dir) => writeWhiteboardFeedbackFiles(dir, KEY, 0, { scene: { elements: [] }, pngDataUrl: PNG_DATA_URL }),
+    files: ["0.excalidraw", "0.png"],
+  },
+];
+
+test("whiteboard files and dirs are created private to the owner", posixOnly, async () => {
+  for (const { name, write, files } of WHITEBOARD_WRITERS) {
+    await withTempDir(async (dir) => {
+      await write(dir);
+      // A scene is whatever the reviewer drew. Under the usual 0022 umask these would otherwise
+      // land 0644/0755 and be readable by every other local user.
+      for (const file of files) {
+        assert.equal((await stat(path.join(whiteboardDir(dir, KEY), file))).mode & 0o777, 0o600, `${name}: ${file}`);
+      }
+      assert.equal((await stat(whiteboardDir(dir, KEY))).mode & 0o777, 0o700, `${name}: session dir`);
+      assert.equal((await stat(path.join(dir, "whiteboards"))).mode & 0o777, 0o700, `${name}: whiteboards root`);
+    });
+  }
+});
+
+test("a whiteboard write tightens the modes of a pre-hardening world-readable dir", posixOnly, async () => {
+  for (const { name, write } of WHITEBOARD_WRITERS) {
+    await withTempDir(async (dir) => {
+      // An install that saved scenes before this hardening already has 0755 dirs on disk, and
+      // creating with a mode alone would leave the scenes in them exposed.
+      await mkdir(whiteboardDir(dir, KEY), { recursive: true });
+      await chmod(path.join(dir, "whiteboards"), 0o755);
+      await chmod(whiteboardDir(dir, KEY), 0o755);
+
+      await write(dir);
+      assert.equal((await stat(whiteboardDir(dir, KEY))).mode & 0o777, 0o700, `${name}: session dir`);
+      assert.equal((await stat(path.join(dir, "whiteboards"))).mode & 0o777, 0o700, `${name}: whiteboards root`);
+    });
+  }
 });
 
 test("decodePngDataUrl only accepts base64 PNG data URLs", () => {

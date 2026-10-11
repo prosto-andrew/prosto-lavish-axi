@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { closeSync, createReadStream, existsSync, openSync, readFileSync } from "node:fs";
+import { closeSync, createReadStream, existsSync, readFileSync } from "node:fs";
 import { access, readFile, writeFile } from "node:fs/promises";
 import { get as httpGet } from "node:http";
 import os from "node:os";
@@ -27,6 +27,7 @@ import {
 } from "./paths.js";
 import { findPlaybook, listPlaybooks, playbookIds, PLAYBOOK_ROUTER_HELP } from "./playbooks.js";
 import { analyzeSelfPaint, SELF_PAINT_WARNING } from "./self-paint.js";
+import { openServerLog } from "./server-log.js";
 import { LAVISH_CLIENT_CLI, LAVISH_CLIENT_HEADER, resolveDesignAssetPath, serve } from "./server.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
 import { guardSetTypeOfService } from "./socket-tos-guard.js";
@@ -1232,12 +1233,7 @@ function unidentifiedListenerError(baseUrl) {
 async function startServer(port) {
   await ensureStateDir();
   const entry = resolveServerEntry();
-  let logFd = null;
-  try {
-    logFd = openSync(serverLogFile(), "a");
-  } catch {
-    // If logging cannot be initialized, keep the server behavior unchanged.
-  }
+  const logFd = openServerLog(serverLogFile());
   try {
     const args = [entry, "server", "--port", String(port)];
     const child = spawn(process.execPath, args, createServerSpawnOptions(logFd));
@@ -1615,7 +1611,7 @@ function createCommandHelp({ agent = "generic" } = {}) {
     playbook: `Usage: lavish-safe playbook [playbook_id]\n\nList focused artifact guidance playbooks, or show one playbook by ID. Known IDs: diagram, table, comparison, plan, code, input, explanation, slides.\n\n${PLAYBOOK_ROUTER_HELP}\n\nExamples:\n  lavish-safe playbook\n  lavish-safe playbook diagram\n  lavish-safe playbook input\n`,
     design: `Usage: lavish-safe design\n\nShow a copy-pasteable LOCAL snippet for Tailwind CSS browser runtime v4 + DaisyUI v5 + themes (served by this machine's own Lavish server - this build makes no CDN requests), the whiteboard (Mermaid) opt-in snippet, a content-to-playbook router, an optional layout safety CSS snippet, plus technical reference for DaisyUI components. ${PLAYBOOK_ROUTER_HELP} The snippet loads from the local server, so an artifact that uses it is styled in a review and in an export, not when opened directly from disk. This local snippet is the design fallback, not the default: inspect the subject project before falling back, and paste the layout safety CSS only when useful for dense nested grid/flex layouts, badges, wide fonts, or local media. ${DESIGN_PRIORITY_RULE}\n`,
     setup: `The 'setup' command is REMOVED from this hardened build. It installed persistent SessionStart hooks and agent-plugin registrations outside the project directory. Nothing needs to be installed: run this build through the \`lavish-safe\` launcher, which verifies it before every start.\n`,
-    server: `Usage: lavish-safe server [--port 4387] [--verbose]\n\nRun the local Lavish Editor server. Pass --verbose (or set LAVISH_AXI_DEBUG=1) to log session and watcher events to stderr. Detached server output is appended to ~/.lavish-axi/server.log, or LAVISH_AXI_STATE_DIR/server.log when set, for startup and crash diagnostics.\n\nThis hardened build binds to 127.0.0.1 and nothing else. LAVISH_AXI_HOST is ignored and Tailscale detection is removed, so the server is never reachable from another machine or from a tailnet. See README's Allowed hosts section for Host allowlisting and LAVISH_AXI_ALLOWED_HOSTS. LAVISH_AXI_NO_OPEN=1 (or --no-open) suppresses the local browser launch.\n`,
+    server: `Usage: lavish-safe server [--port 4387] [--verbose]\n\nRun the local Lavish Editor server. Pass --verbose (or set LAVISH_AXI_DEBUG=1) to log session and watcher events to stderr. Detached server output is appended to ~/.lavish-axi/server.log, or LAVISH_AXI_STATE_DIR/server.log when set, for startup and crash diagnostics; past 1 MiB, the next start moves it to server.log.1.\n\nThis hardened build binds to 127.0.0.1 and nothing else. LAVISH_AXI_HOST is ignored and Tailscale detection is removed, so the server is never reachable from another machine or from a tailnet. See README's Allowed hosts section for Host allowlisting and LAVISH_AXI_ALLOWED_HOSTS. LAVISH_AXI_NO_OPEN=1 (or --no-open) suppresses the local browser launch.\n`,
   };
 }
 

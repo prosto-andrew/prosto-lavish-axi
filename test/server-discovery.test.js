@@ -518,3 +518,24 @@ test("`server --also-listen` is refused and binds nothing", async () => {
     }
   });
 });
+
+test("starting the detached server moves an oversized server.log aside", { timeout: 20_000 }, async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-discovery-"));
+  const port = await freePort();
+  const log = path.join(dir, "server.log");
+  // One byte over the 1 MiB cap.
+  const previousRuns = `${"x".repeat(1024 * 1024)}\n`;
+  try {
+    await writeFile(log, previousRuns);
+    const artifact = await writeArtifact(dir);
+
+    await withEnv(cliEnv(dir, port, undefined), () => runCli(["open", artifact, "--no-open"]));
+
+    assert.equal(await readFile(`${log}.1`, "utf8"), previousRuns);
+    assert.ok(!(await readFile(log, "utf8")).includes("xxxx"), "the new server appended to the oversized log");
+  } finally {
+    await withEnv(cliEnv(dir, port, undefined), () => stopCommand([])).catch(() => {});
+    // On Windows the stopped server can hold server.log for a moment after its port frees.
+    await rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  }
+});
