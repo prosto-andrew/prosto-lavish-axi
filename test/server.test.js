@@ -2470,6 +2470,33 @@ test("the path document still checks the revision", async () => {
   });
 });
 
+// A popup the artifact opens escapes the iframe's sandbox attribute, so wherever it lands under
+// /artifact - a redirect, an error, a path nothing serves - the response itself must keep it in an
+// opaque origin. Express's own 404 page would replace the policy with its fixed `default-src 'none'`.
+test("every GET under /artifact carries the artifact sandbox policy", async () => {
+  await withArtifactFiles({ "top.css": "p { color: rgb(4 5 6); }\n" }, async ({ base, key }) => {
+    const port = Number(new URL(base).port);
+    const token = encodeURIComponent((await beginArtifactLoad(base, key)).artifact_load_token);
+    const cases = [
+      { label: "a file under the token", path: `/artifact/${key}/${token}/top.css`, status: 200 },
+      { label: "the token-less file form", path: `/artifact/${key}/top.css`, status: 404 },
+      { label: "a HEAD for the token-less file form", method: "HEAD", path: `/artifact/${key}/top.css`, status: 404 },
+      { label: "/artifact itself", path: "/artifact", status: 404 },
+      { label: "the bare key", path: `/artifact/${key}`, status: 302 },
+      { label: "the bare key in another case", path: `/Artifact/${key}`, status: 302 },
+      { label: "a file path in another case", path: `/ARTIFACT/${key}/top.css`, status: 404 },
+      { label: "a malformed escape", path: `/artifact/%E0%A4%A/${token}/top.css`, status: 400 },
+      { label: "an unknown key", path: `/artifact/0000000000000000/${token}/top.css`, status: 404 },
+      { label: "a forged Host", path: `/artifact/${key}/${token}/top.css`, host: `evil.example:${port}`, status: 403 },
+    ];
+    for (const { label, method = "GET", path: pathname, host = undefined, status } of cases) {
+      const response = await rawRequest(port, pathname, { method, host });
+      assert.equal(response.status, status, label);
+      assert.match(String(response.headers["content-security-policy"] || ""), /^sandbox allow-scripts /, label);
+    }
+  });
+});
+
 test("/artifact serves files copied under the artifact directory", async () => {
   const parent = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const dir = path.join(parent, ".lavish");

@@ -17,6 +17,7 @@ const REVIEWED_GET_ROUTES = new Map([
   ["/^\\/artifact\\/([^/]+)\\/index\\.html$/", "read-only: redirect, or the expired-load page"],
   ["/^\\/artifact\\/([^/]+)\\/([^/]+)\\/index\\.html$/", "read-only: verifies the current load token"],
   ["/^\\/artifact\\/([^/]+)\\/([^/]+)\\/(.+)$/", "read-only: confined file under the current load token"],
+  ["/^\\/artifact(?:\\/|$)/i", "read-only: 404 under the sandbox policy for anything else under /artifact"],
   ['"/events/:key"', "read-only: one legacy SSE reload message"],
   ['"/chrome-client.js"', "read-only: static asset"],
   ['"/chrome.css"', "read-only: static asset"],

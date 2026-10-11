@@ -309,9 +309,6 @@ test("the served SDK echoes the snapshot request id", () => {
   assert.equal(response.artifact_load_token, "load-token");
 });
 
-// readArtifactRevisions calls parseRevisionRegistry and collectRevisionMarks, which in turn call
-// the rest of the revision helper chain; a helper left out of the bundle only ReferenceErrors on
-// this real read, which a source-grep over the bundle text cannot catch.
 // The document lives under its load token (/artifact/<key>/<token>/), so a failed relative asset
 // resolves under it too. The report reaches the agent and state.json, which have no use for a
 // one-load secret: they get the path as it was before the token moved into it.
@@ -325,6 +322,9 @@ test("an asset failure report names the file without the load token", () => {
   assert.deepEqual(details, ["<img> could not load /artifact/abc/assets/x.png", "<img> could not load /design/x.png"]);
 });
 
+// readArtifactRevisions calls parseRevisionRegistry and collectRevisionMarks, which in turn call
+// the rest of the revision helper chain; a helper left out of the bundle only ReferenceErrors on
+// this real read, which a source-grep over the bundle text cannot catch.
 test("the served SDK bundle reports the artifact's own revision registry and marks", () => {
   const revisionsScript = createElement("script");
   revisionsScript.textContent = JSON.stringify([

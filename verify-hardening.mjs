@@ -559,35 +559,103 @@ check("other pages cannot read an artifact's files or attachments", () => {
   // Origin nor Referer, exactly like an HTML file opened from disk. So a file beside an artifact is
   // served only under the current load's secret path, and a token-less file route must not return.
   const server = read("src/server.js");
+  const where = (handler) => `the ${handler} in src/server.js`;
+  // Each piece must appear, in this order. A string is matched verbatim, a RegExp across whitespace.
+  const inOrder = (text, pieces, handler) => {
+    let at = 0;
+    for (const piece of pieces) {
+      const found = typeof piece === "string" ? { index: text.indexOf(piece, at), length: piece.length } : null;
+      const match = found ? null : piece.exec(text.slice(at));
+      const index = found ? found.index : match ? at + match.index : -1;
+      if (index < 0) throw new Error(`${where(handler)} lost or reordered ${String(piece).split("\n")[0]}`);
+      at = index + (found ? found.length : match[0].length);
+    }
+  };
+  const handlerAt = (route) => {
+    const at = server.indexOf(`app.get(${route},`);
+    if (at < 0) throw new Error(`src/server.js has no GET ${route}`);
+    const next = server.indexOf("\n  app.", at);
+    return server.slice(at, next < 0 ? undefined : next);
+  };
+
+  // Every route under /artifact, whatever its method or spelling: the path of each app.<method>(
+  // call as written - a string in any quotes, or a regex literal with any flags, whose character
+  // classes may hold an unescaped `/`. Express matches string routes regardless of case.
+  const verbs = "get|head|post|put|patch|delete|options|all|use|route";
+  const mountOf = new RegExp(
+    `\\bapp\\.(${verbs})\\(\\s*("(?:[^"\\\\]|\\\\.)*"|'(?:[^'\\\\]|\\\\.)*'|\`(?:[^\`\\\\]|\\\\.)*\`|\\/(?:\\\\.|\\[(?:\\\\.|[^\\]\\\\])*\\]|[^/\\n\\\\[])+\\/[a-z]*)`,
+    "g",
+  );
+  const mounts = [...server.matchAll(mountOf)].map((match) => ({ verb: match[1], route: match[2] }));
+  // Only a middleware with no path, app.use((req, res, next) => ...), may be written without one: a
+  // route held in a constant or built by a call would slip past the list below.
+  const calls = server.match(new RegExp(`\\bapp\\.(${verbs})\\(`, "g"))?.length ?? 0;
+  const pathless = server.match(/\bapp\.use\(\s*\(/g)?.length ?? 0;
+  if (calls !== mounts.length + pathless) {
+    throw new Error("src/server.js mounts a route whose path is not a string or regex literal; write it as one");
+  }
+  const redirectRoute = '"/artifact/:key"';
   const entryRoute = "/^\\/artifact\\/([^/]+)\\/index\\.html$/";
   const documentRoute = "/^\\/artifact\\/([^/]+)\\/([^/]+)\\/index\\.html$/";
   const filesRoute = "/^\\/artifact\\/([^/]+)\\/([^/]+)\\/(.+)$/";
+  const fallbackRoute = "/^\\/artifact(?:\\/|$)/i";
   const tokenlessRoute = "/^\\/artifact\\/([^/]+)\\/(.+)$/";
-  const expected = [entryRoute, documentRoute, filesRoute];
-  const mounted = [...server.matchAll(/app\.get\(\s*(\/\^\\\/artifact[^\s,]*\/),/g)].map((match) => match[1]);
+  const expected = [redirectRoute, entryRoute, documentRoute, filesRoute, fallbackRoute].map((route) => `get ${route}`);
+  const mounted = mounts
+    .filter(({ route }) => (route.startsWith("/") ? /artifact/i.test(route) : /^.\/artifact/i.test(route)))
+    .map(({ verb, route }) => `${verb} ${route}`);
   if (JSON.stringify(mounted) !== JSON.stringify(expected)) {
-    throw new Error(`src/server.js mounts ${mounted.join(" ")} under /artifact, expected ${expected.join(" ")}`);
+    throw new Error(`src/server.js mounts ${mounted.join(", ")} under /artifact, expected ${expected.join(", ")}`);
   }
-  const filesAt = server.indexOf(`app.get(${filesRoute},`);
-  const nextRoute = server.indexOf("\n  app.", filesAt);
-  const filesHandler = server.slice(filesAt, nextRoute < 0 ? undefined : nextRoute);
-  mustContain(filesHandler, "store.verifyArtifactAssetLoad(", "the /artifact file handler");
+  // The file handler checks the token first and refuses a retired or forged one with the expired
+  // page; only then does it touch the file.
+  const filesHandler = handlerAt(filesRoute);
+  inOrder(
+    filesHandler,
+    [
+      "const verified = await store.verifyArtifactAssetLoad(req.params[0], req.params[1]);",
+      /if \(!verified\.valid\) \{\s*sendArtifactLoadExpired\(res\);\s*return;\s*\}/,
+      "res.sendFile(",
+    ],
+    "/artifact file handler",
+  );
+
   // Attachments are rendered only by the same-origin review page, so there the browser's own
   // Sec-Fetch-Site does tell them apart; Vary keeps the cached image from answering a page on
   // another loopback port, which shares the review's cache partition (ports are not part of a site).
-  const attachmentsAt = server.indexOf('app.get("/api/:key/attachments/:id"');
-  if (attachmentsAt < 0) throw new Error("src/server.js has no GET /api/:key/attachments/:id route");
-  const afterAttachments = server.indexOf("\n  app.", attachmentsAt);
-  const attachmentsHandler = server.slice(attachmentsAt, afterAttachments < 0 ? undefined : afterAttachments);
-  const diskAt = attachmentsHandler.indexOf("statAttachmentForServe(");
-  for (const guard of ['res.vary("Sec-Fetch-Site")', "isOwnPageFetch(req)"]) {
-    const guardAt = attachmentsHandler.indexOf(guard);
-    if (guardAt < 0 || diskAt < 0 || guardAt > diskAt) {
-      throw new Error(`the attachment GET handler does not run ${guard} before it touches the disk`);
-    }
+  const attachmentsHandler = handlerAt('"/api/:key/attachments/:id"');
+  inOrder(
+    attachmentsHandler,
+    [
+      'res.vary("Sec-Fetch-Site");',
+      /if \(!isOwnPageFetch\(req\)\) \{\s*res\.status\(403\)[^;]*;\s*return;\s*\}/,
+      "statAttachmentForServe(",
+    ],
+    "attachment GET handler",
+  );
+  const ownPageBody = /\nfunction isOwnPageFetch\(req\) \{\n([\s\S]*?)\n\}\n/.exec(server)?.[1];
+  const expectedOwnPageBody = [
+    '  const site = req.get("sec-fetch-site");',
+    '  return site === undefined || site === "same-origin" || site === "none";',
+  ].join("\n");
+  if (ownPageBody !== expectedOwnPageBody) {
+    throw new Error("isOwnPageFetch no longer passes only same-origin, none and a missing Sec-Fetch-Site");
   }
+
+  // Nothing else hands out a file: a middleware with no path is invisible to the route list above.
+  const opaqueAt = server.indexOf("function opaqueOriginAssetRoute(");
+  const opaqueHelper = opaqueAt < 0 ? "" : server.slice(opaqueAt, server.indexOf("\n}\n", opaqueAt));
+  const senders = [opaqueHelper, filesHandler, attachmentsHandler];
+  const sendFiles = server.match(/\bres\.sendFile\(/g)?.length ?? 0;
+  if (sendFiles !== senders.length || !senders.every((text) => text.includes("res.sendFile("))) {
+    throw new Error("src/server.js sends a file outside the vendored assets, /artifact files and attachments");
+  }
+  for (const serveFiles of ["express.static(", "serveStatic(", "res.download("]) {
+    mustNotContain(server, serveFiles, "src/server.js");
+  }
+
   const dist = read("dist/cli.mjs");
-  if (!dist.includes(filesRoute) || dist.includes(tokenlessRoute)) {
+  if (!dist.includes(filesRoute) || !dist.includes(fallbackRoute) || dist.includes(tokenlessRoute)) {
     throw new Error(`dist/cli.mjs does not serve artifact files only under the load token - ${REBUILD}`);
   }
   mustContain(dist, 'res.vary("Sec-Fetch-Site")', "dist/cli.mjs");

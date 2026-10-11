@@ -228,6 +228,9 @@ addEventListener("load", () => {
   });
 });
 
+// The page checks its own files at its load event and names the missing image after the verdict, so
+// the report the test waits for already says whether every existing file loaded: no failure report
+// about one of them can still be on its way.
 browserTest("a review reports only the file that is really missing, without the load token", async (chrome) => {
   const review = `<!doctype html><html><head><title>review</title>
 <link rel="stylesheet" href="assets/style.css">
@@ -235,8 +238,13 @@ browserTest("a review reports only the file that is really missing, without the 
 </head><body><p class="imported">review</p><img src="assets/img.png">
 <script>
 addEventListener("load", () => {
+  const ownFilesLoaded =
+    typeof ASSET_GLOBAL === "string" &&
+    getComputedStyle(document.querySelector(".imported")).color === "rgb(1, 2, 3)" &&
+    document.querySelector("img").naturalWidth === 2;
   const missing = document.createElement("img");
-  missing.src = "missing-r" + new URLSearchParams(location.search).get("artifact_revision") + ".png";
+  missing.src = "missing-r" + new URLSearchParams(location.search).get("artifact_revision") +
+    (ownFilesLoaded ? "-own-files-loaded" : "-own-files-failed") + ".png";
   document.body.appendChild(missing);
 });
 </script></body></html>`;
@@ -250,18 +258,21 @@ addEventListener("load", () => {
         return {};
       }
     };
-    const revisionOf = (failure) => Number(/missing-r(\d+)\.png$/.exec(failure.detail)?.[1] || 0);
+    const revisionOf = (failure) => Number(/missing-r(\d+)-own-files-\w+\.png$/.exec(failure.detail)?.[1] || 0);
     const tokens = [];
     const assertOnlyMissing = (failures) => {
       for (const failure of failures) {
-        assert.match(failure.detail, new RegExp(`^<img> could not load /artifact/${key}/missing-r\\d+\\.png$`));
+        assert.match(
+          failure.detail,
+          new RegExp(`^<img> could not load /artifact/${key}/missing-r\\d+-own-files-(loaded|failed)\\.png$`),
+        );
         for (const token of tokens) assert.ok(!failure.detail.includes(token), `${failure.detail} names a load token`);
       }
     };
 
     let newestRevision = 0;
-    // The second open renders with the load the first one left active, then begins a newer one:
-    // the double load a reopened review always makes.
+    // The second open renders with the load the first one left active and begins a newer one before
+    // it navigates the frame, which must end up on that newer load, whose files still answer.
     for (const run of ["first-open", "reopen"]) {
       const child = spawn(chrome, chromeArgs(path.join(parent, `profile-${run}`), `${base}/session/${key}`), {
         detached: true,
@@ -279,6 +290,8 @@ addEventListener("load", () => {
         tokens.push(String(session.artifact_load?.artifact_load_token || ""));
         assertOnlyMissing(session.artifact_failures);
         newestRevision = Math.max(...session.artifact_failures.map(revisionOf));
+        const newest = session.artifact_failures.find((failure) => revisionOf(failure) === newestRevision);
+        assert.match(newest.detail, /-own-files-loaded\.png$/, `the ${run} did not get every file beside it`);
       } finally {
         stopChrome(child);
         await exited;
@@ -287,8 +300,16 @@ addEventListener("load", () => {
   });
 });
 
+// The controls load under the real token, so a probe that errors proves the token mattered, not that
+// such loads fail here anyway. The token-less entry (/artifact/<key>/index.html) is not probed: an
+// element pointed at an HTML URL errors (or, as a frame, loads) whatever the status, so a page cannot
+// tell its 409 from a 200; the server tests pin that 409.
 browserTest("another page and a file from disk get no artifact file and no attachment", async (chrome) => {
-  await withServer({ "plan.html": "<!doctype html><html><body><p>plan</p></body></html>" }, async (context) => {
+  const files = {
+    "plan.html": "<!doctype html><html><body><p>plan</p></body></html>",
+    "assets/control.js": 'var CONTROL_GLOBAL = "loaded";\n',
+  };
+  await withServer(files, async (context) => {
     const { base, parent, openSession } = context;
     const key = await openSession("plan.html");
     const load = await beginLoad(base, key);
@@ -311,6 +332,7 @@ ${probe("link", "control-design", `${base}/design/daisyui-themes.css`)}
 ${probe("link", "style", `${base}/artifact/${key}/assets/style.css`)}
 ${probe("script", "script", `${base}/artifact/${key}/assets/data.js`)}
 ${probe("script", "script-forged", `${base}/artifact/${key}/forged-token/assets/data.js`)}
+${probe("script", "control-script", `${base}/artifact/${key}/${token}/assets/control.js`)}
 </head><body>
 ${probe("img", "img", `${base}/artifact/${key}/assets/img.png`)}
 ${probe("img", "img-forged", `${base}/artifact/${key}/forged-token/assets/img.png`)}
@@ -319,7 +341,11 @@ ${probe("img", "attachment", `${base}/api/${key}/attachments/${id}`)}
 <pre id="results"></pre>
 <script>
 addEventListener("load", () => {
-  document.getElementById("results").textContent = JSON.stringify({ ...window.probes, global: typeof ASSET_GLOBAL });
+  document.getElementById("results").textContent = JSON.stringify({
+    ...window.probes,
+    global: typeof ASSET_GLOBAL,
+    controlGlobal: typeof CONTROL_GLOBAL,
+  });
 });
 </script></body></html>`;
     const expected = {
@@ -327,11 +353,13 @@ addEventListener("load", () => {
       style: "error",
       script: "error",
       "script-forged": "error",
+      "control-script": "load",
       img: "error",
       "img-forged": "error",
       "control-token": "load",
       attachment: "error",
       global: "undefined",
+      controlGlobal: "string",
     };
 
     // Another local server: a different port on the same loopback address.
