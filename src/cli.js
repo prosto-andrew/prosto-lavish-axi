@@ -32,6 +32,7 @@ import { analyzeSelfPaint, SELF_PAINT_WARNING } from "./self-paint.js";
 import { LAVISH_CLIENT_CLI, LAVISH_CLIENT_HEADER, resolveDesignAssetPath, serve } from "./server.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
 import { generateSharePassword } from "./share-password.js";
+import { guardSetTypeOfService } from "./socket-tos-guard.js";
 import { initDefaultTelemetry } from "./telemetry.js";
 
 const SHARE_VALUE_FLAGS = ["--password", "--token", "--site", "--update-key"];
@@ -130,6 +131,7 @@ export async function run(argv) {
     process.stdout.write(`${VERSION}\n`);
     return;
   }
+  guardSetTypeOfService();
   await ensureStateDir();
   const normalizedArgv = normalizeArgv(argv);
   const agent = detectInvokingAgent(process.env);
@@ -1416,7 +1418,7 @@ async function canControlServerOnPort(baseUrl, healthBody, processMatchesLavish)
 // its TCP connect running, and discovery dials every local address - including a Tailscale IPv6
 // address that silently drops connections to itself - so each CLI invocation lingered for the OS
 // connect timeout (~10s) after printing its result.
-function fetchHealth(baseUrl, { reconcileNetwork = false, timeoutMs = DEFAULT_HEALTH_TIMEOUT_MS } = {}) {
+export function fetchHealth(baseUrl, { reconcileNetwork = false, timeoutMs = DEFAULT_HEALTH_TIMEOUT_MS } = {}) {
   return new Promise((resolve) => {
     let settled = false;
     /** @type {import("node:http").ClientRequest | null} */
@@ -1476,7 +1478,7 @@ async function requestShutdown(baseUrl, { reloadKey = "", reason = "" } = {}) {
   }
 }
 
-async function waitForPortFree(baseUrl, timeoutMs) {
+export async function waitForPortFree(baseUrl, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (!(await fetchHealth(baseUrl))) return true;

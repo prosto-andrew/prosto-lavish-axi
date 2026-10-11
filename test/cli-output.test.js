@@ -48,6 +48,7 @@ import {
   stopCommand,
   telemetryCommandName,
   VERSION,
+  waitForPortFree,
 } from "../src/cli.js";
 import { DESIGN_PRIORITY_RULE, DESIGN_SYSTEM_HINT } from "../src/design-reference.js";
 import { createSkillMarkdown } from "../src/skill.js";
@@ -2243,6 +2244,65 @@ test("lavish-safe stop tells the server it was stopped, and names no session to 
   }
 });
 
+// Node 24's bundled undici calls socket.setTypeOfService(0) before writing every HTTP/1 request,
+// from a socket event handler outside any fetch promise. macOS answers EINVAL once the server has
+// reset the just-accepted connection (it was closing), and that throw killed the CLI before its
+// /shutdown request was even written. This preload makes every such call fail the macOS way.
+const MACOS_TOS_EINVAL_PRELOAD = `data:text/javascript,${encodeURIComponent(
+  [
+    'import net from "node:net";',
+    "let calls = 0;",
+    "net.Socket.prototype.setTypeOfService = function () {",
+    "  calls += 1;",
+    '  const error = new Error("setTypeOfService EINVAL");',
+    '  throw Object.assign(error, { errno: -22, code: "EINVAL", syscall: "setTypeOfService" });',
+    "};",
+    'process.on("exit", () => process.stderr.write("tos-calls=" + calls + "\\n"));',
+  ].join("\n"),
+)}`;
+
+test("lavish-safe stop survives the EINVAL macOS gives setTypeOfService on a reset socket", async (t) => {
+  const recorder = await startShutdownRecorder();
+  const stateDir = await mkdtemp(path.join(os.tmpdir(), "lavish-tos-einval-"));
+  try {
+    const child = spawn(
+      process.execPath,
+      ["--import", MACOS_TOS_EINVAL_PRELOAD, fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "stop"],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        env: {
+          ...process.env,
+          LAVISH_AXI_PORT: String(recorder.port),
+          LAVISH_AXI_STATE_DIR: stateDir,
+          LAVISH_AXI_TELEMETRY: "0",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    const code = await new Promise((resolve) => child.on("exit", resolve));
+
+    // Node 22's undici never sets the type of service, so a clean run there proves nothing.
+    if (code === 0 && /tos-calls=0\b/.test(stderr)) {
+      t.skip("this Node's bundled undici never calls setTypeOfService");
+      return;
+    }
+    assert.equal(code, 0, stderr);
+    assert.deepEqual(recorder.bodies, [{ reason: "stop" }]);
+    assert.match(stdout, /status: stopped/);
+  } finally {
+    recorder.close();
+    await rm(stateDir, { recursive: true, force: true });
+  }
+});
+
 // The page being opened is the one that reloads itself, and the server picks it by key, so the
 // key the CLI sends has to be the canonical session key for the file - an empty or non-canonical
 // one silently degrades the feature to "nobody reloads, everybody gets a banner".
@@ -2290,14 +2350,9 @@ test("opening an artifact names that session as the one to reload across a versi
   } finally {
     // The CLI replaced the recorder with a real server on that port; stop it again.
     await fetch(`${base}/shutdown`, { method: "POST" }).catch(() => {});
-    for (let i = 0; i < 30; i += 1) {
-      const alive = await fetch(`${base}/health`).then(
-        () => true,
-        () => false,
-      );
-      if (!alive) break;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
+    // The node:http probe, not fetch: a fetch that reaches the closing listener can die on macOS
+    // with an uncaught setTypeOfService EINVAL (src/socket-tos-guard.js) this test cannot catch.
+    await waitForPortFree(base, 3000);
     recorder.close();
     await rm(dir, { recursive: true, force: true });
   }
