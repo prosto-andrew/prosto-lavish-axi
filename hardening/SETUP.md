@@ -30,8 +30,10 @@ The build needs Node 22+.
 
 `pnpm-lock.yaml` is the fork's only lockfile. Do not use `npm install`: it re-resolves every
 `^` range on each machine and ignores the supply-chain policy in `pnpm-workspace.yaml`
-(minimum release age, trust policy, build-script allowlist). The verifier, and so the
-launchers, refuse a tree that npm installed or rewrote - a `package-lock.json` or a
+(no version younger than 7 days, with no package exempt; no version published with weaker
+trust evidence than an earlier one; install scripts for esbuild only). The verifier, and so
+the launchers, refuse a weakened policy (every setting in that file must be one the verifier
+has reviewed) and a tree that npm installed or rewrote: a `package-lock.json` or a
 `node_modules/.package-lock.json` gives it away. If that happens, delete `node_modules`,
 `dist` and `package-lock.json`, then run the pnpm command above.
 

@@ -199,10 +199,82 @@ check("build exists and is newer than every build input", () => {
   return `dist/ is newer than all ${inputs.length} build inputs`;
 });
 
-check("node_modules was installed by pnpm, not rewritten by npm", () => {
+// The supply-chain policy the install docs promise lives in pnpm-workspace.yaml. Every top-level
+// key there must be one reviewed here: pnpm keeps adding exemptions (minimumReleaseAgeExclude,
+// trustPolicyExclude, dangerouslyAllowAllBuilds, ...), and an unreviewed key could switch a promise
+// off without touching the lines checked below. A new pnpm setting is added to this list only
+// after deciding it weakens nothing.
+const PNPM_WORKSPACE_KEYS = new Set([
+  "packages",
+  "trustPolicy",
+  "blockExoticSubdeps",
+  "minimumReleaseAge",
+  "minimumReleaseAgeStrict",
+  "onlyBuiltDependencies",
+  "allowBuilds",
+  "overrides",
+]);
+const MINIMUM_RELEASE_AGE_MINUTES = 7 * 24 * 60;
+
+// No YAML parser is a dependency, so only the shapes the file is written in are read: a top-level
+// `key: value`, or `key:` followed by indented lines. Anything else fails rather than being
+// skipped, so the policy is never judged on half of the file.
+function pnpmWorkspaceSettings() {
+  const settings = new Map();
+  let current = null;
+  for (const line of read("pnpm-workspace.yaml").split(/\r?\n/)) {
+    if (line.trim() === "" || line.trimStart().startsWith("#")) continue;
+    if (/^\s/.test(line)) {
+      if (!current) throw new Error(`pnpm-workspace.yaml has an indented line before any key: ${line}`);
+      current.items.push(line.trim());
+      continue;
+    }
+    const match = /^([A-Za-z][\w-]*):(?:\s+(.*))?$/.exec(line);
+    if (!match) throw new Error(`pnpm-workspace.yaml has an unrecognized line: ${line}`);
+    const [, key, value = ""] = match;
+    if (settings.has(key)) throw new Error(`pnpm-workspace.yaml sets ${key} twice`);
+    current = { value: value.trim(), items: [] };
+    settings.set(key, current);
+  }
+  return settings;
+}
+
+function checkPnpmSupplyChainPolicy() {
+  const settings = pnpmWorkspaceSettings();
+  const unreviewed = [...settings.keys()].filter((key) => !PNPM_WORKSPACE_KEYS.has(key));
+  if (unreviewed.length) {
+    throw new Error(`pnpm-workspace.yaml sets ${unreviewed.join(", ")}, which the supply-chain policy does not allow`);
+  }
+  const scalar = (key) => settings.get(key)?.value ?? "unset";
+  const age = Number(scalar("minimumReleaseAge"));
+  if (!Number.isInteger(age) || age < MINIMUM_RELEASE_AGE_MINUTES) {
+    throw new Error(
+      `pnpm-workspace.yaml minimumReleaseAge is ${scalar("minimumReleaseAge")}, expected at least ${MINIMUM_RELEASE_AGE_MINUTES} (7 days)`,
+    );
+  }
+  for (const [key, expected] of [
+    ["minimumReleaseAgeStrict", "true"],
+    ["trustPolicy", "no-downgrade"],
+    ["blockExoticSubdeps", "true"],
+  ]) {
+    if (scalar(key) !== expected) throw new Error(`pnpm-workspace.yaml ${key} is ${scalar(key)}, expected ${expected}`);
+  }
+  for (const [key, expected] of [
+    ["onlyBuiltDependencies", "- esbuild"],
+    ["allowBuilds", "esbuild: true"],
+  ]) {
+    const setting = settings.get(key);
+    if (!setting || setting.value || setting.items.join("\n") !== expected) {
+      throw new Error(`pnpm-workspace.yaml ${key} must allow install scripts for esbuild only`);
+    }
+  }
+}
+
+check("dependencies install through pnpm under the documented supply-chain policy", () => {
   // dist/ imports its dependencies from node_modules at run time. Only pnpm applies the
   // committed lockfile and the supply-chain policy in pnpm-workspace.yaml; `npm install` or
   // `npm update` re-resolves every range, and leaves its own lockfiles behind when it does.
+  checkPnpmSupplyChainPolicy();
   if (!existsSync(path.join(root, "node_modules"))) throw new Error(`node_modules is missing - ${REBUILD}`);
   if (!existsSync(path.join(root, "node_modules/.modules.yaml"))) {
     throw new Error(`node_modules was not installed by pnpm - delete node_modules, then ${REBUILD}`);
@@ -214,7 +286,7 @@ check("node_modules was installed by pnpm, not rewritten by npm", () => {
       );
     }
   }
-  return "pnpm install, no npm lockfile";
+  return "pnpm install, no npm lockfile; 7-day release age with no exemptions, no trust downgrade, esbuild-only builds";
 });
 
 check("the bundled CLI spawns the bundled server", () => {
