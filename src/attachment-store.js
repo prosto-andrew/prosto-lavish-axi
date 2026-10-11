@@ -1,6 +1,8 @@
 import crypto from "node:crypto";
-import { chmod, mkdir, readdir, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readdir, readFile, rm, stat, utimes } from "node:fs/promises";
 import path from "node:path";
+
+import { TEMPORARY_FILE_RE, writeFileAtomically } from "./atomic-file.js";
 
 // Content-addressed storage for annotation image attachments, kept out of
 // `state.json` on purpose: `SessionStore` rewrites the whole state file on every
@@ -46,7 +48,9 @@ export const ATTACHMENT_EVICTION_GRACE_MS = 60 * 60 * 1000; // 1 hour
 // Attachments are user screenshots: they can capture anything on screen, and the
 // state dir sits in a home directory that is commonly traversable by other local
 // users. The process umask (typically 0022) would otherwise leave them 0644 in
-// 0755 dirs, so every mode is set explicitly rather than inherited.
+// 0755 dirs, so every mode is set explicitly rather than inherited. A file gets its
+// mode at creation, and the atomic rename preserves it, so the final file is never
+// briefly world-readable the way a create-then-chmod would leave it.
 const ATTACHMENT_FILE_MODE = 0o600;
 const ATTACHMENT_DIR_MODE = 0o700;
 
@@ -67,19 +71,17 @@ function allocatedBytes(logicalBytes) {
 
 // `writeFileAtomically` writes `<name>.<pid>.<n>.tmp` then renames. A crash between
 // the two leaves that temp behind, and because it does not match ID_RE it is invisible
-// to listAttachments and to every cap - the bytes leak forever (D6). This matches the
-// store's own temp names only (two numeric segments + .tmp), never a real id or sidecar.
-const TEMP_FILE_RE = /\.\d+\.\d+\.tmp$/;
-// Only reap a temp older than this: a live atomic write renames within milliseconds,
-// so anything this stale can only be crash debris - never an in-progress write.
+// to listAttachments and to every cap - the bytes leak forever (D6). The sweeper reaps
+// it by `TEMPORARY_FILE_RE`, which matches those temp names only, never a real id or sidecar.
+// Only reap a temp older than this: a live atomic write renames within milliseconds (about
+// 2 s at most while a Windows reader holds the target open), so anything this stale can
+// only be crash debris - never an in-progress write.
 const ATTACHMENT_TEMP_GRACE_MS = 5 * 60 * 1000; // 5 minutes
 // A dims sidecar is `<id>.meta`; capture the image id so an orphan sidecar (image
 // gone) can be reaped. A live upload always writes the image BEFORE its sidecar, so a
 // sidecar-without-image is unambiguous crash/failed-delete debris - no grace needed
 // (ATTACH-002).
 const SIDECAR_ORPHAN_RE = /^([0-9a-f]{64}\.(?:png|jpg|webp))\.meta$/;
-
-let temporaryFileId = 0;
 
 export function isValidAttachmentKey(key) {
   return KEY_RE.test(String(key || ""));
@@ -279,6 +281,11 @@ async function pathExists(file) {
   }
 }
 
+// Every image and sidecar write goes through here, so none can miss the owner-only mode.
+function writeOwnerOnly(file, content) {
+  return writeFileAtomically(file, content, { mode: ATTACHMENT_FILE_MODE });
+}
+
 // D6 dims sidecar: a tiny JSON file written beside the image at upload time so the
 // trust boundary (resolveAttachment, called on every /prompts) and the thumbnail
 // GET never re-read the whole image just to recover its pixel geometry. The `.meta`
@@ -290,7 +297,7 @@ function sidecarPath(file) {
 
 async function writeSidecar(file, serializedMeta) {
   try {
-    await writeFileAtomically(sidecarPath(file), serializedMeta);
+    await writeOwnerOnly(sidecarPath(file), serializedMeta);
   } catch {
     // Dimensions are a display hint only; a sidecar write miss just means
     // resolveAttachment falls back to a one-off header parse.
@@ -309,19 +316,6 @@ async function readSidecarDims(file) {
     // No sidecar (pre-D6 upload) or unreadable - signal a full-parse fallback.
   }
   return null;
-}
-
-async function writeFileAtomically(file, content) {
-  const temporary = `${file}.${process.pid}.${++temporaryFileId}.tmp`;
-  try {
-    // The mode is applied at creation, and rename preserves it, so the final file
-    // is never briefly world-readable the way a create-then-chmod would leave it.
-    await writeFile(temporary, content, { mode: ATTACHMENT_FILE_MODE });
-    await rename(temporary, file);
-  } catch (error) {
-    await rm(temporary, { force: true }).catch(() => {});
-    throw error;
-  }
 }
 
 // Create the session's attachment dir (and the root above it) owner-only. `mkdir`
@@ -429,7 +423,7 @@ export async function writeAttachment(
       throw statusError("attachment storage is full", 507);
     }
     await ensureAttachmentDir(stateDir, key);
-    await writeFileAtomically(file, buffer);
+    await writeOwnerOnly(file, buffer);
     await writeSidecar(file, sidecarContent);
   } else {
     // B3: dedup re-upload of identical content must refresh the mtime so a new
@@ -444,7 +438,7 @@ export async function writeAttachment(
       // can still reap. Rewriting the identical bytes refreshes the mtime through a
       // different syscall path, and it is atomic (temp + rename), so a concurrent
       // reader never observes a partial file. If that fails too, report the failure.
-      await writeFileAtomically(file, buffer);
+      await writeOwnerOnly(file, buffer);
     }
     // Sidecar repair: a dedup hit whose `.meta` is missing (pre-D6 storage or a
     // crashed sidecar write) would otherwise add a brand-new block with NO quota
@@ -714,7 +708,7 @@ async function reapOrphanFiles(stateDir, now) {
       const filePath = path.join(dir, entry.name);
       const sidecarMatch = SIDECAR_ORPHAN_RE.exec(entry.name);
       try {
-        if (TEMP_FILE_RE.test(entry.name)) {
+        if (TEMPORARY_FILE_RE.test(entry.name)) {
           const info = await stat(filePath);
           if (now - info.mtimeMs <= ATTACHMENT_TEMP_GRACE_MS) continue; // possibly a live write
           if (await removeFile(filePath)) {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, open, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -421,6 +421,33 @@ test("writeAttachment rewrites identical bytes when the dedup mtime refresh fail
     assert.ok(await resolveAttachment(dir, KEY, first.id));
   });
 });
+
+// That rewrite replaces a file someone may be reading - the thumbnail route streaming it, or the
+// agent opening the screenshot - and on Windows any open handle refuses the replace.
+test(
+  "on Windows the dedup rewrite lands once a reader of the image lets go",
+  { skip: process.platform !== "win32" && "only Windows refuses to replace a file that is open" },
+  async () => {
+    await withTempDir(async (dir) => {
+      const first = await writeAttachment(dir, KEY, PNG_2x1, {});
+      const reader = await open(first.path, "r");
+      const released = new Promise((resolve) => setTimeout(resolve, 50)).then(() => reader.close());
+      let second;
+      try {
+        second = await writeAttachment(dir, KEY, PNG_2x1, {
+          touchFile: async () => {
+            throw Object.assign(new Error("utimes not permitted"), { code: "EPERM" });
+          },
+        });
+      } finally {
+        await released;
+      }
+
+      assert.equal(second.id, first.id);
+      assert.deepEqual(await readFile(first.path), PNG_2x1);
+    });
+  },
+);
 
 test("a failed expired-orphan delete still counts toward the disk cap (W3)", async () => {
   await withTempDir(async (dir) => {
