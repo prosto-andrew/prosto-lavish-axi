@@ -527,6 +527,19 @@ check("live-event WebSocket upgrades require this server's own Origin", () => {
   return "Host allowlist plus exact Origin";
 });
 
+check("the Host allowlist cannot be switched off", () => {
+  // Upstream let a lone "*" in LAVISH_AXI_ALLOWED_HOSTS drop the DNS-rebinding guard. This server
+  // listens on loopback only, so "*" admitted no legitimate client: it only let a page on an
+  // attacker's hostname, same-origin to itself, send the CLI's poll header and read live events.
+  const stub = /\nexport function allowsAllHosts\(\.\.\._ignored\) \{\n {2}return false;\n\}\n/;
+  if (!stub.test(read("src/server.js"))) throw new Error("src/server.js allowsAllHosts can opt out of the allowlist");
+  mustNotContain(read("src/paths.js"), "disables the guard", "src/paths.js");
+  if (!/function allowsAllHosts\d*\(\.\.\._ignored\d*\) \{\s*return false;\s*\}/.test(read("dist/cli.mjs"))) {
+    throw new Error(`dist/cli.mjs allowsAllHosts can opt out of the allowlist - ${REBUILD}`);
+  }
+  return 'LAVISH_AXI_ALLOWED_HOSTS="*" is ignored';
+});
+
 check("state-changing GETs need proof", () => {
   // A foreign page can make the browser send any GET here with no Origin or Referer (an <img>, a
   // hidden <iframe>), so the poll must demand the CLI's header before it claims or takes feedback,
