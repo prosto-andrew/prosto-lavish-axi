@@ -166,7 +166,7 @@ A saved export carries no header at all. Author-set CSP meta tags are preserved 
 ### Hosted sharing (ht-ml.app)
 
 **LAVISH-HARDENED:** publishing is removed at source level. The `share` command refuses, `POST /api/:key/share` and the chrome's **Publish link** flow are gone, and `publishToHtmlApp`/`updateHtmlApp` in `src/html-app.js` are stubs with no network layer, so nothing sends an artifact off this machine. `verify-hardening.mjs` checks the command, the route, the chrome and the bundle, including that no publish transport is left behind.
-Upstream's share output builders in `src/cli.js`, the payload helpers in `src/html-app.js` and `src/share-password.js` are still in the tree as unreachable code awaiting removal. None of upstream's share invariants (password minting, `update_key` handling, `--unpublish` semantics, the CDN caveat) apply to this build: do not restate them, and do not add a command, route or chrome action that publishes.
+Only the refusals remain: upstream's share request parsing and output builders in `src/cli.js`, the payload and error helpers in `src/html-app.js` and `src/share-password.js` are deleted, and `verify-hardening.mjs` checks that they stay gone. None of upstream's share invariants (password minting, `update_key` handling, `--unpublish` semantics, the CDN caveat) apply to this build: do not restate them, and do not add a command, route or chrome action that publishes.
 
 ### AXI integration
 
@@ -183,14 +183,14 @@ The bare-arg form (`lavish-axi some.html`) is normalized into `["open", "some.ht
 
 ### Agent Plugins packaging
 
-**LAVISH-HARDENED:** `setup plugin` is removed and refuses, so this build registers itself with no client. Upstream's registration helpers in `src/plugin.js` (`isStalePluginLocation`, the VS Code settings update, the Cursor link) are unreachable and awaiting removal.
+**LAVISH-HARDENED:** `setup plugin` is removed and refuses, so this build registers itself with no client. Upstream's registration helpers in `src/plugin.js` (`isStalePluginLocation`, the VS Code settings update, the Cursor link) and the `cross-spawn` launcher they used are deleted, so the CLI no longer loads `src/plugin.js` at all; `verify-hardening.mjs` checks that they stay gone.
 `plugin.json` is still generated from `package.json` (`pnpm run build:plugin`; drift fails `pnpm run check`) and sits beside the `skills/` directory the standard discovers, so a client pointed at this checkout by hand gets the same hardened `lavish` skill. Both `plugin.json` and `skills/lavish` stay in `package.json` `files`.
 Agent Plugins delegates skill validity wholesale to the Agent Skills spec and **silently skips** skills that fail it, so a frontmatter regression removes the skill with no error anywhere. `validateSkillMarkdown` (`src/skill.js`) encodes the rules the reference validator enforces: only `ALLOWED_SKILL_FRONTMATTER_KEYS` at the top level, no YAML flow collections (`[a, b]`), and `metadata` limited to one level of string values. That is why `author` and `argument-hint` live under `metadata` and the Hermes fields are flattened rather than nested - moving any of them back to the top level silently invalidates the skill.
 No `mcp.json` ships: the CLI itself is the agent interface, and adding one would create a second agent-facing contract to keep in sync.
 
 ### Telemetry
 
-**LAVISH-HARDENED:** telemetry is removed. `resolveTelemetryConfig()` in `src/telemetry.js` ignores every argument and always returns disabled, so the client never sends, and the analytics host is gone from the source and the bundle; `verify-hardening.mjs` checks both. `LAVISH_AXI_TELEMETRY` has nothing left to turn off. `scripts/build.js` still defines the unused `LAVISH_AXI_BUILD_UMAMI_*` values, which are dead and awaiting removal.
+**LAVISH-HARDENED:** telemetry is removed. `resolveTelemetryConfig()` in `src/telemetry.js` ignores every argument and always returns disabled, so the client never sends, and the analytics host is gone from the source and the bundle; `verify-hardening.mjs` checks both. `LAVISH_AXI_TELEMETRY` has nothing left to turn off. `scripts/build.js` no longer defines the `LAVISH_AXI_BUILD_UMAMI_*` values, and `verify-hardening.mjs` checks that they stay out.
 The build inlines `package.json`'s version as `process.env.LAVISH_AXI_BUILD_VERSION` for the CLI/server version handshake, with source runs falling back to reading `package.json`.
 
 ## Things to know when editing

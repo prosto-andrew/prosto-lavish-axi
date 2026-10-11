@@ -23,15 +23,11 @@ import {
   createPollOutput,
   createPlaybookOutput,
   createServerSpawnOptions,
-  createShareOutput,
-  createShareUnpublishOutput,
-  createShareUpdateOutput,
   createUserEndedOpenOutput,
   detectInvokingAgent,
   fetchJson,
   getCommandHelp,
   normalizeArgv,
-  resolveShareRequest,
   pollInterruptedText,
   pollWaitBannerText,
   pollWaitTickText,
@@ -245,7 +241,7 @@ test("open output asks the agent to tell the user that their saved sessions were
   assert.equal("state_warning" in clean, false);
 });
 
-test("export and share outputs flag an unpainted page surface before it reaches a host", () => {
+test("export output flags an unpainted page surface before the file reaches a host", () => {
   const exported = createExportOutput({
     source: "/tmp/report.html",
     output: "/tmp/report.export.html",
@@ -256,18 +252,6 @@ test("export and share outputs flag an unpainted page surface before it reaches 
   assert.equal(exported.self_paint_warning, SELF_PAINT_WARNING);
   assert.match(exported.next_step, /^Fix the unpainted page surface flagged in self_paint_warning/);
   assert.match(exported.next_step, /no Lavish server/, "the export contract stays intact");
-
-  const shared = createShareOutput({
-    source: "/tmp/report.html",
-    site: { url: "https://ht-ml.app/s/x", site_id: "x", update_key: "k" },
-    warnings: [],
-    selfPaintWarning: SELF_PAINT_WARNING,
-  });
-  assert.equal(shared.self_paint_warning, SELF_PAINT_WARNING);
-  assert.match(shared.next_step, /^Fix the unpainted page surface flagged in self_paint_warning/);
-  assert.match(shared.next_step, /re-run the share command/);
-  assert.match(shared.next_step, /replacement URL/);
-  assert.doesNotMatch(shared.next_step, /with the update_key/);
 
   const cleanExport = createExportOutput({
     source: "/tmp/report.html",
@@ -2356,274 +2340,4 @@ test("opening an artifact names that session as the one to reload across a versi
     recorder.close();
     await rm(dir, { recursive: true, force: true });
   }
-});
-
-test("resolveShareRequest publishes a public page by default", () => {
-  const request = resolveShareRequest(["report.html"]);
-
-  assert.equal(request.mode, "create");
-  assert.equal(request.file, "report.html");
-  assert.equal(request.password, undefined);
-  assert.equal(request.generatedPassword, false);
-});
-
-test("resolveShareRequest --private mints a password instead of asking the agent for one", () => {
-  const request = resolveShareRequest(["report.html", "--private"]);
-
-  assert.equal(request.mode, "create");
-  assert.equal(request.generatedPassword, true);
-  assert.match(String(request.password), /^[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}$/);
-});
-
-test("resolveShareRequest keeps an explicit password verbatim and refuses to also generate one", () => {
-  assert.equal(resolveShareRequest(["report.html", "--password", "hunter2"]).password, "hunter2");
-  assert.throws(() => resolveShareRequest(["report.html", "--password", "hunter2", "--private"]), /--private/);
-});
-
-test("resolveShareRequest reads the file path even when a password flag precedes it", () => {
-  assert.equal(resolveShareRequest(["--password", "hunter2", "report.html"]).file, "report.html");
-  assert.equal(resolveShareRequest(["--private", "report.html"]).file, "report.html");
-});
-
-test("resolveShareRequest requires both halves of the republish credential", () => {
-  const request = resolveShareRequest(["report.html", "--site", "abc123", "--update-key", "uk_secret"]);
-
-  assert.equal(request.mode, "update");
-  assert.equal(request.siteId, "abc123");
-  assert.equal(request.updateKey, "uk_secret");
-  assert.equal(request.password, undefined, "an omitted password preserves the page's current one");
-  assert.throws(() => resolveShareRequest(["report.html", "--site", "abc123"]), /--update-key/);
-  assert.throws(() => resolveShareRequest(["report.html", "--update-key", "uk_secret"]), /--site/);
-  assert.throws(() => resolveShareRequest(["--site", "abc123", "--update-key", "uk_secret"]), /HTML file/);
-});
-
-test("resolveShareRequest never asks the host to clear a password it silently ignores", () => {
-  // The live host answers 200 to an empty password and leaves the page gated, so no argument
-  // shape may produce one - a "" here would report a still-private page as public.
-  for (const args of [
-    ["report.html"],
-    ["report.html", "--site", "abc123", "--update-key", "uk_secret"],
-    ["report.html", "--private"],
-    ["report.html", "--password", "hunter2"],
-  ]) {
-    assert.notEqual(resolveShareRequest(args).password, "", `${args.join(" ")} must not clear the password`);
-  }
-});
-
-test("resolveShareRequest treats unpublish as a credentialed republish with no file", () => {
-  const request = resolveShareRequest(["--unpublish", "--site", "abc123", "--update-key", "uk_secret"]);
-
-  assert.equal(request.mode, "unpublish");
-  assert.equal(request.siteId, "abc123");
-  assert.equal(request.file, null);
-  assert.throws(() => resolveShareRequest(["--unpublish", "--site", "abc123"]), /--update-key/);
-  assert.throws(
-    () => resolveShareRequest(["report.html", "--unpublish", "--site", "abc123", "--update-key", "uk"]),
-    /--unpublish/,
-  );
-});
-
-test("resolveShareRequest refuses a value flag that swallowed the next flag", () => {
-  // An empty unquoted $PW in `share r.html --password $PW --site abc --update-key k` used to make
-  // "--site" the password and silently ROTATE a live page to a literal nobody could recover.
-  assert.throws(
-    () => resolveShareRequest(["r.html", "--password", "--site", "abc", "--update-key", "k"]),
-    /--password was given no value.*--site/s,
-  );
-  assert.throws(() => resolveShareRequest(["r.html", "--site", "--update-key", "k"]), /--site was given no value/);
-  assert.throws(
-    () => resolveShareRequest(["r.html", "--site", "abc", "--update-key", "--private"]),
-    /--update-key was given no value/,
-  );
-  assert.throws(() => resolveShareRequest(["r.html", "--token", "--private"]), /--token was given no value/);
-});
-
-test("resolveShareRequest refuses an explicitly empty value flag", () => {
-  for (const args of [
-    ["r.html", "--password", ""],
-    ["r.html", "--password="],
-    ["r.html", "--password"],
-    ["r.html", "--password", "   "],
-  ]) {
-    assert.throws(() => resolveShareRequest(args), /--password was given an empty value/, args.join(" "));
-  }
-  assert.throws(() => resolveShareRequest(["r.html", "--site=", "--update-key", "k"]), /--site was given an empty/);
-});
-
-test("resolveShareRequest still accepts a value that legitimately starts with dashes via the = form", () => {
-  // The = form cannot swallow a following token, so it stays the escape hatch for such a value.
-  assert.equal(resolveShareRequest(["r.html", "--password=--dashes--"]).password, "--dashes--");
-});
-
-test("resolveShareRequest rejects a bearer token on a republish or unpublish", () => {
-  assert.equal(resolveShareRequest(["report.html", "--token", "tok_123"]).token, "tok_123");
-  assert.throws(
-    () => resolveShareRequest(["report.html", "--site", "abc123", "--update-key", "uk_secret", "--token", "tok_123"]),
-    /--token only applies when creating a page/,
-  );
-  assert.throws(
-    () => resolveShareRequest(["--unpublish", "--site", "abc123", "--update-key", "uk_secret", "--token", "tok_123"]),
-    /--token only applies when creating a page/,
-  );
-});
-
-test("createShareOutput hands back a generated password and tells the agent it is a shared secret", () => {
-  const output = createShareOutput({
-    source: "/tmp/report.html",
-    site: { url: "https://x.ht-ml.app/", site_id: "x", update_key: "uk_secret", status: "active" },
-    warnings: [],
-    passwordProtected: true,
-    password: "xk4t-9rmb-2wqz",
-  });
-
-  assert.equal(output.share.password, "xk4t-9rmb-2wqz");
-  assert.equal(output.share.visibility, "private");
-  assert.match(output.next_step, /xk4t-9rmb-2wqz/);
-  assert.match(output.next_step, /shared secret/i);
-});
-
-test("createShareOutput never echoes a password the caller chose", () => {
-  const output = createShareOutput({
-    source: "/tmp/report.html",
-    site: { url: "https://x.ht-ml.app/", site_id: "x", update_key: "uk_secret", status: "active" },
-    warnings: [],
-    passwordProtected: true,
-  });
-
-  assert.equal(output.share.password, undefined);
-});
-
-test("createShareUpdateOutput reports what a plain republish did, not a password state it cannot know", () => {
-  // Lavish persists no site state, so a republish of a page created without a password would be
-  // misreported by any claim that "the password was left unchanged".
-  const output = createShareUpdateOutput({
-    source: "/tmp/report.html",
-    site: { url: "https://x.ht-ml.app/", site_id: "x", status: "active" },
-    warnings: [],
-  });
-
-  assert.equal(output.share.url, "https://x.ht-ml.app/");
-  assert.equal(output.share.visibility, "unchanged");
-  assert.equal(output.share.password, undefined);
-  assert.match(output.next_step, /same URL/i);
-  assert.match(output.next_step, /did not touch the page's password/i);
-  assert.match(output.next_step, /cannot tell you whether that is a password or none/i);
-  assert.doesNotMatch(output.next_step, /password was left unchanged/i);
-  assert.doesNotMatch(output.next_step, /it is password-protected/i);
-});
-
-test("createShareUpdateOutput surfaces a rotated password and never claims a page went public", () => {
-  const rotated = createShareUpdateOutput({
-    source: "/tmp/report.html",
-    site: { url: "https://x.ht-ml.app/", site_id: "x", status: "active" },
-    warnings: [],
-    password: "xk4t-9rmb-2wqz",
-    passwordProtected: true,
-  });
-  assert.equal(rotated.share.password, "xk4t-9rmb-2wqz");
-  assert.equal(rotated.share.visibility, "private");
-
-  const untouched = createShareUpdateOutput({
-    source: "/tmp/report.html",
-    site: { url: "https://x.ht-ml.app/", site_id: "x", status: "active" },
-    warnings: [],
-  });
-  assert.equal(untouched.share.visibility, "unchanged");
-  assert.doesNotMatch(untouched.next_step, /CLEARED|now public|is PUBLIC/i);
-});
-
-test("createShareUpdateOutput does not present a newly set password as an instant gate", () => {
-  // Probed live: locking a page that was public left it answering uncredentialed CDN requests for
-  // minutes, and Lavish persists no site state, so it cannot know the page was not public.
-  const locked = createShareUpdateOutput({
-    source: "/tmp/report.html",
-    site: { url: "https://x.ht-ml.app/", site_id: "x", status: "active" },
-    warnings: [],
-    password: "xk4t-9rmb-2wqz",
-    passwordProtected: true,
-  });
-
-  assert.match(locked.next_step, /NOT instant/i);
-  assert.match(locked.next_step, /cach/i);
-  assert.match(locked.next_step, /already private/i);
-
-  // A plain republish sets no password, so it must not raise the caveat at all.
-  const untouched = createShareUpdateOutput({
-    source: "/tmp/report.html",
-    site: { url: "https://x.ht-ml.app/", site_id: "x", status: "active" },
-    warnings: [],
-  });
-  assert.doesNotMatch(untouched.next_step, /NOT instant/i);
-});
-
-test("createShareUpdateOutput says the host reported no URL rather than naming one", () => {
-  const output = createShareUpdateOutput({
-    source: "/tmp/report.html",
-    site: { url: "", site_id: "abc123", status: "active" },
-    warnings: [],
-  });
-
-  assert.equal(output.share.url, "");
-  assert.match(output.next_step, /did not report a URL/i);
-  assert.match(output.next_step, /abc123/);
-  assert.doesNotMatch(JSON.stringify(output), /ht-ml\.app/);
-});
-
-test("createShareUnpublishOutput says the host reported no URL rather than naming one", () => {
-  const output = createShareUnpublishOutput({ site: { url: "", site_id: "abc123", status: "active" } });
-
-  assert.equal(output.share.url, "");
-  assert.match(output.next_step, /did not report a URL/i);
-  assert.doesNotMatch(output.next_step, /Replaced the page at /);
-});
-
-// A recovery hint is only recovery if the CLI accepts it. Pull the command Lavish printed out of
-// the text it printed and run it back through the real argument parser, so a hint that drifts into
-// a usage error - `--site`/`--update-key` with no HTML file was one - fails here instead of on the
-// user's next paste.
-function parseSuggestedShareCommand(text) {
-  const match = /`lavish-safe share ([^`]+)`/.exec(String(text));
-  assert.ok(match, `expected a suggested share command in: ${text}`);
-  const argv = match[1].trim().split(/\s+/);
-  const request = resolveShareRequest(argv);
-  // `<html-file>` and `<key>` fail loudly when pasted literally - one is not a file, the other
-  // earns a 401 - but ANY non-empty string is a valid password, so a placeholder that reaches the
-  // parser as a password value would be accepted and would rotate a live page to a secret nobody
-  // was told, which ht-ml.app cannot clear. A suggested command must never carry one.
-  assert.ok(
-    request.generatedPassword || request.password === undefined,
-    `a suggested command must not dictate a password value, got ${request.password} from: ${argv.join(" ")}`,
-  );
-  return request;
-}
-
-test("createShareUnpublishOutput says the page still exists and how to bring it back", () => {
-  const output = createShareUnpublishOutput({
-    site: { url: "https://x.ht-ml.app/", site_id: "x", status: "active" },
-  });
-
-  assert.equal(output.share.site_id, "x");
-  assert.equal(output.share.unpublished, true);
-  assert.match(output.next_step, /not deleted|no delete/i);
-  assert.match(output.next_step, /update_key/);
-  // The recovery instruction has to be one the host actually honors: clearing is ignored.
-  assert.doesNotMatch(output.next_step, /--clear-password/);
-  assert.match(output.next_step, /--private/);
-  assert.equal(parseSuggestedShareCommand(output.next_step).mode, "update");
-  assert.doesNotMatch(JSON.stringify(output), /[a-z0-9]{4}-[a-z0-9]{4}-[a-z0-9]{4}/);
-});
-
-test("createShareUnpublishOutput separates the immediate content swap from the lagging lock", () => {
-  // Probed live: the PUT invalidated the CDN copy and the edge then served the NEW placeholder to
-  // uncredentialed requests for minutes. So the old content is gone at once and what lingers is an
-  // unlocked placeholder. Saying "no visitor can read the old content" while also saying the CDN
-  // kept answering was self-contradictory, and the report may not imply the old page stays up.
-  const output = createShareUnpublishOutput({
-    site: { url: "https://x.ht-ml.app/", site_id: "x", status: "active" },
-  });
-
-  assert.match(output.next_step, /previous content is gone/i, "the swap must read as immediate");
-  assert.match(output.next_step, /cach/i, "the lagging lock must still be disclosed");
-  assert.match(output.next_step, /readable without the password/i);
-  assert.doesNotMatch(output.next_step, /no visitor can read the old content/i);
 });

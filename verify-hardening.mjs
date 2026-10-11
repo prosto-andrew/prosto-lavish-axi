@@ -47,6 +47,10 @@ function mustContain(text, needle, where) {
   if (!text.includes(needle)) throw new Error(`${where} does not contain ${needle}`);
 }
 
+function mustNotExist(rel) {
+  if (existsSync(path.join(root, rel))) throw new Error(`${rel} still exists`);
+}
+
 // The upstream release this tree was last merged from and audited against. The launchers
 // defer to this pin through --quiet. Bump it only after re-running every check.
 const AUDITED_VERSION = "0.1.82";
@@ -61,6 +65,8 @@ check("source: telemetry permanently disabled", () => {
   const src = read("src/telemetry.js");
   mustContain(src, "export function resolveTelemetryConfig(..._ignored) {", "src/telemetry.js");
   mustNotContain(src, "a.kunchenguid.com", "src/telemetry.js");
+  // The build no longer injects an analytics site for the removed client to report to.
+  mustNotContain(read("scripts/build.js"), "UMAMI", "scripts/build.js");
   return "no config path can enable it";
 });
 
@@ -83,13 +89,63 @@ check("source: publishing removed", () => {
   mustContain(server, "publishing is disabled in this hardened build", "src/server.js");
   const chrome = read("src/chrome-client.js");
   mustNotContain(chrome, "shareArtifactButton.onclick = openShareDialog;", "src/chrome-client.js");
-  return "CLI, HTTP route, browser action and network layer";
+  // Only the refusals stay. The request parsing, password minting, output builders and payload
+  // helpers behind them are deleted, not left unreachable for a merge to wire up again.
+  mustNotExist("src/share-password.js");
+  for (const needle of [
+    'from "./html-app.js"',
+    'from "./share-password.js"',
+    "resolveShareRequest",
+    "createShareOutput",
+    "createShareUpdateOutput",
+    "createShareUnpublishOutput",
+  ]) {
+    mustNotContain(cli, needle, "src/cli.js");
+  }
+  for (const needle of [
+    "htmlAppApiUrl",
+    "LAVISH_AXI_HTML_APP_API_URL",
+    "createHtmlAppPayload",
+    "createHtmlAppUpdatePayload",
+    "normalizeSiteId",
+    "createUnpublishedPageHtml",
+    "hostRejectedShareWrite",
+    "htmlAppIncompleteResponseError",
+    "publishedDespiteError",
+  ]) {
+    mustNotContain(app, needle, "src/html-app.js");
+  }
+  mustNotContain(server, "globe: chromeIcon(", "src/server.js");
+  const dist = read("dist/cli.mjs");
+  for (const needle of ["createShareOutput", "generateSharePassword", "normalizeSiteId"]) {
+    mustNotContain(dist, needle, "dist/cli.mjs");
+  }
+  return "CLI, HTTP route, browser action and network layer; only the refusals remain";
 });
 
 check("source: setup / hook installation removed", () => {
   const cli = read("src/cli.js");
   mustContain(cli, 'setup: disabledCommand("setup")', "src/cli.js");
-  return "no persistent hooks or plugin registration";
+  // plugin.js keeps only the manifest builders scripts/build-plugin.js needs; the client
+  // registration helpers and the process spawner they used are deleted.
+  mustNotContain(cli, 'from "./plugin.js"', "src/cli.js");
+  const plugin = read("src/plugin.js");
+  for (const needle of [
+    "cross-spawn",
+    "spawnPluginClientSync",
+    "resolvePluginRoot",
+    "readPluginManifest",
+    "isStalePluginLocation",
+    "computeVsCodePluginLocationsUpdate",
+    "resolveVsCodeSettingsFile",
+    "resolveCursorLocalPluginsDir",
+    "writeTextFileAtomically",
+    "linkCursorLocalPlugin",
+  ]) {
+    mustNotContain(plugin, needle, "src/plugin.js");
+  }
+  mustNotContain(read("dist/cli.mjs"), "cross-spawn", "dist/cli.mjs");
+  return "no persistent hooks or plugin registration, and no code left to do either";
 });
 
 check("self-update is refused before it reaches the npm registry", () => {
