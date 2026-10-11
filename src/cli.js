@@ -1143,23 +1143,62 @@ export async function waitForPortFree(baseUrl, timeoutMs) {
 
 // PIDs listening on exactly this server's address and port whose command is Lavish. Other
 // processes can share the port at other addresses, so nothing is identified by port alone.
-// macOS/Linux only (lsof) - the upstream package isn't shipped for Windows today.
 function lavishListenerPids(baseUrl) {
   const { hostname, port } = new URL(baseUrl);
   try {
-    const listing = spawnSync("lsof", ["-t", `-iTCP@${hostname}:${port}`, "-sTCP:LISTEN"], { encoding: "utf8" });
-    if (listing.status !== 0) return [];
-    const pids = [];
-    for (const line of listing.stdout.split("\n")) {
-      const pid = Number(line.trim());
-      if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
-      const command = spawnSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
-      if (command.status === 0 && /lavish-axi/.test(command.stdout)) pids.push(pid);
-    }
-    return pids;
+    const listeners = process.platform === "win32" ? windowsListeners(hostname, port) : posixListeners(hostname, port);
+    return listeners
+      .filter(
+        ({ pid, command }) => Number.isInteger(pid) && pid > 0 && pid !== process.pid && /lavish-axi/.test(command),
+      )
+      .map(({ pid }) => pid);
   } catch {
     return [];
   }
+}
+
+function posixListeners(hostname, port) {
+  const listing = spawnSync("lsof", ["-t", `-iTCP@${hostname}:${port}`, "-sTCP:LISTEN"], { encoding: "utf8" });
+  if (listing.status !== 0) return [];
+  return listing.stdout
+    .split("\n")
+    .filter((line) => line.trim())
+    .map((line) => {
+      const pid = Number(line.trim());
+      const command = spawnSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
+      return { pid, command: command.status === 0 ? command.stdout : "" };
+    });
+}
+
+// Windows has no lsof: one PowerShell call lists the processes listening on exactly this address
+// and port, with each one's command line. The address and port reach the script through the
+// environment, never spliced into its text. Each output line is `<pid><TAB><command line>`, the
+// command line's whitespace collapsed so an argument holding a newline cannot split its record.
+const WINDOWS_LISTENERS_SCRIPT = [
+  "$ErrorActionPreference = 'SilentlyContinue'",
+  "Get-NetTCPConnection -State Listen -LocalAddress $env:LAVISH_LISTEN_HOST -LocalPort ([int]$env:LAVISH_LISTEN_PORT) |",
+  "  Select-Object -ExpandProperty OwningProcess -Unique |",
+  "  ForEach-Object {",
+  '    $command = [string](Get-CimInstance Win32_Process -Filter "ProcessId=$_").CommandLine -replace "\\s+", " "',
+  '    "$_`t$command"',
+  "  }",
+].join("\n");
+
+function windowsListeners(hostname, port) {
+  const listing = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_LISTENERS_SCRIPT], {
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 15_000,
+    env: { ...process.env, LAVISH_LISTEN_HOST: hostname.replace(/^\[|\]$/g, ""), LAVISH_LISTEN_PORT: String(port) },
+  });
+  if (listing.status !== 0) return [];
+  return listing.stdout
+    .split(/\r?\n/)
+    .filter((line) => line.includes("\t"))
+    .map((line) => {
+      const tab = line.indexOf("\t");
+      return { pid: Number(line.slice(0, tab).trim()), command: line.slice(tab + 1) };
+    });
 }
 
 function listenerMatchesLavish(baseUrl) {
