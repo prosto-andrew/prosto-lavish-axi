@@ -2070,8 +2070,16 @@ export function createArtifactSdk(
       return;
     }
     if (resolved.origin !== window.location.origin) return;
+    // LAVISH-HARDENED: the document's relative URLs carry this load's token in their path. The
+    // report goes to the agent, which needs the file, not a one-load secret, so name the file
+    // the way it was named before the token moved into the path.
+    const ownPrefix = "/artifact/" + sessionKey + "/" + artifactLoadToken + "/";
+    const shownPath =
+      sessionKey && artifactLoadToken && resolved.pathname.startsWith(ownPrefix)
+        ? "/artifact/" + sessionKey + "/" + resolved.pathname.slice(ownPrefix.length)
+        : resolved.pathname;
     postArtifactMessage("lavish:artifactAssetFailure", {
-      detail: "<" + tag + "> could not load " + resolved.pathname,
+      detail: "<" + tag + "> could not load " + shownPath,
     });
   }
 

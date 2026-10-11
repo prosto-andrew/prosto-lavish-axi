@@ -126,8 +126,9 @@ test(
       const base = `http://127.0.0.1:${server.port}`;
       const artifact = path.join(dir, "artifact.html");
       await writeFile(artifact, "<!doctype html><html><body><p>session artifact</p></body></html>");
-      // A sibling page is served by the same /artifact/* route and CSP sandbox, without
-      // needing the chrome's artifact_load_token handoff or the injected SDK.
+      // A sibling page is served by the same /artifact/* route and CSP sandbox under the current
+      // load token, the path the review document's relative links resolve into, without the
+      // injected SDK. LAVISH-HARDENED: no file beside an artifact is served without that token.
       await writeFile(
         path.join(dir, "diagram.html"),
         `<!doctype html><html><head><meta charset="utf-8"><title>mermaid</title></head><body>
@@ -141,7 +142,21 @@ ${MERMAID_CDN_SNIPPET}
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ file: artifact }),
       }).then((res) => res.json());
-      const url = `${base}/artifact/${opened.key}/diagram.html`;
+      // What the chrome does before it navigates its frame: take the handoff, then begin a load.
+      const handoff = await fetch(`${base}/api/${opened.key}/chrome-loads/begin`, {
+        method: "POST",
+        headers: { origin: base },
+      }).then((res) => res.json());
+      const load = await fetch(`${base}/api/${opened.key}/artifact-loads/begin`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          request_id: "mermaid-sibling",
+          request_sequence: handoff.artifact_load_sequence + 1,
+          chrome_load_token: handoff.chrome_load_token,
+        }),
+      }).then((res) => res.json());
+      const url = `${base}/artifact/${opened.key}/${encodeURIComponent(load.artifact_load_token)}/diagram.html`;
 
       // Without the sandbox the page would be same-origin and the test would prove nothing.
       const head = await fetch(url);

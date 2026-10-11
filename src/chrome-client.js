@@ -3259,6 +3259,11 @@ function markSessionEnded() {
   terminalSubmission = null;
   persistTerminalReservation(false);
   cancelArtifactLoadRecovery();
+  // No load begins once the review has ended. A page rendered for an ended review would otherwise
+  // keep an empty frame, so show the load it was rendered with - the frame's only navigation.
+  if (artifactSrc && !frame.src && artifactLoadToken) {
+    frame.src = artifactFrameSrcForLoad({ revision: artifactLoadRevision, token: artifactLoadToken });
+  }
   closeMenus();
   closeWarningsDrawer();
   renderWarnings();
@@ -3404,6 +3409,11 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
   const requestId = `lavish-load-${Date.now().toString(36)}-${requestSequence}-${Math.random().toString(36).slice(2)}`;
   const previousToken = artifactLoadToken;
   const preservePreviousLoad = () => {
+    // No newer load began, and at boot nothing is on screen yet: show the load this page was
+    // rendered with (or the one its handoff reported) instead of an empty frame.
+    if (requestSequence === artifactLoadRequestSequence && !ended && !frame.src && artifactLoadToken) {
+      frame.src = artifactFrameSrcForLoad({ revision: artifactLoadRevision, token: artifactLoadToken });
+    }
     if (
       requestSequence === artifactLoadRequestSequence &&
       !ended &&
@@ -4047,11 +4057,12 @@ window.addEventListener("message", (event) => {
   }
 });
 
+// The frame is navigated once per load. Showing the rendered load first and then the one the
+// boot begins put two iframe.src assignments back to back, and Chrome can lose the second when it
+// lands just as the first navigation commits - leaving a reopened review on the load it had just
+// retired. The rendered load is shown only when no newer one can begin (preservePreviousLoad).
 function loadFrame() {
   if (artifactSrc) {
-    if (artifactLoadToken) {
-      frame.src = artifactFrameSrcForLoad({ revision: artifactLoadRevision, token: artifactLoadToken });
-    }
     replaceArtifactFrame().catch(() => {});
   }
 }

@@ -106,6 +106,32 @@ test("GET /api/:key/attachments/:id serves the stored bytes with the right type"
   });
 });
 
+// LAVISH-HARDENED: only the review page, a same-origin document, shows attachments. A page on
+// another site, another loopback port, or opened from disk sends its own Sec-Fetch-Site, and would
+// otherwise confirm that the user attached an image it already has.
+test("attachment reads refuse other sites' pages", async () => {
+  await withSession(async ({ base, key }) => {
+    const { attachment } = await (await uploadImage(base, key, PNG_2x1)).json();
+    const read = (site) =>
+      fetch(
+        `${base}/api/${key}/attachments/${attachment.id}`,
+        site === undefined ? {} : { headers: { "sec-fetch-site": site } },
+      );
+    for (const site of ["cross-site", "same-site", "bogus", ""]) {
+      const res = await read(site);
+      assert.equal(res.status, 403, site);
+      assert.deepEqual(await res.json(), { error: "cross-site attachment read rejected" });
+      assert.match(res.headers.get("vary") || "", /sec-fetch-site/i);
+    }
+    for (const site of ["same-origin", "none", undefined]) {
+      const res = await read(site);
+      assert.equal(res.status, 200, String(site));
+      assert.deepEqual(Buffer.from(await res.arrayBuffer()), PNG_2x1);
+      assert.match(res.headers.get("vary") || "", /sec-fetch-site/i);
+    }
+  });
+});
+
 test("GET returns 404 for unknown or malformed ids", async () => {
   await withSession(async ({ base, key }) => {
     assert.equal((await fetch(`${base}/api/${key}/attachments/${"f".repeat(64)}.png`)).status, 404);
