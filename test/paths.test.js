@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { chmod, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
   bindHost,
   clientHost,
+  ensureStateDir,
   extraAllowedHosts,
   hostForUrl,
   LOOPBACK_HOST,
@@ -71,4 +75,45 @@ test("hostForUrl brackets IPv6 literals but leaves IPv4 and hostnames alone", ()
   assert.equal(hostForUrl("host.example"), "host.example");
   assert.equal(hostForUrl("::1"), "[::1]");
   assert.equal(hostForUrl("[::1]"), "[::1]");
+});
+
+// POSIX file modes have no Windows equivalent (chmod there only toggles a read-only flag).
+const posixOnly = { skip: process.platform === "win32" ? "POSIX file modes" : false };
+
+async function withStateDirEnv(run) {
+  const root = await mkdtemp(path.join(os.tmpdir(), "lavish-paths-"));
+  const previous = process.env.LAVISH_AXI_STATE_DIR;
+  try {
+    await run(root);
+  } finally {
+    if (previous === undefined) delete process.env.LAVISH_AXI_STATE_DIR;
+    else process.env.LAVISH_AXI_STATE_DIR = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+test("ensureStateDir creates the state dir private to the owner", posixOnly, async () => {
+  await withStateDirEnv(async (root) => {
+    const stateDir = path.join(root, "state");
+    process.env.LAVISH_AXI_STATE_DIR = stateDir;
+
+    await ensureStateDir();
+
+    assert.equal((await stat(stateDir)).mode & 0o777, 0o700);
+  });
+});
+
+// LAVISH_AXI_STATE_DIR may name a dir the user shares on purpose, so its mode stays theirs; the
+// files Lavish keeps in it are owner-only one by one.
+test("ensureStateDir leaves the mode of an existing state dir alone", posixOnly, async () => {
+  await withStateDirEnv(async (root) => {
+    const stateDir = path.join(root, "shared");
+    await mkdir(stateDir);
+    await chmod(stateDir, 0o755);
+    process.env.LAVISH_AXI_STATE_DIR = stateDir;
+
+    await ensureStateDir();
+
+    assert.equal((await stat(stateDir)).mode & 0o777, 0o755);
+  });
 });
