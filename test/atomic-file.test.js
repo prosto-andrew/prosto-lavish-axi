@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { writeFileAtomically } from "../src/atomic-file.js";
+import { TEMPORARY_FILE_RE, writeFileAtomically } from "../src/atomic-file.js";
 
 async function withFile(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-atomic-"));
@@ -34,6 +34,26 @@ test("replaces the file with the new contents and leaves no temporary file", asy
 
     assert.equal(await readFile(file, "utf8"), "new\n");
     assert.deepEqual(await readdir(dir), ["state.json"]);
+  });
+});
+
+// The attachment sweeper reaps crash debris by this name alone, so the name a replace really gives its
+// temporary file has to match, and the files it replaces - a stored image, its sidecar - must not.
+test("TEMPORARY_FILE_RE matches the temporary file a replace writes and none of the files it replaces", async () => {
+  await withFile(async (file) => {
+    let temporary = "";
+    const renameFile = async (from) => {
+      temporary = from;
+      throw Object.assign(new Error("EIO: rename failed"), { code: "EIO" });
+    };
+    await assert.rejects(writeFileAtomically(file, "new\n", { renameFile }), /EIO/);
+
+    assert.equal(path.dirname(temporary), path.dirname(file));
+    assert.match(path.basename(temporary), TEMPORARY_FILE_RE);
+    const image = `${"a".repeat(64)}.png`;
+    for (const name of ["state.json", image, `${image}.meta`, "3.json", "3.excalidraw"]) {
+      assert.doesNotMatch(name, TEMPORARY_FILE_RE);
+    }
   });
 });
 

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, open, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,6 +10,7 @@ import {
   isValidWhiteboardKey,
   loadWhiteboard,
   saveWhiteboard,
+  whiteboardDir,
   whiteboardFeedbackPaths,
   writeWhiteboardFeedbackFiles,
 } from "../src/whiteboard-store.js";
@@ -25,6 +26,20 @@ async function withTempDir(run) {
     await run(dir);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+}
+
+const onlyWindows = { skip: process.platform !== "win32" && "only Windows refuses to replace a file that is open" };
+
+// Holds `file` open the way a concurrent reader does, runs `write`, and lets go 50 ms in. The handle
+// is closed before this returns either way, so the temp dir can still be removed after a failure.
+async function writeWhileHeldOpen(file, write) {
+  const reader = await open(file, "r");
+  const released = new Promise((resolve) => setTimeout(resolve, 50)).then(() => reader.close());
+  try {
+    return await write();
+  } finally {
+    await released;
   }
 }
 
@@ -79,6 +94,23 @@ test("concurrent saves preserve the most recent scene", async () => {
   });
 });
 
+// `loadWhiteboard` reads the sidecar outside the write queue - a second tab opening the diagram
+// while this one autosaves - and on Windows any open handle refuses the replace.
+test("on Windows an autosave lands once a reader of the sidecar lets go", onlyWindows, async () => {
+  await withTempDir(async (dir) => {
+    await saveWhiteboard(dir, KEY, 3, { sourceHash: "old", scene: { elements: [] } });
+    const sidecar = path.join(whiteboardDir(dir, KEY), "3.json");
+
+    await writeWhileHeldOpen(sidecar, () =>
+      saveWhiteboard(dir, KEY, 3, { sourceHash: "new", scene: { elements: [{ id: "new" }] } }),
+    );
+
+    const loaded = await loadWhiteboard(dir, KEY, 3);
+    assert.equal(loaded.source_hash, "new");
+    assert.deepEqual(loaded.scene, { elements: [{ id: "new" }] });
+  });
+});
+
 test("store rejects invalid keys and indexes (path traversal guard)", async () => {
   await withTempDir(async (dir) => {
     await assert.rejects(() => saveWhiteboard(dir, "../../etc", 0, { sourceHash: "", scene: null }), /invalid/);
@@ -125,6 +157,28 @@ test("writeWhiteboardFeedbackFiles tolerates a missing or invalid preview", asyn
     });
     assert.ok(scenePath.endsWith("4.excalidraw"));
     assert.equal(previewPath, "");
+  });
+});
+
+// The agent reads the published preview while the user queues the next note on the same diagram.
+test("on Windows republishing feedback files lands once a reader of the preview lets go", onlyWindows, async () => {
+  await withTempDir(async (dir) => {
+    const { previewPath } = await writeWhiteboardFeedbackFiles(dir, KEY, 6, {
+      scene: { elements: [{ id: "first" }] },
+      pngDataUrl: PNG_DATA_URL,
+    });
+
+    const secondPng = Buffer.concat([decodePngDataUrl(PNG_DATA_URL), Buffer.from("second")]);
+
+    const { scenePath } = await writeWhileHeldOpen(previewPath, () =>
+      writeWhiteboardFeedbackFiles(dir, KEY, 6, {
+        scene: { elements: [{ id: "second" }] },
+        pngDataUrl: `data:image/png;base64,${secondPng.toString("base64")}`,
+      }),
+    );
+
+    assert.equal(JSON.parse(await readFile(scenePath, "utf8")).elements[0].id, "second");
+    assert.deepEqual(await readFile(previewPath), secondPng);
   });
 });
 

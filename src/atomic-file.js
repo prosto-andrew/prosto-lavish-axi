@@ -10,6 +10,11 @@ const RETRYABLE_RENAME_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
 
 let temporaryFileId = 0;
 
+// Matches the temporary names `writeFileAtomically` writes (two numeric segments + `.tmp`) and no
+// file it replaces. A crash between the write and the rename leaves one behind, and the attachment
+// sweeper recognizes that debris by this name alone, so the name and this pattern change together.
+export const TEMPORARY_FILE_RE = /\.\d+\.\d+\.tmp$/;
+
 /**
  * Replace `file` so a reader sees either its previous or its new contents, never a mix, and a
  * crash mid-write leaves the previous file whole. The temporary name `<file>.<pid>.<n>.tmp` sits

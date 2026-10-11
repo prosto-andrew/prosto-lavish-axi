@@ -1,6 +1,7 @@
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { writeFileAtomically } from "./atomic-file.js";
 import { sanitizeWhiteboardScene } from "./whiteboard-core.js";
 
 // Sidecar persistence for whiteboard scenes, kept out of `state.json` on
@@ -12,7 +13,6 @@ import { sanitizeWhiteboardScene } from "./whiteboard-core.js";
 
 const KEY_RE = /^[0-9a-f]{16}$/;
 const writeTails = new Map();
-let temporaryFileId = 0;
 
 export function isValidWhiteboardKey(key) {
   return KEY_RE.test(String(key || ""));
@@ -50,17 +50,6 @@ function queueWhiteboardWrite(stateDir, key, index, operation) {
     if (writeTails.get(queueKey) === tail) writeTails.delete(queueKey);
   });
   return result;
-}
-
-async function writeFileAtomically(file, content) {
-  const temporary = `${file}.${process.pid}.${++temporaryFileId}.tmp`;
-  try {
-    await writeFile(temporary, content);
-    await rename(temporary, file);
-  } catch (error) {
-    await rm(temporary, { force: true }).catch(() => {});
-    throw error;
-  }
 }
 
 export function whiteboardFeedbackPaths(stateDir, key, index) {
