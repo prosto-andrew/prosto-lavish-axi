@@ -8,6 +8,8 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { fetchHealth } from "../src/cli.js";
+
 const runBrowserE2e = process.env.LAVISH_AXI_BROWSER_E2E === "1";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const baseCommit = "5b871af347444feda1d3002952ec5fc179248629";
@@ -28,12 +30,9 @@ async function waitForHealth(base, child, output) {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) throw new Error(`server exited before health check\n${output.join("")}`);
-    try {
-      const response = await fetch(`${base}/health`);
-      if (response.ok) return;
-    } catch {
-      // The private server may still be binding. Retry until the deadline.
-    }
+    // The private server may still be binding. Retry until the deadline, with the node:http probe
+    // rather than fetch (src/socket-tos-guard.js).
+    if (await fetchHealth(base)) return;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error(`server did not become healthy\n${output.join("")}`);

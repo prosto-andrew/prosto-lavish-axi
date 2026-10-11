@@ -12,7 +12,7 @@ import test from "node:test";
 
 import WebSocket from "ws";
 
-import { run, stopCommand, VERSION } from "../src/cli.js";
+import { fetchHealth, run, stopCommand, VERSION } from "../src/cli.js";
 import { serve } from "../src/server.js";
 
 const SERVER_ENTRY = fileURLToPath(new URL("../bin/lavish-axi-server.js", import.meta.url));
@@ -477,15 +477,13 @@ test("a clean detached-server shutdown exits 0 without an error in server.log", 
       const deadline = Date.now() + 5000;
       let ready = false;
       while (Date.now() < deadline) {
-        try {
-          const health = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
-          if (health.ok) {
-            ready = true;
-            break;
-          }
-        } catch {
-          await new Promise((resolve) => setTimeout(resolve, 50));
+        // The node:http probe, not fetch (src/socket-tos-guard.js): this server may still be binding.
+        const health = await fetchHealth(`http://127.0.0.1:${port}`);
+        if (health?.ok) {
+          ready = true;
+          break;
         }
+        await new Promise((resolve) => setTimeout(resolve, 50));
       }
       assert.equal(ready, true);
       await fetch(`http://127.0.0.1:${port}/shutdown`, { method: "POST" });
@@ -573,15 +571,13 @@ net.Server.prototype.emit = function (event, ...args) {
         let ready = false;
         const deadline = Date.now() + 5000;
         while (Date.now() < deadline) {
-          try {
-            const health = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
-            if (health.ok) {
-              ready = true;
-              break;
-            }
-          } catch {
-            await new Promise((resolve) => setTimeout(resolve, 50));
+          // The node:http probe, not fetch (src/socket-tos-guard.js): this server may still be binding.
+          const health = await fetchHealth(`http://127.0.0.1:${port}`);
+          if (health?.ok) {
+            ready = true;
+            break;
           }
+          await new Promise((resolve) => setTimeout(resolve, 50));
         }
         assert.equal(ready, true, "post-listen error must not take down the server");
         await fetch(`http://127.0.0.1:${port}/shutdown`, { method: "POST" });
