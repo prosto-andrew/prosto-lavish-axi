@@ -6,6 +6,13 @@ import { excalidrawFontCdnPlugin } from "./excalidraw-font-cdn.js";
 
 const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 
+// LAVISH-HARDENED: both bundles say what they are on their first line after the hashbang, rather
+// than through whichever source comments survive bundling. verify-hardening.mjs checks the line,
+// version included.
+const hardenedBanner = {
+  js: `// LAVISH-HARDENED build of lavish-axi ${packageJson.version}: telemetry, publishing, non-loopback networking, setup hooks and CDN loads are removed at the source level. Check it with \`node verify-hardening.mjs\`.`,
+};
+
 await mkdir("dist", { recursive: true });
 
 await esbuild.build({
@@ -16,6 +23,7 @@ await esbuild.build({
   platform: "node",
   format: "esm",
   target: "node22",
+  banner: hardenedBanner,
   define: {
     "process.env.LAVISH_AXI_BUILD_VERSION": JSON.stringify(packageJson.version),
   },
@@ -31,6 +39,7 @@ await esbuild.build({
   platform: "node",
   format: "esm",
   target: "node22",
+  banner: hardenedBanner,
   plugins: [
     {
       name: "external-cli",

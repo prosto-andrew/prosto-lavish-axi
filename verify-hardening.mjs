@@ -304,22 +304,54 @@ check("the bundled CLI spawns the bundled server", () => {
   return "the server runs the same verified bundle as the CLI";
 });
 
-check("build carries the hardening markers", () => {
-  const dist = read("dist/cli.mjs");
-  mustContain(dist, "LAVISH-HARDENED", "dist/cli.mjs");
-  return "markers present";
-});
+// scripts/build.js opens both bundles with this line (after the hashbang), so the build says what
+// it is on purpose rather than through whichever source comments survive bundling. The version
+// ties the bundle to the audited checkout: a dist/ built from another version is caught even when
+// its files are newer than every input.
+const BUILD_BANNER = `// LAVISH-HARDENED build of lavish-axi ${AUDITED_VERSION}:`;
 
-check("build reaches no external host", () => {
-  for (const file of ["dist/cli.mjs", "dist/server.mjs", "dist/chrome-client.js"]) {
-    const text = read(file);
-    // The bare hostname still appears in the two messages that explain why `share`
-    // and `setup` are gone, so match the URL forms - an endpoint, not a mention.
-    for (const host of ["a.kunchenguid.com", "api.ht-ml.app", "https://ht-ml.app", "cdn.jsdelivr.net"]) {
-      mustNotContain(text, host, file);
+check("build carries the hardening markers", () => {
+  for (const rel of ["dist/cli.mjs", "dist/server.mjs"]) {
+    const head = read(rel).split(/\r?\n/, 2);
+    if (!head.some((line) => line.startsWith(BUILD_BANNER))) {
+      throw new Error(`${rel} does not open with "${BUILD_BANNER}" - ${REBUILD}`);
     }
   }
-  return "no telemetry, publishing or CDN endpoint in the bundle";
+  return `both bundles open with the ${AUDITED_VERSION} banner`;
+});
+
+// Every literal URL origin in the code the server runs and the review page loads, each with why it
+// is safe. A new destination fails the check whatever it is, instead of having to be guessed into a
+// list of known-bad hosts. The scan reads http, https, ws and wss in any case, IP literals,
+// bracketed IPv6 and dotless hosts. A host built at run time (`http://${host}:${port}`) is no
+// literal and stays the job of the loopback and CSP checks, and so does a protocol-relative
+// `//host`, which a scan cannot tell from a comment. A bare hostname is a mention, not an
+// endpoint: the messages explaining why `share` and `setup` are gone still name theirs.
+const KNOWN_BUILD_ORIGINS = new Map([
+  ["http://127.0.0.1", "loopback, in the artifact policy's source list"],
+  ["http://localhost", "loopback, in the artifact policy's source list"],
+  ["http://lavish.local", "the base new URL() parses request paths against, never dialed"],
+  ["http://www.w3.org", "the SVG namespace of the default favicon, never fetched"],
+]);
+
+function literalOrigins(text) {
+  const origins = new Set();
+  for (const match of text.matchAll(/\b(https?|wss?):\/\/(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)/gi)) {
+    origins.add(`${match[1]}://${match[2]}`.toLowerCase());
+  }
+  return origins;
+}
+
+check("build reaches no external host", () => {
+  const found = new Set();
+  for (const file of ["dist/cli.mjs", "dist/server.mjs", "dist/chrome-client.js", "dist/chrome.css"]) {
+    for (const origin of literalOrigins(read(file))) found.add(origin);
+  }
+  const unknown = [...found].filter((origin) => !KNOWN_BUILD_ORIGINS.has(origin)).sort();
+  if (unknown.length) {
+    throw new Error(`external origin(s) in the build: ${unknown.join(", ")} - re-audit before accepting`);
+  }
+  return `${found.size} literal origins, all loopback or never dialed`;
 });
 
 check("artifact responses pin every source to loopback", () => {
