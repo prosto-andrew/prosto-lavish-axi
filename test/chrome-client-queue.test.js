@@ -90,7 +90,8 @@ async function createChromeHarness({
   locks = null,
   // When the artifact frame fires `load`. "auto" follows every src assignment with a load on the
   // next microtask, as a browser does; "manual" leaves every load to the test, for tests about
-  // what happens while a navigation has not loaded yet.
+  // what happens while a navigation has not loaded yet. A test where the order of loads matters
+  // takes "manual": in "auto" the automatic load arrives before the test's own dispatch("load").
   frameLoads = "auto",
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
@@ -4225,6 +4226,43 @@ test("a load that releases a waiting navigation is not replayed into the documen
   assert.equal(count("lavish:restoreScroll"), scrolls + 1);
 });
 
+// A reload whose old page still holds its stash lock takes the stash over only once that page lets
+// go, which can fall between the load that releases a waiting navigation and the final one. The
+// early load returns before `artifactFrameLoaded`, so a review draft taken over then is replayed
+// into the document that stays rather than handed back as a retired draft.
+test("a review draft taken over between a releasing load and the final one is replayed, not retired", async () => {
+  const localStore = new Map();
+  const locks = createFakeLockManager();
+  const before = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html", localStore, locks });
+  await flushPromises();
+  reportDraft(before, "#intro", "Tighten this paragraph");
+  const oldId = tabStashId(before);
+
+  // The reload kept this tab's stash id but not its review state, so the draft can only come back
+  // through the stash.
+  const after = await bootWithManualFrameLoads({
+    storage: new Map([["lavish-axi:stash-tab:abc", oldId]]),
+    localStore,
+    locks,
+  });
+  await liveReload(after);
+  after.frame.dispatch("load");
+  assert.equal(after.srcLoads.at(-1)?.src, harnessLoadSrc(2));
+
+  endPage(locks, oldId);
+  await flushPromises();
+  await flushPromises();
+  after.frame.dispatch("load");
+
+  assert.deepEqual(
+    after.postedToFrame
+      .filter((message) => message.type === "lavish:restoreReviewState")
+      .map((message) => message.state.card.text),
+    ["Tighten this paragraph"],
+  );
+  assert.equal(after.storage.get("lavish-axi:retired-drafts:abc"), undefined);
+});
+
 test("a navigation that never loads is released by the fallback", async () => {
   const chrome = await bootWithManualFrameLoads();
   await liveReload(chrome);
@@ -6743,6 +6781,41 @@ test("a retired load's probe is not navigated again", async () => {
   );
 });
 
+// The probe is held until the review has ended, so this pins the end check in
+// retrySilentArtifactLoad itself, whether or not ending the review also cancels the probe's timer.
+test("an ended review's silent load is not navigated again", async () => {
+  const probes = [];
+  /** @type {((value: any) => void) | undefined} */
+  let answerProbe;
+  const chrome = await bootWithManualFrameLoads({
+    fetchImpl: probeRecordingFetch(
+      probes,
+      () =>
+        new Promise((resolve) => {
+          answerProbe = resolve;
+        }),
+    ),
+  });
+
+  chrome.frame.dispatch("load");
+  chrome.runTimers(8000);
+  await flushPromises();
+  chrome.eventSource().listeners.get("ended")();
+  await flushPromises();
+  assert.ok(answerProbe);
+  answerProbe({ ok: true, status: 200, json: async () => ({}) });
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(probes.length, 1);
+  assert.equal(chrome.srcLoads.length, 1);
+});
+
+// A unit guard for the in-flight check in retrySilentArtifactLoad, not a sequence real time
+// produces: runTimers(8000) fires only the probe's timer. In real time the 1000 ms begin-load
+// recovery would clear that timer (replaceArtifactFrame) and the 3000 ms fallback would release
+// the navigation well before it. What this pins is that a probe answering while a navigation is
+// in flight adds none, so the one-navigation-at-a-time rule holds whoever asks.
 test("a probe answering while the frame's navigation has not loaded adds no navigation", async () => {
   const probes = [];
   const chrome = await createChromeHarness({
