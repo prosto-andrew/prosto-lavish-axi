@@ -3450,18 +3450,21 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
   let load;
   let transportAttempt = 0;
   let handoffRefreshAttempted = false;
+  // This attempt's one handshake. True lets the attempt go on; false ends it, because a newer
+  // load took over or the recovery schedule now owns the retry. It never throws, so a failed
+  // handshake cannot fall into the begin-load's transport retry below.
+  const takeHandoff = async () => {
+    handoffRefreshAttempted = true;
+    try {
+      return await refreshChromeLoadHandoff(requestSequence);
+    } catch {
+      return recoverLater();
+    }
+  };
   while (true) {
     if (requestSequence !== artifactLoadRequestSequence || ended) return false;
     // A chrome with no handoff yet takes one first. It counts as this attempt's one handshake.
-    if (!chromeLoadToken && !handoffRefreshAttempted) {
-      handoffRefreshAttempted = true;
-      try {
-        const refreshed = await refreshChromeLoadHandoff(requestSequence);
-        if (!refreshed) return false;
-      } catch {
-        return recoverLater();
-      }
-    }
+    if (!chromeLoadToken && !handoffRefreshAttempted && !(await takeHandoff())) return false;
     try {
       const response = await fetch("/api/" + key + "/artifact-loads/begin", {
         method: "POST",
@@ -3479,13 +3482,7 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
           // One re-handshake per attempt keeps a live reviewer from being ping-ponged; the
           // retry that follows is a whole fresh attempt, so the rule still holds.
           if (handoffRefreshAttempted) return recoverLater();
-          handoffRefreshAttempted = true;
-          try {
-            const refreshed = await refreshChromeLoadHandoff(requestSequence);
-            if (!refreshed) return false;
-          } catch {
-            return recoverLater();
-          }
+          if (!(await takeHandoff())) return false;
           continue;
         }
         if (status === "superseded") {
