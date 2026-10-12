@@ -1864,6 +1864,96 @@ test("a failed boot handshake waits for the recovery schedule instead of re-hand
   assert.equal(chrome.artifactBeginRequests.length, 1);
 });
 
+test("a failed re-handshake after a lost handoff waits for the recovery schedule instead of retrying the begin-load", async () => {
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    sessionData: { ...defaultSessionData, initialArtifactRevision: 1, initialArtifactLoadToken: "old-load" },
+    beginLoadResponses: [
+      { ok: true, json: async () => ({ artifact_revision: 2, artifact_load_token: "load-2" }) },
+      { ok: false, status: 409, json: async () => ({ status: "no-handoff" }) },
+    ],
+    handoffResponses: [
+      {
+        ok: true,
+        json: async () => ({
+          chrome_load_token: "expired-handoff",
+          artifact_revision: 1,
+          artifact_load_token: "old-load",
+          artifact_load_sequence: 0,
+        }),
+      },
+      // The restarted server is not answering yet when the chrome re-handshakes.
+      { ok: false, json: async () => ({}) },
+    ],
+  });
+  await flushPromises();
+  await flushPromises();
+  chrome.eventSource().listeners.get("reload")();
+  await flushPromises();
+  await flushPromises();
+  assert.equal(chrome.beginRequests.length, 2);
+  assert.equal(chrome.artifactBeginRequests.length, 2);
+
+  // The begin-load's quick transport retry would ask again with the handoff the server just
+  // reported lost; the attempt is over and the recovery schedule owns the next one.
+  chrome.runTimers(100);
+  await flushPromises();
+  await flushPromises();
+  assert.equal(chrome.artifactBeginRequests.length, 2);
+  chrome.runTimers(1000);
+  await flushPromises();
+  await flushPromises();
+  assert.equal(chrome.artifactBeginRequests.length, 3);
+});
+
+test("a second missing handoff in one attempt waits for the recovery schedule instead of re-handshaking again", async () => {
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    sessionData: { ...defaultSessionData, initialArtifactRevision: 1, initialArtifactLoadToken: "old-load" },
+    beginLoadResponses: [
+      { ok: true, json: async () => ({ artifact_revision: 2, artifact_load_token: "load-2" }) },
+      { ok: false, status: 409, json: async () => ({ status: "no-handoff" }) },
+      { ok: false, status: 409, json: async () => ({ status: "no-handoff" }) },
+    ],
+    handoffResponses: [
+      {
+        ok: true,
+        json: async () => ({
+          chrome_load_token: "expired-handoff",
+          artifact_revision: 1,
+          artifact_load_token: "old-load",
+          artifact_load_sequence: 0,
+        }),
+      },
+      {
+        ok: true,
+        json: async () => ({
+          chrome_load_token: "fresh-handoff",
+          artifact_revision: 2,
+          artifact_load_token: "load-2",
+          artifact_load_sequence: 1,
+        }),
+      },
+    ],
+  });
+  await flushPromises();
+  await flushPromises();
+  chrome.eventSource().listeners.get("reload")();
+  await flushPromises();
+  await flushPromises();
+
+  // The fresh handoff was refused too: a third handshake in the same attempt is the ping-pong the
+  // one-per-attempt rule prevents.
+  assert.equal(chrome.beginRequests.length, 2);
+  assert.equal(chrome.artifactBeginRequests.length, 3);
+  assert.match(chrome.artifactBeginRequests[2].init.body, /fresh-handoff/);
+  chrome.runTimers(1000);
+  await flushPromises();
+  await flushPromises();
+  assert.equal(chrome.beginRequests.length, 2);
+  assert.equal(chrome.artifactBeginRequests.length, 4);
+});
+
 test("chrome client replaces queued prompts with the same internal key", async () => {
   const chrome = await createChromeHarness();
 

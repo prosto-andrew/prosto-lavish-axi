@@ -1768,7 +1768,7 @@ test("poll refuses a request without the CLI client header before claiming or co
   }
 });
 
-test("poll POST without the CLI client header neither takes over nor publishes a reply", async () => {
+test("poll takeover without the CLI client header leaves the listener in place", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
   await writeFile(artifact, "<!doctype html><html><body><h1>hi</h1></body></html>");
@@ -1795,30 +1795,65 @@ test("poll POST without the CLI client header neither takes over nor publishes a
       body: "{}",
     });
     assert.equal(takeover.status, 403);
-    const reply = await fetch(pollUrl, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ agent_reply: "forged reply" }),
-    });
-    assert.equal(reply.status, 403);
-    const chrome = chromeSessionData(await fetch(`${base}/session/${key}`).then((res) => res.text()));
-    assert.equal(
-      chrome.initialChat.some((entry) => String(entry.text).includes("forged reply")),
-      false,
-    );
 
     // The original listener still holds the session and receives the next feedback.
     await fetch(`${base}/api/${key}/prompts`, {
       method: "POST",
       headers: { "content-type": "application/json", origin: base },
-      body: JSON.stringify({ prompts: [{ prompt: "after the forged requests", tag: "message" }] }),
+      body: JSON.stringify({ prompts: [{ prompt: "after the forged takeover", tag: "message" }] }),
     });
     const result = await held;
     assert.equal(result.status, "feedback");
     assert.deepEqual(
       result.prompts.map((prompt) => prompt.prompt),
-      ["after the forged requests"],
+      ["after the forged takeover"],
     );
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// With a listener attached, a reply poll is refused as LISTENER_ACTIVE before it could publish, so
+// only a session nobody listens on shows whether the header check itself keeps the reply out.
+test("a reply poll without the CLI client header publishes nothing, the same request from the CLI does", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>hi</h1></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  const base = `http://127.0.0.1:${server.port}`;
+  try {
+    const { key } = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    }).then((res) => res.json());
+    const pollUrl = `${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`;
+    const chatTexts = async () =>
+      chromeSessionData(await fetch(`${base}/session/${key}`).then((res) => res.text())).initialChat.map((entry) =>
+        String(entry.text),
+      );
+
+    const forged = await fetch(pollUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent_reply: "forged reply" }),
+    });
+    assert.equal(forged.status, 403);
+    assert.deepEqual(await forged.json(), { error: "poll requires the Lavish CLI client header" });
+    assert.equal((await chatTexts()).includes("forged reply"), false);
+
+    // The same request from the CLI publishes its reply, so the refusal above is what kept it out.
+    const real = await pollFetch(pollUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ agent_reply: "real reply" }),
+    });
+    assert.equal(real.status, 200);
+    assert.deepEqual(await real.json(), { status: "waiting" });
+    const chat = await chatTexts();
+    assert.equal(chat.includes("real reply"), true);
+    assert.equal(chat.includes("forged reply"), false);
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });
