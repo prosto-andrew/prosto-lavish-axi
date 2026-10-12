@@ -1145,7 +1145,10 @@ test("hot reload resets iframe src instead of crossing sandbox location", async 
   const js = await chromeClientSource();
 
   assert.doesNotMatch(js, /contentWindow\.location\.reload/);
-  assert.match(js, /frame\.src\s*=\s*artifactFrameSrcForLoad\(\{ revision, token \}\)/);
+  // The frame navigates once per load (navigateArtifactFrame): a new load reaches frame.src only
+  // through the navigation owner, which waits for the previous navigation's load.
+  assert.match(js, /navigateArtifactFrame\(artifactFrameSrcForLoad\(\{ revision, token \}\)\)/);
+  assert.match(js, /\n {2}frame\.src = url;\n/);
   assert.match(js, /artifact-loads\/begin/);
 });
 
