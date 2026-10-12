@@ -2423,7 +2423,7 @@ async function withArtifactFiles(files, run) {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ file: artifact }),
     }).then((res) => res.json());
-    await run({ base, key });
+    await run({ base, key, dir });
   } finally {
     await server.close();
     await rm(parent, { recursive: true, force: true });
@@ -2473,6 +2473,130 @@ test("artifact files are served only under the current load token", async () => 
       const newer = await beginArtifactLoad(base, key);
       assert.equal((await fetch(artifactAssetUrl(base, key, load, "assets/style.css"))).status, 409);
       assert.equal((await fetch(artifactAssetUrl(base, key, newer, "assets/style.css"))).status, 200);
+    },
+  );
+});
+
+// LAVISH-HARDENED: the artifact's module scripts, import(), CORS fetch and @font-face are CORS-mode
+// loads from its opaque origin (`Origin: null`), so its own files must say who may read them. The
+// token in the path is the secret, so the header comes only after the token and path checks.
+test("an artifact's own files answer Access-Control-Allow-Origin: * only under the current load token", async () => {
+  // A 2x1 PNG.
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR42mP8z8BQz0BkYGAAADAAA/8W1p0AAAAASUVORK5CYII=",
+    "base64",
+  );
+  await withArtifactFiles(
+    {
+      "assets/mod.js": "export const value = 1;\n",
+      "assets/фото 1.png": Buffer.from([1, 2, 3]),
+      "top.js": "1;\n",
+    },
+    async ({ base, key }) => {
+      const acao = (res) => res.headers.get("access-control-allow-origin");
+      const get = (url, headers = {}) => fetch(url, { headers: { origin: "null", ...headers }, redirect: "manual" });
+      const load = await beginArtifactLoad(base, key);
+      const token = encodeURIComponent(load.artifact_load_token);
+      const rev = load.artifact_revision;
+
+      const mod = await get(artifactAssetUrl(base, key, load, "assets/mod.js"));
+      assert.equal(mod.status, 200);
+      assert.equal(acao(mod), "*");
+      // A warm-cache reload revalidates the module; the 304 must let it be read too. Node's fetch
+      // adds `cache-control: no-cache` to a conditional request, which always gets a full 200, so
+      // send what a browser revalidating a stale entry sends.
+      const revalidated = await get(artifactAssetUrl(base, key, load, "assets/mod.js"), {
+        "if-none-match": mod.headers.get("etag") || "",
+        "cache-control": "max-age=0",
+      });
+      assert.equal(revalidated.status, 304);
+      assert.equal(acao(revalidated), "*");
+      const range = await get(artifactAssetUrl(base, key, load, "assets/фото 1.png"), { range: "bytes=0-1" });
+      assert.equal(range.status, 206);
+      assert.equal(acao(range), "*");
+
+      const refused = [
+        { label: "a forged token", url: `${base}/artifact/${key}/not-the-token/assets/mod.js`, status: 409 },
+        { label: "the token-less file form", url: `${base}/artifact/${key}/top.js`, status: 404 },
+        {
+          label: "an unknown key",
+          url: artifactAssetUrl(base, "0000000000000000", load, "assets/mod.js"),
+          status: 404,
+        },
+        {
+          label: "a path out of the artifact directory",
+          url: `${base}/artifact/${key}/${token}/..%2Fstate.json`,
+          status: 403,
+        },
+        // sendFile's own failures: the error body of a missing file names its absolute path.
+        { label: "a missing file", url: artifactAssetUrl(base, key, load, "assets/missing.js"), status: 404 },
+        { label: "a directory", url: artifactAssetUrl(base, key, load, "assets"), status: 404 },
+      ];
+      const notFiles = [
+        {
+          label: "the document",
+          url: `${base}/artifact/${key}/${token}/index.html?artifact_revision=${rev}`,
+          status: 200,
+        },
+        { label: "the entry redirect", url: artifactLoadUrl(base, key, load), status: 302 },
+        {
+          label: "the SDK",
+          url: `${base}/sdk.js?key=${key}&artifact_revision=${rev}&artifact_load_token=${token}`,
+          status: 200,
+        },
+        { label: "the export", url: `${base}/api/${key}/export`, status: 200 },
+        { label: "the review page", url: `${base}/session/${key}`, status: 200 },
+      ];
+      const uploaded = await fetch(`${base}/api/${key}/attachments`, {
+        method: "POST",
+        headers: { "content-type": "image/png", origin: base },
+        body: png,
+      });
+      assert.equal(uploaded.status, 200);
+      const attachmentId = (await uploaded.json()).attachment.id;
+      notFiles.push({ label: "an attachment", url: `${base}/api/${key}/attachments/${attachmentId}`, status: 200 });
+      for (const { label, url, status } of [...refused, ...notFiles]) {
+        const res = await get(url);
+        assert.equal(res.status, status, label);
+        assert.equal(acao(res), null, label);
+      }
+
+      const newer = await beginArtifactLoad(base, key);
+      const retired = await get(artifactAssetUrl(base, key, load, "assets/mod.js"));
+      assert.equal(retired.status, 409);
+      assert.equal(acao(retired), null);
+      const current = await get(artifactAssetUrl(base, key, newer, "assets/mod.js"));
+      assert.equal(current.status, 200);
+      assert.equal(acao(current), "*");
+    },
+  );
+});
+
+// An artifact opened from a project root shares its directory with the project's secrets. A dot
+// path is still served, as before, to an <img> or <script>, but no script may read it - judged on
+// the resolved path, so a link beside the artifact cannot reach one under an ordinary name.
+test("a dot path under the current load token is served but never readable from the opaque origin", async () => {
+  await withArtifactFiles(
+    {
+      ".env": "SECRET=1\n",
+      ".git/config": "[core]\n",
+      "assets/.hidden/x.js": "1;\n",
+      "assets/plain.js": "2;\n",
+    },
+    async ({ base, key, dir }) => {
+      await linkDirectory(path.join(dir, ".git"), path.join(dir, "assets", "linked"));
+      const load = await beginArtifactLoad(base, key);
+      const get = (rel) => fetch(artifactAssetUrl(base, key, load, rel), { headers: { origin: "null" } });
+
+      const plain = await get("assets/plain.js");
+      assert.equal(plain.status, 200);
+      assert.equal(plain.headers.get("access-control-allow-origin"), "*");
+      for (const rel of [".env", ".git/config", "assets/.hidden/x.js", "assets/linked/config"]) {
+        const res = await get(rel);
+        assert.equal(res.status, 200, rel);
+        assert.equal(res.headers.get("access-control-allow-origin"), null, rel);
+      }
+      assert.equal(await (await get(".env")).text(), "SECRET=1\n");
     },
   );
 });
