@@ -155,7 +155,12 @@ function dumpChromeDom(chrome, args, timeoutMs) {
     const child = spawn(chrome, args, { detached: true, stdio: ["ignore", "pipe", "ignore"] });
     let stdout = "";
     let settled = false;
+    // Windows has no process groups (process.kill(-pid) throws there), so take Chrome's tree.
     const stop = () => {
+      if (process.platform === "win32") {
+        spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+        return;
+      }
       try {
         process.kill(-child.pid, "SIGKILL");
       } catch {
@@ -204,10 +209,6 @@ function resultFromDump(html) {
 }
 
 async function runBrowserScenario(t, scenario, fixture, options = {}) {
-  if (process.platform === "win32") {
-    t.skip("the headless dump harness relies on POSIX process-group cleanup");
-    return null;
-  }
   const snippet = copyAllHtmlSnippet();
   const chrome = await chromePath();
   if (!chrome) {

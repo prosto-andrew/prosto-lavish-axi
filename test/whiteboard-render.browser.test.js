@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { access, cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
@@ -45,7 +45,12 @@ function dumpChromeDom(chrome, args, timeoutMs) {
     const child = spawn(chrome, args, { detached: true, stdio: ["ignore", "pipe", "ignore"] });
     let stdout = "";
     let settled = false;
+    // Windows has no process groups (process.kill(-pid) throws there), so take Chrome's tree.
     const stop = () => {
+      if (process.platform === "win32") {
+        spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+        return;
+      }
       try {
         process.kill(-child.pid, "SIGKILL");
       } catch {
@@ -176,7 +181,8 @@ async function runBrowserFixture(t, fixtureName) {
       await new Promise((resolve) => server.close(resolve));
     }
   } finally {
-    await rm(root, { recursive: true, force: true });
+    // Chrome's profile lockfile can outlive the browser for a moment on Windows (EBUSY).
+    await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   }
 }
 
