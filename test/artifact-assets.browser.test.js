@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -135,6 +135,11 @@ const SHARED_ASSETS = {
   "assets/style.css": '@import url("more.css");\n',
   "assets/more.css": ".imported { color: rgb(1, 2, 3); }\n",
   "assets/img.png": PNG_2x1,
+  // Module scripts, import() and CORS fetch are CORS-mode loads from the artifact's opaque origin.
+  "assets/mod.js": 'import { value } from "./dep.js";\nwindow.moduleLoaded?.(value);\n',
+  "assets/dep.js": "export const value = 1;\n",
+  "assets/dyn.js": "export const value = 2;\n",
+  "assets/data.json": '{"value":3}',
 };
 
 async function withServer(files, run) {
@@ -196,26 +201,53 @@ const browserTest = (name, fn) =>
       t.skip("Chrome or Chromium is required (set CHROME_PATH)");
       return;
     }
-    await fn(chrome);
+    await fn(chrome, t);
   });
 
-browserTest("an artifact loads its own files through the load path", async (chrome) => {
+browserTest("an artifact loads its own files through the load path", async (chrome, t) => {
+  // A real font: the browser refuses to load one it cannot parse, whatever the server answers.
+  const fontDir = new URL("../dist/whiteboard/", import.meta.url);
+  const fontName = (await readdir(fontDir).catch(() => [])).find((name) => name.endsWith(".woff2"));
+  if (!fontName) {
+    t.skip("needs a build: the font comes from dist/whiteboard");
+    return;
+  }
   const plan = `<!doctype html><html><head><title>assets</title>
 <link rel="stylesheet" href="assets/style.css">
+<style>@font-face { font-family: ArtifactFont; src: url("assets/font.woff2") format("woff2"); }</style>
 <script src="assets/data.js"></script>
+<script>
+window.moduleRan = new Promise((resolve, reject) => {
+  window.moduleLoaded = resolve;
+  window.moduleFailed = reject;
+});
+</script>
+<script type="module" src="assets/mod.js" onerror="moduleFailed()"></script>
 </head><body><p class="imported">imported</p><img id="img" src="assets/img.png"><pre id="results"></pre>
 <script>
-addEventListener("load", () => {
+const settled = (promise) => promise.then((value) => value, () => "error");
+addEventListener("load", async () => {
   const img = document.getElementById("img");
+  const [module, dynamicImport, fetched, fontFaces] = await Promise.all([
+    settled(window.moduleRan),
+    settled(import("./assets/dyn.js").then((m) => m.value)),
+    settled(fetch("assets/data.json").then((res) => res.json()).then((data) => data.value)),
+    settled(document.fonts.load("16px ArtifactFont").then((faces) => faces.filter((face) => face.status === "loaded").length)),
+  ]);
   document.getElementById("results").textContent = JSON.stringify({
     global: typeof ASSET_GLOBAL,
     color: getComputedStyle(document.querySelector(".imported")).color,
     img: img.naturalWidth + "x" + img.naturalHeight,
     tokenInPath: location.pathname.split("/")[3],
+    module,
+    dynamicImport,
+    fetch: fetched,
+    fontFaces,
   });
 });
 </script></body></html>`;
-  await withServer({ "plan.html": plan }, async ({ base, parent, openSession }) => {
+  const font = await readFile(new URL(fontName, fontDir));
+  await withServer({ "plan.html": plan, "assets/font.woff2": font }, async ({ base, parent, openSession }) => {
     const key = await openSession("plan.html");
     const load = await beginLoad(base, key);
     const dom = await dumpChromeDom(chrome, path.join(parent, "profile-plan"), entryUrl(base, key, load), 90_000);
@@ -224,6 +256,10 @@ addEventListener("load", () => {
       color: "rgb(1, 2, 3)",
       img: "2x1",
       tokenInPath: load.artifact_load_token,
+      module: 1,
+      dynamicImport: 2,
+      fetch: 3,
+      fontFaces: 1,
     });
   });
 });
@@ -232,9 +268,11 @@ addEventListener("load", () => {
 // the report the test waits for already says whether every existing file loaded: no failure report
 // about one of them can still be on its way.
 browserTest("a review reports only the file that is really missing, without the load token", async (chrome) => {
+  // The module script is a CORS-mode load; a refused one used to come back as a missing file.
   const review = `<!doctype html><html><head><title>review</title>
 <link rel="stylesheet" href="assets/style.css">
 <script src="assets/data.js"></script>
+<script type="module" src="assets/mod.js"></script>
 </head><body><p class="imported">review</p><img src="assets/img.png">
 <script>
 addEventListener("load", () => {
@@ -326,8 +364,17 @@ browserTest("another page and a file from disk get no artifact file and no attac
       if (tag === "script") return `<script src="${url}" ${handlers}></script>`;
       return `<img src="${url}" ${handlers}>`;
     };
+    // fetch reads the response itself, so the control under the real token shows such a page can read
+    // a file once it has the token; the forged one shows that the token is what it needs.
     const attack = `<!doctype html><html><head><title>attack</title>
 <script>window.probes = {}; function hit(name, outcome) { window.probes[name] = outcome; }</script>
+<script>
+window.fetchProbes = Promise.all(
+  ["${base}/artifact/${key}/forged-token/assets/data.json", "${base}/artifact/${key}/${token}/assets/data.json"].map((url) =>
+    fetch(url).then((res) => res.json()).then(() => "load", () => "error"),
+  ),
+);
+</script>
 ${probe("link", "control-design", `${base}/design/daisyui-themes.css`)}
 ${probe("link", "style", `${base}/artifact/${key}/assets/style.css`)}
 ${probe("script", "script", `${base}/artifact/${key}/assets/data.js`)}
@@ -340,11 +387,14 @@ ${probe("img", "control-token", `${base}/artifact/${key}/${token}/assets/img.png
 ${probe("img", "attachment", `${base}/api/${key}/attachments/${id}`)}
 <pre id="results"></pre>
 <script>
-addEventListener("load", () => {
+addEventListener("load", async () => {
+  const [fetchForged, fetchControl] = await window.fetchProbes;
   document.getElementById("results").textContent = JSON.stringify({
     ...window.probes,
     global: typeof ASSET_GLOBAL,
     controlGlobal: typeof CONTROL_GLOBAL,
+    "fetch-forged": fetchForged,
+    "fetch-control": fetchControl,
   });
 });
 </script></body></html>`;
@@ -360,6 +410,8 @@ addEventListener("load", () => {
       attachment: "error",
       global: "undefined",
       controlGlobal: "string",
+      "fetch-forged": "error",
+      "fetch-control": "load",
     };
 
     // Another local server: a different port on the same loopback address.

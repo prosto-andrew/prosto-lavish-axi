@@ -726,6 +726,30 @@ check("state-changing GETs need proof", () => {
   return "poll needs the CLI header; the review page mints no handoff";
 });
 
+// Each piece must appear in `text`, in this order. A string is matched verbatim, a RegExp across
+// whitespace. `label` names the code in the error.
+function inOrder(text, pieces, label) {
+  let at = 0;
+  for (const piece of pieces) {
+    const found = typeof piece === "string" ? { index: text.indexOf(piece, at), length: piece.length } : null;
+    const match = found ? null : piece.exec(text.slice(at));
+    const index = found ? found.index : match ? at + match.index : -1;
+    if (index < 0) throw new Error(`${label} lost or reordered ${String(piece).split("\n")[0]}`);
+    at = index + (found ? found.length : match[0].length);
+  }
+}
+
+// The text of the `app.get(<route>, ...)` handler in `source`, up to the next route.
+function handlerAt(source, route, file = "src/server.js") {
+  const at = source.indexOf(`app.get(${route},`);
+  if (at < 0) throw new Error(`${file} has no GET ${route}`);
+  const next = source.indexOf("\n  app.", at);
+  return source.slice(at, next < 0 ? undefined : next);
+}
+
+// The route that serves the files beside an artifact, under the current load's token.
+const ARTIFACT_FILES_ROUTE = "/^\\/artifact\\/([^/]+)\\/([^/]+)\\/(.+)$/";
+
 check("other pages cannot read an artifact's files or attachments", () => {
   // A foreign page's <script>, <img> or <link> reaches these routes with no header that tells it
   // apart from the artifact's own request: Chrome sends the sandboxed frame's loads with neither
@@ -733,23 +757,6 @@ check("other pages cannot read an artifact's files or attachments", () => {
   // served only under the current load's secret path, and a token-less file route must not return.
   const server = read("src/server.js");
   const where = (handler) => `the ${handler} in src/server.js`;
-  // Each piece must appear, in this order. A string is matched verbatim, a RegExp across whitespace.
-  const inOrder = (text, pieces, handler) => {
-    let at = 0;
-    for (const piece of pieces) {
-      const found = typeof piece === "string" ? { index: text.indexOf(piece, at), length: piece.length } : null;
-      const match = found ? null : piece.exec(text.slice(at));
-      const index = found ? found.index : match ? at + match.index : -1;
-      if (index < 0) throw new Error(`${where(handler)} lost or reordered ${String(piece).split("\n")[0]}`);
-      at = index + (found ? found.length : match[0].length);
-    }
-  };
-  const handlerAt = (route) => {
-    const at = server.indexOf(`app.get(${route},`);
-    if (at < 0) throw new Error(`src/server.js has no GET ${route}`);
-    const next = server.indexOf("\n  app.", at);
-    return server.slice(at, next < 0 ? undefined : next);
-  };
 
   // Every route under /artifact, whatever its method or spelling: the path of each app.<method>(
   // call as written - a string in any quotes, or a regex literal with any flags, whose character
@@ -770,7 +777,7 @@ check("other pages cannot read an artifact's files or attachments", () => {
   const redirectRoute = '"/artifact/:key"';
   const entryRoute = "/^\\/artifact\\/([^/]+)\\/index\\.html$/";
   const documentRoute = "/^\\/artifact\\/([^/]+)\\/([^/]+)\\/index\\.html$/";
-  const filesRoute = "/^\\/artifact\\/([^/]+)\\/([^/]+)\\/(.+)$/";
+  const filesRoute = ARTIFACT_FILES_ROUTE;
   const fallbackRoute = "/^\\/artifact(?:\\/|$)/i";
   const tokenlessRoute = "/^\\/artifact\\/([^/]+)\\/(.+)$/";
   const expected = [redirectRoute, entryRoute, documentRoute, filesRoute, fallbackRoute].map((route) => `get ${route}`);
@@ -782,7 +789,7 @@ check("other pages cannot read an artifact's files or attachments", () => {
   }
   // The file handler checks the token first and refuses a retired or forged one with the expired
   // page; only then does it touch the file.
-  const filesHandler = handlerAt(filesRoute);
+  const filesHandler = handlerAt(server, filesRoute);
   inOrder(
     filesHandler,
     [
@@ -790,13 +797,13 @@ check("other pages cannot read an artifact's files or attachments", () => {
       /if \(!verified\.valid\) \{\s*sendArtifactLoadExpired\(res\);\s*return;\s*\}/,
       "res.sendFile(",
     ],
-    "/artifact file handler",
+    where("/artifact file handler"),
   );
 
   // Attachments are rendered only by the same-origin review page, so there the browser's own
   // Sec-Fetch-Site does tell them apart; Vary keeps the cached image from answering a page on
   // another loopback port, which shares the review's cache partition (ports are not part of a site).
-  const attachmentsHandler = handlerAt('"/api/:key/attachments/:id"');
+  const attachmentsHandler = handlerAt(server, '"/api/:key/attachments/:id"');
   inOrder(
     attachmentsHandler,
     [
@@ -804,7 +811,7 @@ check("other pages cannot read an artifact's files or attachments", () => {
       /if \(!isOwnPageFetch\(req\)\) \{\s*res\.status\(403\)[^;]*;\s*return;\s*\}/,
       "statAttachmentForServe(",
     ],
-    "attachment GET handler",
+    where("attachment GET handler"),
   );
   const ownPageBody = /\nfunction isOwnPageFetch\(req\) \{\n([\s\S]*?)\n\}\n/.exec(server)?.[1];
   const expectedOwnPageBody = [
@@ -843,12 +850,14 @@ check("mermaid is vendored for offline rendering", () => {
   return "module and chunk graph present";
 });
 
-check("vendored mermaid is readable from the opaque-origin artifact", () => {
+check("only vendored bundles and the current load's files are readable from an opaque origin", () => {
   // The design snippet imports the vendored module from the sandboxed artifact, and module
   // scripts plus their chunk imports are CORS-mode fetches from an opaque origin. Without
   // Access-Control-Allow-Origin the import is blocked and no diagram (or inline whiteboard)
-  // ever renders. The header is public by definition, so it must stay on exactly the two
-  // static vendored-bundle routes and never spread to anything carrying session data.
+  // ever renders. The artifact's own module scripts, import(), CORS fetch and @font-face need the
+  // same from its files, which only the current load's token opens. So the header has one writer
+  // with a fixed value, called by the vendored-bundle helper and by the file handler after its
+  // token and path checks - never by anything else that carries session data.
   const server = read("src/server.js");
   const expected = ["/^\\/design\\/mermaid\\/(.+)$/", "/^\\/whiteboard-assets\\/(.+)$/"];
   const routeOf = /app\.get\(\s*(\/\^[^\s,]+\/),\s*opaqueOriginAssetRoute\(/g;
@@ -865,14 +874,80 @@ check("vendored mermaid is readable from the opaque-origin artifact", () => {
   // Quoted header names only: the comments explaining the rule mention it unquoted.
   const headers = server.match(/["'`]access-control-allow-origin["'`]/gi)?.length ?? 0;
   if (headers !== 1) {
-    throw new Error(`src/server.js sets Access-Control-Allow-Origin ${headers}x; only opaqueOriginAssetRoute may`);
+    throw new Error(`src/server.js sets Access-Control-Allow-Origin ${headers}x; only allowOpaqueOriginRead may`);
+  }
+  // The header goes into sendFile's own `headers` option, which Express applies only once the file
+  // is really being sent: a missing file or a failed stat answers with the absolute path in its
+  // error body, and must stay unreadable. The bundle may rename identifiers and reflow code, so
+  // bodies are compared without whitespace and names may carry esbuild's numeric suffix.
+  const squeeze = (text) => (text === undefined ? undefined : text.replace(/\s+/g, ""));
+  const bodyOf = (source, name, params) =>
+    new RegExp(`\\nfunction ${name}\\d*\\(${params}\\) \\{\\n([\\s\\S]*?)\\n\\}\\n`).exec(source)?.[1];
+  const helpers = [
+    {
+      name: "allowOpaqueOriginRead",
+      params: "options",
+      body: 'return{...options,headers:{"access-control-allow-origin":"*"}};',
+      what: "adds exactly Access-Control-Allow-Origin: * to sendFile's options",
+    },
+    {
+      name: "hasDotSegment",
+      params: "relativePath",
+      body: 'returnString(relativePath).split(/[\\\\/]/).some((segment)=>segment.startsWith("."));',
+      what: "refuses every path segment that starts with a dot",
+    },
+  ];
+  // Every reference counts, not only calls: an alias or `.call` would add a caller. Whole-line
+  // comments may name the helper.
+  const references = server.replace(/^\s*\/\/.*$/gm, "").match(/\ballowOpaqueOriginRead\b/g)?.length ?? 0;
+  if (references !== 3) {
+    throw new Error(
+      `allowOpaqueOriginRead appears ${references}x in src/server.js; only opaqueOriginAssetRoute and the /artifact file handler may use it`,
+    );
+  }
+  const opaqueAt = server.indexOf("function opaqueOriginAssetRoute(");
+  const opaqueHelper = opaqueAt < 0 ? "" : server.slice(opaqueAt, server.indexOf("\n}\n", opaqueAt));
+  inOrder(
+    opaqueHelper,
+    ['res.sendFile(file, allowOpaqueOriginRead({ dotfiles: "allow" }));'],
+    "opaqueOriginAssetRoute in src/server.js",
+  );
+  // The file handler lets a file be read only once the token is current, the path stays inside the
+  // artifact's directory and no segment of the resolved path starts with a dot.
+  const filesOrder = [
+    "const verified = await store.verifyArtifactAssetLoad(req.params[0], req.params[1]);",
+    /if \(!verified\.valid\) \{\s*sendArtifactLoadExpired\(res\);\s*return;\s*\}/,
+    "await resolveArtifactAsset(root, req.params[2]);",
+    /if \(!file\) \{\s*res\.status\(403\)[^;]*;\s*return;\s*\}/,
+    'const options = { dotfiles: "allow" };',
+    /res\.sendFile\(file, hasDotSegment\d*\(path\d*\.relative\(root, file\)\) \? options : allowOpaqueOriginRead\d*\(options\)\);/,
+  ];
+  inOrder(handlerAt(server, ARTIFACT_FILES_ROUTE), filesOrder, "the /artifact file handler in src/server.js");
+  for (const { name, params, body, what } of helpers) {
+    if (squeeze(bodyOf(server, name, params)) !== body) throw new Error(`${name} in src/server.js no longer ${what}`);
   }
   if (server.includes('app.use("/design/mermaid"')) throw new Error("/design/mermaid is mounted outside the helper");
   const dist = read("dist/cli.mjs");
   if (![...dist.matchAll(routeOf)].some((match) => match[1] === expected[0])) {
     throw new Error("dist/cli.mjs does not serve /design/mermaid through opaqueOriginAssetRoute - run `npm run build`");
   }
-  return "Access-Control-Allow-Origin: * on /design/mermaid and /whiteboard-assets only";
+  // The launchers run the bundle, so it must hold the same order and the same helpers, and nothing
+  // there may write the header on its own.
+  try {
+    const distFiles = handlerAt(dist, ARTIFACT_FILES_ROUTE, "dist/cli.mjs");
+    inOrder(distFiles, filesOrder, "the /artifact file handler in dist/cli.mjs");
+    const distHeaders = dist.match(/["'`]access-control-allow-origin["'`]/gi)?.length ?? 0;
+    if (distHeaders !== 1) throw new Error(`dist/cli.mjs sets Access-Control-Allow-Origin ${distHeaders}x`);
+    const distUses = distFiles.match(/\ballowOpaqueOriginRead\d*\b/g)?.length ?? 0;
+    if (distUses !== 1)
+      throw new Error(`the /artifact file handler in dist/cli.mjs uses allowOpaqueOriginRead ${distUses}x`);
+    for (const { name, params, body, what } of helpers) {
+      if (squeeze(bodyOf(dist, name, params)) !== body) throw new Error(`${name} in dist/cli.mjs no longer ${what}`);
+    }
+  } catch (error) {
+    throw new Error(`${error.message} - ${REBUILD}`);
+  }
+  return "Access-Control-Allow-Origin: * on /design/mermaid, /whiteboard-assets and the current load's files only";
 });
 
 const quiet = process.argv.includes("--quiet");

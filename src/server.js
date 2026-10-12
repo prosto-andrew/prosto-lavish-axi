@@ -227,11 +227,29 @@ export function defaultMermaidAssetsDir() {
   return fileURLToPath(new URL("../dist/design/mermaid", import.meta.url));
 }
 
+// sendFile options that let an opaque-origin document read the file: the artifact's module
+// scripts, import(), CORS fetch and @font-face, and the whiteboard frame's fonts, are CORS-mode
+// loads with `Origin: null`. Express sets these headers only once the file is really being sent,
+// after send's own stat, so a missing file, a directory or a failed stat - whose error body names
+// the absolute path - never carries the header. The only place this server writes it; the vendored
+// bundle helper and the current load's file handler, after its token check, use it.
+function allowOpaqueOriginRead(options) {
+  return { ...options, headers: { "access-control-allow-origin": "*" } };
+}
+
+// Whether a path relative to an artifact's directory has a segment starting with a dot (.env,
+// .git/config, or a `..` that left the directory). Such a file is never readable by a script.
+function hasDotSegment(relativePath) {
+  return String(relativePath)
+    .split(/[\\/]/)
+    .some((segment) => segment.startsWith("."));
+}
+
 // Static, public, vendored bundles fetched from an opaque origin: the whiteboard
 // frame's fonts, and the Mermaid module plus every chunk it imports from the
 // sandboxed artifact (module scripts are always CORS-mode fetches). Those fetches
 // are CORS-gated, so these routes answer Access-Control-Allow-Origin: * - and
-// they are the only routes that may; nothing else this server sends is public.
+// they are not the only routes that may: allowOpaqueOriginRead says which.
 function opaqueOriginAssetRoute(root, missingMessage) {
   return async (req, res, next) => {
     try {
@@ -244,7 +262,6 @@ function opaqueOriginAssetRoute(root, missingMessage) {
         res.status(404).send(existsSync(root) ? "Not found" : missingMessage);
         return;
       }
-      res.setHeader("access-control-allow-origin", "*");
       // Revalidate on every use (304 via Last-Modified/ETag): the bundle URL
       // is unversioned, and a memory-cached stale bundle after an upgrade or
       // local rebuild is far worse than cheap loopback revalidations.
@@ -252,7 +269,7 @@ function opaqueOriginAssetRoute(root, missingMessage) {
       // Traversal is already rejected by resolveArtifactAsset; "allow" keeps
       // dot components in the assets dir's own absolute path (e.g. a checkout
       // under a dot-directory) from 403ing every asset.
-      res.sendFile(file, { dotfiles: "allow" });
+      res.sendFile(file, allowOpaqueOriginRead({ dotfiles: "allow" }));
     } catch (error) {
       next(error);
     }
@@ -1629,7 +1646,11 @@ export async function serve({
         res.status(403).send("Forbidden");
         return;
       }
-      res.sendFile(file, { dotfiles: "allow" });
+      // The token in the path is the secret; whoever holds it may read the file, which module
+      // scripts, import(), CORS fetch and @font-face need from the opaque-origin artifact. A dot
+      // path (.env, .git/) beside the artifact still loads as an <img> or <script> but stays unread.
+      const options = { dotfiles: "allow" };
+      res.sendFile(file, hasDotSegment(path.relative(root, file)) ? options : allowOpaqueOriginRead(options));
     } catch (error) {
       next(error);
     }
