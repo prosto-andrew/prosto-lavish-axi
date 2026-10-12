@@ -11,7 +11,7 @@ const REVIEWED_GET_ROUTES = new Map([
   ['"/health"', "idempotent: reconcile_network=1 only retries failed loopback binds"],
   ['"/api/poll"', "CLI-only: refused without the x-lavish-client header before any claim or take"],
   ['"/api/:key/layout-warnings"', "read-only"],
-  ['"/api/:key/export"', "read-only on the server; the download is the browser's"],
+  ['"/api/:key/export"', "read-only; refused to other sites before any disk access, so no page can start the download"],
   ['"/session/:key"', "read-only: renders from describeReviewerLoad; the handoff comes from the POST"],
   ['"/artifact/:key"', "read-only: redirect"],
   ["/^\\/artifact\\/([^/]+)\\/index\\.html$/", "read-only: redirect, or the expired-load page"],

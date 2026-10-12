@@ -750,7 +750,7 @@ function handlerAt(source, route, file = "src/server.js") {
 // The route that serves the files beside an artifact, under the current load's token.
 const ARTIFACT_FILES_ROUTE = "/^\\/artifact\\/([^/]+)\\/([^/]+)\\/(.+)$/";
 
-check("other pages cannot read an artifact's files or attachments", () => {
+check("other pages cannot read an artifact's files, attachments or export", () => {
   // A foreign page's <script>, <img> or <link> reaches these routes with no header that tells it
   // apart from the artifact's own request: Chrome sends the sandboxed frame's loads with neither
   // Origin nor Referer, exactly like an HTML file opened from disk. So a file beside an artifact is
@@ -800,19 +800,24 @@ check("other pages cannot read an artifact's files or attachments", () => {
     where("/artifact file handler"),
   );
 
-  // Attachments are rendered only by the same-origin review page, so there the browser's own
-  // Sec-Fetch-Site does tell them apart; Vary keeps the cached image from answering a page on
-  // another loopback port, which shares the review's cache partition (ports are not part of a site).
-  const attachmentsHandler = handlerAt(server, '"/api/:key/attachments/:id"');
-  inOrder(
-    attachmentsHandler,
-    [
-      'res.vary("Sec-Fetch-Site");',
-      /if \(!isOwnPageFetch\(req\)\) \{\s*res\.status\(403\)[^;]*;\s*return;\s*\}/,
-      "statAttachmentForServe(",
-    ],
-    where("attachment GET handler"),
-  );
+  // Attachments and the export are asked for only by the same-origin review page, so there the
+  // browser's own Sec-Fetch-Site does tell them apart, before any disk access; Vary keeps a cached
+  // copy from answering a page on another loopback port, which shares the review's cache partition
+  // (ports are not part of a site). A framed export would otherwise drop the artifact, local files
+  // inlined, into the user's downloads.
+  const ownPageRoutes = [
+    { route: '"/api/:key/attachments/:id"', label: "attachment GET handler", then: "statAttachmentForServe(" },
+    { route: '"/api/:key/export"', label: "export handler", then: "store.findByKey(" },
+  ];
+  const ownPageOrder = (guard, then) => [
+    'res.vary("Sec-Fetch-Site");',
+    new RegExp(`if \\(!${guard}\\(req\\)\\) \\{\\s*res\\.status\\(403\\)[^;]*;\\s*return;\\s*\\}`),
+    then,
+  ];
+  for (const { route, label, then } of ownPageRoutes) {
+    inOrder(handlerAt(server, route), ownPageOrder("isOwnPageFetch", then), where(label));
+  }
+  const attachmentsHandler = handlerAt(server, ownPageRoutes[0].route);
   const ownPageBody = /\nfunction isOwnPageFetch\(req\) \{\n([\s\S]*?)\n\}\n/.exec(server)?.[1];
   const expectedOwnPageBody = [
     '  const site = req.get("sec-fetch-site");',
@@ -838,8 +843,16 @@ check("other pages cannot read an artifact's files or attachments", () => {
   if (!dist.includes(filesRoute) || !dist.includes(fallbackRoute) || dist.includes(tokenlessRoute)) {
     throw new Error(`dist/cli.mjs does not serve artifact files only under the load token - ${REBUILD}`);
   }
-  mustContain(dist, 'res.vary("Sec-Fetch-Site")', "dist/cli.mjs");
-  return "files only under the current load token; attachments only for the review page";
+  // The launchers run the bundle, which may suffix a renamed helper.
+  try {
+    for (const { route, label, then } of ownPageRoutes) {
+      const handler = handlerAt(dist, route, "dist/cli.mjs");
+      inOrder(handler, ownPageOrder("isOwnPageFetch\\d*", then), `the ${label} in dist/cli.mjs`);
+    }
+  } catch (error) {
+    throw new Error(`${error.message} - ${REBUILD}`);
+  }
+  return "files only under the current load token; attachments and the export only for the review page";
 });
 
 check("mermaid is vendored for offline rendering", () => {

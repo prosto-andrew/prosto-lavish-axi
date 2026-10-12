@@ -4209,6 +4209,51 @@ test("GET /api/:key/export returns 404 for an unknown session", async () => {
   }
 });
 
+// LAVISH-HARDENED: only the review page, a same-origin document, asks for the export. A page on
+// another site, another loopback port, or opened from disk sends its own Sec-Fetch-Site, and could
+// otherwise frame the route to drop the user's artifact, local files inlined, into their downloads,
+// or time it to learn which artifact paths have a session.
+test("GET /api/:key/export refuses other sites' pages", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>Hi</h1></body></html>");
+
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const sessionRes = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const session = await sessionRes.json();
+    const exportFrom = (key, site) =>
+      fetch(`${base}/api/${key}/export`, site === undefined ? {} : { headers: { "sec-fetch-site": site } });
+
+    for (const site of ["cross-site", "same-site", "bogus", ""]) {
+      const res = await exportFrom(session.key, site);
+      assert.equal(res.status, 403, site);
+      assert.deepEqual(await res.json(), { error: "cross-site export rejected" });
+      assert.equal(res.headers.get("content-disposition"), null, site);
+      assert.match(res.headers.get("vary") || "", /sec-fetch-site/i, site);
+    }
+    // Refused before the session lookup: an unknown key answers the same as a known one.
+    const unknown = await exportFrom("does-not-exist", "cross-site");
+    assert.equal(unknown.status, 403);
+
+    for (const site of ["same-origin", "none", undefined]) {
+      const res = await exportFrom(session.key, site);
+      assert.equal(res.status, 200, String(site));
+      assert.match(res.headers.get("content-disposition") || "", /^attachment;/, String(site));
+      assert.match(res.headers.get("vary") || "", /sec-fetch-site/i, String(site));
+      assert.match(await res.text(), /<h1>Hi<\/h1>/);
+    }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 // LAVISH-HARDENED: the publish route is a refusal and nothing else. The nine tests that
 // stood here pointed the route at a fake host and asserted every outcome it could report -
 // a clean publish, a generated password, an indeterminate failure, an incomplete 200, a

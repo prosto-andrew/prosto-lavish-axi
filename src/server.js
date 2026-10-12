@@ -1436,6 +1436,11 @@ export async function serve({
   // left as references for the browser to load, so the export needs network to render those.
   app.get("/api/:key/export", async (req, res, next) => {
     try {
+      res.vary("Sec-Fetch-Site");
+      if (!isOwnPageFetch(req)) {
+        res.status(403).json({ error: "cross-site export rejected" });
+        return;
+      }
       const session = await store.findByKey(req.params.key);
       if (!session) {
         res.status(404).json({ error: "session not found" });
@@ -2666,11 +2671,11 @@ function hasPresentOriginOrReferer(req) {
 }
 
 // LAVISH-HARDENED: whether a read comes from this server's own review page. Only that same-origin
-// page renders attachments, so the Sec-Fetch-Site a browser sets on its own (a page cannot forge
-// it) separates it from a page on another site, on another loopback port, or opened from disk.
-// `none` is the user opening the image in a tab of their own. No header at all is a client that
-// is not a browser, or a browser that sends no Fetch Metadata (Safari before 16.4, for example),
-// and the unguessable content id is what guards those. Callers must also send
+// page renders attachments and asks for the export, so the Sec-Fetch-Site a browser sets on its own
+// (a page cannot forge it) separates it from a page on another site, on another loopback port, or
+// opened from disk. `none` is the user opening the URL in a tab of their own. No header at all is a
+// client that is not a browser, or a browser that sends no Fetch Metadata (Safari before 16.4, for
+// example); the unguessable content id still guards an attachment there. Callers must also send
 // `Vary: Sec-Fetch-Site`: the browser cache is partitioned by site and a port is not part of a
 // site, so without it another loopback port is answered from the review's cached copy and never
 // reaches this check.
