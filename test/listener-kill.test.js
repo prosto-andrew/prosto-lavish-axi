@@ -27,8 +27,13 @@ server.listen(Number(port), host, () => console.log(server.address().port));
 `;
 const OLDER_LAVISH_HEALTH = JSON.stringify({ ok: true, app: "lavish-axi", version: "0.0.1" });
 
+// CI runners ship lsof (it is in the Ubuntu server image the Linux runner is built from), so on CI a
+// missing lsof fails these tests instead of skipping them: a silent skip there would leave the POSIX
+// listener lookup unexercised on Linux with nobody noticing.
 const canIdentifyListeners = process.platform === "win32" || spawnSync("lsof", ["-v"]).error === undefined;
-const needsListenerLookup = { skip: !canIdentifyListeners && "identifying a listening process needs lsof here" };
+const needsListenerLookup = {
+  skip: !canIdentifyListeners && !process.env.CI && "identifying a listening process needs lsof here",
+};
 
 async function startStuckServer(marker, { host = "127.0.0.1", port = 0 } = {}) {
   const child = spawn(process.execPath, ["-e", STUCK_SERVER, marker], {

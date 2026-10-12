@@ -454,7 +454,7 @@ try {
   });
 });
 
-test("a clean detached-server shutdown exits 0 without an error in server.log", async () => {
+test("a clean detached-server shutdown exits 0 with no error or bare timestamp in server.log", async () => {
   await withTempDir(async (dir) => {
     const holder = createServer();
     await listen(holder, { port: 0, host: "127.0.0.1" });
@@ -497,6 +497,14 @@ test("a clean detached-server shutdown exits 0 without an error in server.log", 
     assert.doesNotMatch(log, /TypeError/);
     assert.doesNotMatch(log, /run is not a function/);
     assert.doesNotMatch(log, /\bError:/);
+    assert.match(
+      log,
+      /Z \[lavish\] shutting down: shutdown-request[^\n]*\n$/,
+      "the shutdown cause ends the log as its own newline-terminated line",
+    );
+    // The CLI framework prints the server command's empty result as a lone newline on exit. A
+    // stamped empty line dates nothing and reads as a truncated entry.
+    assert.doesNotMatch(log, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z [ \t]*$/m, "no line is only a timestamp");
   });
 });
 

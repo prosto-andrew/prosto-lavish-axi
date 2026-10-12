@@ -72,11 +72,15 @@ function createTimestampedWrite(write, now = () => new Date()) {
     const str = chunkToString(chunk, enc);
     let out = "";
     for (let i = 0; i < str.length; i += 1) {
+      const ch = str[i];
+      // An empty line dates nothing, so it is dropped rather than stamped: the CLI framework
+      // prints the server command's empty result as a lone newline on exit, which would otherwise
+      // end every server.log run with a bare timestamp.
+      if (atLineStart && ch === "\n") continue;
       if (atLineStart) {
         out += formatServerLogLine("", now());
         atLineStart = false;
       }
-      const ch = str[i];
       out += ch;
       if (ch === "\n") atLineStart = true;
     }
