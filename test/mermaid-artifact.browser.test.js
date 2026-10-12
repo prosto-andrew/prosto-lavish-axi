@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -58,7 +58,12 @@ function dumpChromeDom(chrome, args, timeoutMs) {
     let stdout = "";
     let stderr = "";
     let settled = false;
+    // Windows has no process groups (process.kill(-pid) throws there), so take Chrome's tree.
     const stop = () => {
+      if (process.platform === "win32") {
+        spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+        return;
+      }
       try {
         process.kill(-child.pid, "SIGKILL");
       } catch {
@@ -195,7 +200,8 @@ ${MERMAID_CDN_SNIPPET}
       assert.doesNotMatch(consoleLines, /has been blocked by CORS policy/);
     } finally {
       await server.close();
-      await rm(dir, { recursive: true, force: true });
+      // Chrome's profile lockfile can outlive the browser for a moment on Windows (EBUSY).
+      await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     }
   },
 );

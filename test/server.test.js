@@ -5562,7 +5562,10 @@ test("SSE agent-presence returns to waiting when poll feedback storage fails", a
     try {
       assert.equal(await presence.next(), "waiting");
 
-      const poll = pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=10`);
+      // The server announces `listening` and only then starts the poll's timer, so this test has
+      // `timeoutMs` to receive that event and break the state before the timer's take reads it. 10 ms
+      // was too short for a slow macOS runner, which then got the 200 of an ordinary timeout.
+      const poll = pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=1000`);
       assert.equal(await presence.next(), "listening");
 
       // A state path that cannot be read at all. An unparseable file would not do: the store sets it

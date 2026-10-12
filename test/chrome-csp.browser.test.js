@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
@@ -78,7 +78,12 @@ function dumpChromeDom(chrome, profileDir, url, timeoutMs) {
     let stdout = "";
     let stderr = "";
     let settled = false;
+    // Windows has no process groups (process.kill(-pid) throws there), so take Chrome's tree.
     const stop = () => {
+      if (process.platform === "win32") {
+        spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+        return;
+      }
       try {
         process.kill(-child.pid, "SIGKILL");
       } catch {

@@ -204,14 +204,22 @@ const browserTest = (name, fn) =>
     await fn(chrome, t);
   });
 
-browserTest("an artifact loads its own files through the load path", async (chrome, t) => {
-  // A real font: the browser refuses to load one it cannot parse, whatever the server answers.
-  const fontDir = new URL("../dist/whiteboard/", import.meta.url);
-  const fontName = (await readdir(fontDir).catch(() => [])).find((name) => name.endsWith(".woff2"));
-  if (!fontName) {
-    t.skip("needs a build: the font comes from dist/whiteboard");
-    return;
-  }
+// A real font: the browser refuses to load one it cannot parse, whatever the server answers. The
+// built copy when `pnpm run build` has run, otherwise the Excalidraw font the build copies, so the
+// test does not depend on build order.
+async function realFont() {
+  const built = new URL("../dist/whiteboard/", import.meta.url);
+  const name = (await readdir(built).catch(() => [])).find((file) => file.endsWith(".woff2"));
+  if (name) return readFile(new URL(name, built));
+  return readFile(
+    new URL(
+      "../node_modules/@excalidraw/excalidraw/dist/prod/fonts/Assistant/Assistant-Regular.woff2",
+      import.meta.url,
+    ),
+  );
+}
+
+browserTest("an artifact loads its own files through the load path", async (chrome) => {
   const plan = `<!doctype html><html><head><title>assets</title>
 <link rel="stylesheet" href="assets/style.css">
 <style>@font-face { font-family: ArtifactFont; src: url("assets/font.woff2") format("woff2"); }</style>
@@ -246,7 +254,7 @@ addEventListener("load", async () => {
   });
 });
 </script></body></html>`;
-  const font = await readFile(new URL(fontName, fontDir));
+  const font = await realFont();
   await withServer({ "plan.html": plan, "assets/font.woff2": font }, async ({ base, parent, openSession }) => {
     const key = await openSession("plan.html");
     const load = await beginLoad(base, key);
@@ -365,13 +373,15 @@ browserTest("another page and a file from disk get no artifact file and no attac
       return `<img src="${url}" ${handlers}>`;
     };
     // fetch reads the response itself, so the control under the real token shows such a page can read
-    // a file once it has the token; the forged one shows that the token is what it needs.
+    // a file once it has the token; the forged one shows that the token is what it needs. A response
+    // the page may read resolves with its status, so a header that leaked onto the forged token's 409
+    // shows as "read-409"; only a CORS refusal is "blocked".
     const attack = `<!doctype html><html><head><title>attack</title>
 <script>window.probes = {}; function hit(name, outcome) { window.probes[name] = outcome; }</script>
 <script>
 window.fetchProbes = Promise.all(
   ["${base}/artifact/${key}/forged-token/assets/data.json", "${base}/artifact/${key}/${token}/assets/data.json"].map((url) =>
-    fetch(url).then((res) => res.json()).then(() => "load", () => "error"),
+    fetch(url).then((res) => "read-" + res.status, () => "blocked"),
   ),
 );
 </script>
@@ -410,8 +420,8 @@ addEventListener("load", async () => {
       attachment: "error",
       global: "undefined",
       controlGlobal: "string",
-      "fetch-forged": "error",
-      "fetch-control": "load",
+      "fetch-forged": "blocked",
+      "fetch-control": "read-200",
     };
 
     // Another local server: a different port on the same loopback address.
