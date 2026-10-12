@@ -342,10 +342,11 @@ let sendHintPersistent = false;
 let sendFailureOwner = null;
 let sendAcknowledgementWarningVisible = false;
 
-// Chrome 155 drops an iframe.src assignment made after a navigation that moves the frame into
-// another process (out of about:blank or an error page) has started to commit and before this
-// page has handled that navigation's load. So one navigation is in flight at a time: the next
-// waits for the frame's load, and only the latest waiting URL is kept. A navigation that never
+// Chrome 155 drops an iframe.src assignment made shortly after a navigation that moves the frame
+// into another process (out of about:blank or an error page) has started to commit. Where that
+// window ends before the navigation's load was not measured (a load a slow image held back for
+// seconds did not drop the fallback's assignment), so one navigation is in flight at a time: the
+// next waits for the frame's load, and only the latest waiting URL is kept. A navigation that never
 // loads (a hung response, or a network error in Firefox, which fires no load for it) is released
 // by the fallback; assigning before the first navigation commits is safe.
 const ARTIFACT_FRAME_NAVIGATION_FALLBACK_MS = 3000;
@@ -4138,10 +4139,10 @@ window.addEventListener("message", (event) => {
   }
 });
 
-// The frame is navigated once per load. Showing the rendered load first and then the one the
-// boot begins put two navigations back to back, the second waiting on the first for nothing (see
-// navigateArtifactFrame for why one must wait). The rendered load is shown only when no newer one
-// can begin (preservePreviousLoad).
+// Boot navigates the frame once per begun load (retrySilentArtifactLoad may navigate it once
+// more). Showing the rendered load first and then the one the boot begins put two navigations back
+// to back, the second waiting on the first for nothing (see navigateArtifactFrame for why one must
+// wait). The rendered load is shown only when no newer one can begin (preservePreviousLoad).
 function loadFrame() {
   if (artifactSrc) {
     replaceArtifactFrame().catch(() => {});
