@@ -342,6 +342,46 @@ let sendHintPersistent = false;
 let sendFailureOwner = null;
 let sendAcknowledgementWarningVisible = false;
 
+// Chrome 155 drops an iframe.src assignment made after a navigation that moves the frame into
+// another process (out of about:blank or an error page) has started to commit and before this
+// page has handled that navigation's load. So one navigation is in flight at a time: the next
+// waits for the frame's load, and only the latest waiting URL is kept. A navigation that never
+// loads (a hung response, or a network error in Firefox, which fires no load for it) is released
+// by the fallback; assigning before the first navigation commits is safe.
+const ARTIFACT_FRAME_NAVIGATION_FALLBACK_MS = 3000;
+let frameNavigationPending = false;
+let frameNavigationQueued = "";
+/** @type {ReturnType<typeof setTimeout> | undefined} */
+let frameNavigationTimer;
+
+function navigateArtifactFrame(url) {
+  if (frameNavigationPending) {
+    frameNavigationQueued = url;
+    return;
+  }
+  assignArtifactFrame(url);
+}
+
+function assignArtifactFrame(url) {
+  frameNavigationPending = true;
+  frameNavigationQueued = "";
+  // Every inline whiteboard channel registered so far belongs to the document this replaces.
+  inlineWhiteboardChannels.clear();
+  clearTimeout(frameNavigationTimer);
+  frameNavigationTimer = setTimeout(settleArtifactFrameNavigation, ARTIFACT_FRAME_NAVIGATION_FALLBACK_MS);
+  frameNavigationTimer?.unref?.();
+  frame.src = url;
+}
+
+// The frame's load, or the fallback. True when it went on to the waiting navigation.
+function settleArtifactFrameNavigation() {
+  clearTimeout(frameNavigationTimer);
+  frameNavigationPending = false;
+  if (!frameNavigationQueued) return false;
+  assignArtifactFrame(frameNavigationQueued);
+  return true;
+}
+
 function artifactFrameSrcForLoad(load) {
   const separator = artifactSrc.includes("?") ? "&" : "?";
   return (
@@ -2671,7 +2711,10 @@ async function probeArtifactAvailability(loadToken) {
     const response = await fetch(artifactProbeSrc(), { cache: "no-store" });
     if (loadToken !== artifactLoadToken) return;
     if (response.status === 409) return;
-    if (response.ok) return;
+    if (response.ok) {
+      retrySilentArtifactLoad(loadToken);
+      return;
+    }
     await reportArtifactFailures(
       [{ kind: "artifact-unavailable", detail: "the artifact document responded with HTTP " + response.status }],
       loadToken,
@@ -2679,6 +2722,21 @@ async function probeArtifactAvailability(loadToken) {
   } catch {
     // A transient fetch failure is uncertainty, not proof - stay silent.
   }
+}
+
+// The current load stayed silent for the whole probe delay although its document is servable. A
+// running SDK reports its revisions at DOMContentLoaded, so the frame shows something else - most
+// likely a navigation Chrome dropped - or an SDK that cannot start. Navigate once more; a second
+// silence is left alone, so a document whose SDK never starts costs one extra load, not a loop.
+let artifactNavigationRetryToken = "";
+
+function retrySilentArtifactLoad(loadToken) {
+  if (!artifactSrc || ended || loadToken !== artifactLoadToken) return;
+  if (artifactSpokeToken === loadToken) return;
+  if (frameNavigationPending || frameNavigationQueued) return;
+  if (artifactNavigationRetryToken === loadToken) return;
+  artifactNavigationRetryToken = loadToken;
+  navigateArtifactFrame(artifactFrameSrcForLoad({ revision: artifactLoadRevision, token: loadToken }));
 }
 
 function activeWarnings() {
@@ -3262,7 +3320,7 @@ function markSessionEnded() {
   // No load begins once the review has ended. A page rendered for an ended review would otherwise
   // keep an empty frame, so show the load it was rendered with - the frame's only navigation.
   if (artifactSrc && !frame.src && artifactLoadToken) {
-    frame.src = artifactFrameSrcForLoad({ revision: artifactLoadRevision, token: artifactLoadToken });
+    navigateArtifactFrame(artifactFrameSrcForLoad({ revision: artifactLoadRevision, token: artifactLoadToken }));
   }
   closeMenus();
   closeWarningsDrawer();
@@ -3401,8 +3459,8 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
     // load (superseded/out-of-order/exhausted retries below) must leave it intact.
     resetRevisionLegend();
     startLayoutGateCycle();
-    const currentSrc = frame.src || "about:blank";
-    frame.src = currentSrc + (currentSrc.includes("?") ? "&" : "?") + "lavish_reload=" + Date.now();
+    const currentSrc = frameNavigationQueued || frame.src || "about:blank";
+    navigateArtifactFrame(currentSrc + (currentSrc.includes("?") ? "&" : "?") + "lavish_reload=" + Date.now());
     return true;
   }
   const requestSequence = ++artifactLoadRequestSequence;
@@ -3412,7 +3470,7 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
     // No newer load began, and at boot nothing is on screen yet: show the load this page was
     // rendered with (or the one its handoff reported) instead of an empty frame.
     if (requestSequence === artifactLoadRequestSequence && !ended && !frame.src && artifactLoadToken) {
-      frame.src = artifactFrameSrcForLoad({ revision: artifactLoadRevision, token: artifactLoadToken });
+      navigateArtifactFrame(artifactFrameSrcForLoad({ revision: artifactLoadRevision, token: artifactLoadToken }));
     }
     if (
       requestSequence === artifactLoadRequestSequence &&
@@ -3531,7 +3589,7 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
   // The next document reports its own registry once it loads; until then the
   // previous revision's legend would point at blocks that may no longer exist.
   resetRevisionLegend();
-  frame.src = artifactFrameSrcForLoad({ revision, token });
+  navigateArtifactFrame(artifactFrameSrcForLoad({ revision, token }));
   return true;
 }
 
@@ -3774,7 +3832,8 @@ async function flushWhiteboardsBeforeChromeReload() {
 
 async function flushInlineWhiteboards() {
   for (const [index, channel] of [...inlineWhiteboardChannels]) {
-    if (!channel.initialized || index === overlayIndex) continue;
+    // A closed window never answers prepareTeardown, and nothing in it is left to save.
+    if (!channel.initialized || index === overlayIndex || isClosedWindow(channel.window)) continue;
     if (!(await beginWhiteboardTeardown(index, "inline"))) return false;
   }
   return true;
@@ -3992,17 +4051,42 @@ function isArtifactChildWindow(source) {
   }
 }
 
+// A whiteboard window the frame's document took with it when it was replaced. The browser reports
+// it closed by the time the new document's whiteboard says ready (Chrome 155 and Firefox,
+// 2026-10-12), and reading `closed` is allowed on a cross-origin window.
+function isClosedWindow(source) {
+  try {
+    return Boolean(source?.closed);
+  } catch {
+    return false;
+  }
+}
+
+// The live channel at `index`, if any. A channel whose window closed cannot answer a teardown and
+// must not hold its index against the new document's whiteboard, so it is dropped here.
+function liveInlineWhiteboardChannel(index) {
+  const channel = inlineWhiteboardChannels.get(index);
+  if (channel && isClosedWindow(channel.window)) {
+    inlineWhiteboardChannels.delete(index);
+    return undefined;
+  }
+  return channel;
+}
+
 function handleInlineWhiteboardMessage(event, message) {
   if (ended) return;
   if (!isArtifactChildWindow(event.source)) return;
   const index = validWhiteboardIndex(message.diagramIndex);
   if (index === null) return;
   if (message.type === "lavish-whiteboard:ready") {
-    if (inlineWhiteboardChannels.has(index)) return;
+    // While a navigation waits, the frame holds the outgoing document, and a whiteboard that boots
+    // now is one of its own: nothing but timing tells its window from the incoming document's.
+    if (frameNavigationQueued) return;
+    if (liveInlineWhiteboardChannel(index)) return;
     const channelId = String(message.channelToken || "");
     if (!channelId) return;
     authenticateWhiteboardChannel(channelId).then((authenticated) => {
-      if (!authenticated || ended || inlineWhiteboardChannels.has(index)) return;
+      if (!authenticated || ended || liveInlineWhiteboardChannel(index)) return;
       const channel = { window: event.source, channelId, initialized: false };
       inlineWhiteboardChannels.set(index, channel);
       whiteboardRecord(index).diagramId = String(message.diagramId || "");
@@ -4055,9 +4139,9 @@ window.addEventListener("message", (event) => {
 });
 
 // The frame is navigated once per load. Showing the rendered load first and then the one the
-// boot begins put two iframe.src assignments back to back, and Chrome can lose the second when it
-// lands just as the first navigation commits - leaving a reopened review on the load it had just
-// retired. The rendered load is shown only when no newer one can begin (preservePreviousLoad).
+// boot begins put two navigations back to back, the second waiting on the first for nothing (see
+// navigateArtifactFrame for why one must wait). The rendered load is shown only when no newer one
+// can begin (preservePreviousLoad).
 function loadFrame() {
   if (artifactSrc) {
     replaceArtifactFrame().catch(() => {});
@@ -4587,6 +4671,9 @@ document.addEventListener(
 // the entry's age is guaranteed to be refreshed before the page may disappear.
 document.addEventListener("visibilitychange", () => persistStash());
 frame.addEventListener("load", () => {
+  // This load released a waiting navigation: its document is being replaced, so nothing is
+  // replayed into it and it is not a silent artifact.
+  if (settleArtifactFrameNavigation()) return;
   artifactFrameLoaded = true;
   if (artifactSpokeToken !== artifactLoadToken) armArtifactAvailabilityProbe(artifactLoadToken);
   postToFrame({ type: "lavish:setAnnotationMode", enabled: annotation && !ended });

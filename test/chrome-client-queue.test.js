@@ -88,6 +88,10 @@ async function createChromeHarness({
   // `navigator.locks` (createFakeLockManager). Shared across harnesses like `localStore`; left
   // off, the page has no Web Locks API.
   locks = null,
+  // When the artifact frame fires `load`. "auto" follows every src assignment with a load on the
+  // next microtask, as a browser does; "manual" leaves every load to the test, for tests about
+  // what happens while a navigation has not loaded yet.
+  frameLoads = "auto",
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
   // Seed sessionStorage before the client boots, to model a tab whose queue was
@@ -311,6 +315,7 @@ async function createChromeHarness({
     set(value) {
       this.currentSrc = String(value);
       srcLoads.push({ src: this.currentSrc, hadMessageListener: windowListeners.has("message") });
+      if (frameLoads === "auto") queueMicrotask(() => frame.dispatch("load"));
     },
   });
   frame.contentWindow = {
@@ -504,7 +509,6 @@ async function createChromeHarness({
 
   vm.runInNewContext(source, context, { filename: "chrome-client.js" });
   await flushPromises();
-  if (artifactSrc) frame.dispatch("load");
 
   function frameLoadToken() {
     const match = String(frame.src).match(/[?&]artifact_load_token=([^&]+)/);
@@ -523,11 +527,19 @@ async function createChromeHarness({
       // artifact document, so its window's parent is the artifact window.
       const source = {
         parent: frame.contentWindow,
+        closed: false,
         postMessage(message) {
           posted.push(message);
         },
       };
-      const whiteboard = { source, posted };
+      // A browser reports `closed` once the document that held the whiteboard is replaced.
+      const whiteboard = {
+        source,
+        posted,
+        close() {
+          source.closed = true;
+        },
+      };
       inlineWhiteboards.push(whiteboard);
       return whiteboard;
     },
@@ -4124,8 +4136,9 @@ test("a superseded reload keeps the artifact already on screen and leaves the ga
 });
 
 // A second iframe.src assignment that lands just as the previous navigation commits can be lost
-// (Chrome 155), which left a reopened review on the load it retired, its files refused. So a load
-// that begins is the frame's one navigation: the rendered load is not shown first.
+// (Chrome 155), which left a reopened review on the load it retired, its files refused. The frame
+// now waits for a load before its next navigation (navigateArtifactFrame), and a load that begins
+// is still the frame's one navigation at boot: the rendered load is not shown first.
 test("a reopened review navigates its frame once, to the load it begins", async () => {
   const chrome = await createChromeHarness({
     artifactSrc: "/artifact/abc/index.html",
@@ -4138,6 +4151,237 @@ test("a reopened review navigates its frame once, to the load it begins", async 
     chrome.srcLoads.map((load) => load.src),
     ["/artifact/abc/index.html?artifact_revision=1&artifact_load_token=harness-load-1"],
   );
+});
+
+// Chrome 155 also loses an assignment made after a navigation that moves the frame into another
+// process (out of about:blank or an error page) has started to commit and before this page has
+// handled that navigation's load. So a navigation asked for while the frame is still loading waits
+// for that load (navigateArtifactFrame), and only the newest one waits.
+function harnessLoadSrc(n) {
+  return `/artifact/abc/index.html?artifact_revision=${n}&artifact_load_token=harness-load-${n}`;
+}
+
+async function bootWithManualFrameLoads(options = {}) {
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    frameLoads: "manual",
+    ...options,
+  });
+  await flushPromises();
+  await flushPromises();
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1)],
+  );
+  return chrome;
+}
+
+async function liveReload(chrome) {
+  chrome.eventSource().listeners.get("reload")();
+  await flushPromises();
+  await flushPromises();
+}
+
+test("a navigation asked for before the frame loaded waits for that load", async () => {
+  const chrome = await bootWithManualFrameLoads();
+  await liveReload(chrome);
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1)],
+  );
+
+  chrome.frame.dispatch("load");
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1), harnessLoadSrc(2)],
+  );
+});
+
+test("only the newest waiting navigation runs", async () => {
+  const chrome = await bootWithManualFrameLoads();
+  await liveReload(chrome);
+  await liveReload(chrome);
+
+  chrome.frame.dispatch("load");
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1), harnessLoadSrc(3)],
+  );
+});
+
+test("a load that releases a waiting navigation is not replayed into the document it replaces", async () => {
+  const chrome = await bootWithManualFrameLoads();
+  await liveReload(chrome);
+  const count = (type) => chrome.postedToFrame.filter((message) => message.type === type).length;
+  const scrolls = count("lavish:restoreScroll");
+  const modes = count("lavish:setAnnotationMode");
+
+  chrome.frame.dispatch("load");
+  assert.equal(chrome.srcLoads.at(-1)?.src, harnessLoadSrc(2));
+  assert.equal(count("lavish:restoreScroll"), scrolls);
+  assert.equal(count("lavish:setAnnotationMode"), modes);
+
+  chrome.frame.dispatch("load");
+  assert.equal(count("lavish:restoreScroll"), scrolls + 1);
+});
+
+test("a navigation that never loads is released by the fallback", async () => {
+  const chrome = await bootWithManualFrameLoads();
+  await liveReload(chrome);
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1)],
+  );
+
+  chrome.runTimers(3000);
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1), harnessLoadSrc(2)],
+  );
+});
+
+test("after the fallback the next navigation goes at once", async () => {
+  const chrome = await bootWithManualFrameLoads();
+  chrome.runTimers(3000);
+  await liveReload(chrome);
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1), harnessLoadSrc(2)],
+  );
+});
+
+// The waiting load began before the review ended and is the newest one; the one it replaces was
+// retired by that begin, so its files would answer 409 under the ended overlay.
+test("a navigation waiting when the review ends still runs at the load", async () => {
+  const chrome = await bootWithManualFrameLoads();
+  await liveReload(chrome);
+  chrome.eventSource().listeners.get("ended")();
+  await flushPromises();
+
+  chrome.frame.dispatch("load");
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1), harnessLoadSrc(2)],
+  );
+});
+
+test("only assignArtifactFrame assigns the artifact frame's src", async () => {
+  const source = await readFile(sourceUrl, "utf8");
+  assert.equal([...source.matchAll(/\bframe\.src\s*=(?!=)/g)].length, 1);
+  const body = /\nfunction assignArtifactFrame\(url\) \{\n([\s\S]*?)\n\}\n/.exec(source)?.[1] || "";
+  assert.match(body, /\bframe\.src = url;/);
+});
+
+// While a navigation waits, the frame still holds the outgoing document, and its Mermaid
+// whiteboards boot then (they are what keeps its load late). Their windows are children of the
+// same frame WindowProxy, so nothing but timing tells them from the incoming document's. A channel
+// they registered would hold its index against the new whiteboard and wedge the next reset on a
+// teardown its dead window never answers.
+test("a whiteboard of the document being replaced is not registered while the next navigation waits", async () => {
+  const chrome = await bootWithManualFrameLoads({ fetchImpl: async (url) => whiteboardFetch(String(url)) });
+  await liveReload(chrome);
+
+  const outgoing = await initializeInlineWhiteboard(chrome, "outgoing-channel");
+  assert.deepEqual(outgoing.posted, []);
+});
+
+test("a whiteboard whose window closed gives its index to the new document's whiteboard", async () => {
+  const chrome = await createChromeHarness({ fetchImpl: async (url) => whiteboardFetch(String(url)) });
+  const first = await initializeInlineWhiteboard(chrome, "first-channel");
+  assert.equal(first.posted.at(-1)?.type, "lavish-whiteboard:init");
+  first.close();
+
+  const second = await initializeInlineWhiteboard(chrome, "second-channel");
+  assert.equal(second.posted.at(-1)?.type, "lavish-whiteboard:init");
+  assert.equal(second.posted.at(-1)?.channelId, "second-channel");
+});
+
+// The outgoing whiteboard's ready can still be authenticating when its document is replaced and
+// the incoming one says ready too: whichever registers first, the live window gets the index.
+test("a whiteboard that boots while a replaced one is still authenticating gets its index", async () => {
+  /** @type {(() => void)[]} */
+  const pendingAuth = [];
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (String(url).includes("/whiteboard-channel")) {
+        return new Promise((resolve) => pendingAuth.push(() => resolve({ ok: true })));
+      }
+      return whiteboardFetch(String(url));
+    },
+  });
+  const ready = (whiteboard, channelToken) =>
+    chrome.sendInlineWhiteboardMessage(whiteboard, {
+      type: "lavish-whiteboard:ready",
+      diagramIndex: 0,
+      diagramId: "mermaid-1",
+      channelToken,
+    });
+  const outgoing = chrome.createInlineWhiteboard();
+  ready(outgoing, "outgoing-channel");
+  const incoming = chrome.createInlineWhiteboard();
+  ready(incoming, "incoming-channel");
+  await flushPromises();
+  assert.equal(pendingAuth.length, 2);
+
+  outgoing.close();
+  pendingAuth[0]();
+  await flushPromises();
+  await flushPromises();
+  pendingAuth[1]();
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(incoming.posted.at(-1)?.type, "lavish-whiteboard:init");
+  assert.equal(incoming.posted.at(-1)?.channelId, "incoming-channel");
+});
+
+test("a reload skips the teardown of a whiteboard whose window closed", async () => {
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    fetchImpl: async (url) => whiteboardFetch(String(url)),
+  });
+  await flushPromises();
+  await flushPromises();
+  const gone = await initializeInlineWhiteboard(chrome, "gone-channel");
+  assert.equal(gone.posted.at(-1)?.type, "lavish-whiteboard:init");
+  gone.close();
+  const begins = chrome.artifactBeginRequests.length;
+
+  await liveReload(chrome);
+  assert.equal(
+    gone.posted.some((message) => message.type === "lavish-whiteboard:prepareTeardown"),
+    false,
+  );
+  assert.equal(chrome.artifactBeginRequests.length, begins + 1);
+});
+
+test("starting a navigation forgets the outgoing document's whiteboards", async () => {
+  const probes = [];
+  const chrome = await bootWithManualFrameLoads({
+    fetchImpl: async (url) => {
+      if (String(url).includes("probe=1")) {
+        probes.push(String(url));
+        return { ok: true, status: 200, json: async () => ({}) };
+      }
+      return whiteboardFetch(String(url));
+    },
+  });
+  chrome.frame.dispatch("load");
+  const outgoing = await initializeInlineWhiteboard(chrome, "outgoing-channel");
+  assert.equal(outgoing.posted.at(-1)?.type, "lavish-whiteboard:init");
+
+  // The silent load is navigated once more (retrySilentArtifactLoad), with no begin to clear the
+  // channels first; the outgoing window is not reported closed yet.
+  chrome.runTimers(8000);
+  await flushPromises();
+  await flushPromises();
+  assert.equal(probes.length, 1);
+  assert.equal(chrome.srcLoads.length, 2);
+  chrome.frame.dispatch("load");
+
+  const incoming = await initializeInlineWhiteboard(chrome, "incoming-channel");
+  assert.equal(incoming.posted.at(-1)?.type, "lavish-whiteboard:init");
+  assert.equal(incoming.posted.at(-1)?.channelId, "incoming-channel");
 });
 
 test("an ended review still shows the load it was rendered with", async () => {
@@ -6404,6 +6648,129 @@ test("a silent artifact is probed for a fatal failure, and a talking one is not"
   const failure = posts.find((post) => post.url === "/api/abc/artifact-failures");
   assert.equal(failure.body.failures[0].kind, "artifact-unavailable");
   assert.match(failure.body.failures[0].detail, /HTTP 404/);
+});
+
+// A running SDK reports its revisions at DOMContentLoaded, so a load whose token stays silent while
+// its document is servable shows something else - most likely a navigation Chrome dropped. It is
+// navigated once more, and only once, so a document whose SDK never starts costs one extra load.
+function probeRecordingFetch(probes, answer) {
+  return async (url) => {
+    if (String(url).includes("/artifact/abc/index.html?") && String(url).includes("probe=1")) {
+      probes.push(String(url));
+      return answer();
+    }
+    return { ok: true, json: async () => ({}) };
+  };
+}
+
+test("a silent load whose document is servable is navigated once more, then left alone", async () => {
+  const probes = [];
+  const chrome = await bootWithManualFrameLoads({
+    fetchImpl: probeRecordingFetch(probes, () => ({ ok: true, status: 200, json: async () => ({}) })),
+  });
+
+  chrome.frame.dispatch("load");
+  chrome.runTimers(8000);
+  await flushPromises();
+  await flushPromises();
+  assert.equal(probes.length, 1);
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1), harnessLoadSrc(1)],
+  );
+
+  chrome.frame.dispatch("load");
+  chrome.runTimers(8000);
+  await flushPromises();
+  await flushPromises();
+  assert.equal(probes.length, 2);
+  assert.equal(chrome.srcLoads.length, 2, "a second silence is left alone");
+});
+
+test("a load that speaks while its probe is in flight is not navigated again", async () => {
+  const probes = [];
+  /** @type {((value: any) => void) | undefined} */
+  let answerProbe;
+  const chrome = await bootWithManualFrameLoads({
+    fetchImpl: probeRecordingFetch(
+      probes,
+      () =>
+        new Promise((resolve) => {
+          answerProbe = resolve;
+        }),
+    ),
+  });
+
+  chrome.frame.dispatch("load");
+  chrome.runTimers(8000);
+  await flushPromises();
+  chrome.sendFrameMessage({
+    artifact_load_token: "harness-load-1",
+    type: "lavish:revisions",
+    revisions: [],
+    marks: [],
+  });
+  assert.ok(answerProbe);
+  answerProbe({ ok: true, status: 200, json: async () => ({}) });
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(probes.length, 1);
+  assert.equal(chrome.srcLoads.length, 1);
+});
+
+test("a retired load's probe is not navigated again", async () => {
+  const probes = [];
+  const posts = [];
+  const recordProbe = probeRecordingFetch(probes, () => ({ ok: false, status: 409, json: async () => ({}) }));
+  const chrome = await bootWithManualFrameLoads({
+    fetchImpl: async (url) => {
+      posts.push(String(url));
+      return recordProbe(url);
+    },
+  });
+
+  chrome.frame.dispatch("load");
+  chrome.runTimers(8000);
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(probes.length, 1);
+  assert.equal(chrome.srcLoads.length, 1);
+  assert.equal(
+    posts.some((url) => url === "/api/abc/artifact-failures"),
+    false,
+  );
+});
+
+test("a probe answering while the frame's navigation has not loaded adds no navigation", async () => {
+  const probes = [];
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    frameLoads: "manual",
+    sessionData: { ...defaultSessionData, initialArtifactRevision: 4, initialArtifactLoadToken: "rendered-load" },
+    beginLoadResponses: [
+      { ok: false, status: 503 },
+      { ok: false, status: 503 },
+      { ok: false, status: 503 },
+    ],
+    fetchImpl: probeRecordingFetch(probes, () => ({ ok: true, status: 200, json: async () => ({}) })),
+  });
+  await flushPromises();
+  chrome.runTimers(100);
+  await flushPromises();
+  chrome.runTimers(300);
+  await flushPromises();
+  // The begin-load ran out of in-call retries, so the rendered load is on its way into the frame.
+  assert.equal(chrome.srcLoads.length, 1);
+
+  chrome.runTimers(8000);
+  await flushPromises();
+  await flushPromises();
+  assert.equal(probes.length, 1);
+  // The rendered load's own navigation is still in flight; its load must not start another one.
+  chrome.frame.dispatch("load");
+  assert.equal(chrome.srcLoads.length, 1);
 });
 
 test("an artifact that reports diagnostics is never probed as unavailable", async () => {
