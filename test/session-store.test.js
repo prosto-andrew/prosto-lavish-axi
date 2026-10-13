@@ -3045,3 +3045,46 @@ test("a transcript older than receipts is marked at load and never stamped", asy
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// The fork's readState (parse, settle, set aside) carries upstream's pre-receipt marker inside its
+// session loop. The marker is a one-time migration: a store reads state.json on every operation, so
+// a marker that ran on every read would rewrite the file each time.
+test("a migrated state.json is not rewritten by the next read", async () => {
+  const legacy = {
+    sessions: {
+      "legacy-session": {
+        key: "legacy-session",
+        file: "/tmp/artifact.html",
+        url: "http://localhost:4387/session/legacy",
+        status: "open",
+        pending_prompts: 0,
+        prompts: [],
+        chat: [
+          { role: "user", kind: "message", text: "From last month", at: "2026-09-01T10:00:00.000Z" },
+          { role: "agent", text: "Done then.", at: "2026-09-01T10:05:00.000Z" },
+        ],
+        chat_revision: 7,
+        updated_at: "2026-09-01T10:05:00.000Z",
+      },
+    },
+  };
+  await withStateFile(JSON.stringify(legacy), async ({ store, stateFile }) => {
+    await store.readState();
+    const migrated = await readFile(stateFile, "utf8");
+    const session = JSON.parse(migrated).sessions["legacy-session"];
+    assert.equal(session.delivery_seq, 0);
+    assert.equal(session.chat[0].receipt, "none");
+
+    let writes = 0;
+    const writeState = store.writeState.bind(store);
+    store.writeState = async (state) => {
+      writes += 1;
+      return writeState(state);
+    };
+    await store.readState();
+    await store.readState();
+
+    assert.equal(writes, 0, "a read of an already migrated state.json writes nothing");
+    assert.equal(await readFile(stateFile, "utf8"), migrated);
+  });
+});

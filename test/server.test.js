@@ -6980,7 +6980,8 @@ test("chat-sync stamps a note seen when a poll takes it, working when the artifa
       assert.equal(sent.chat.length, 1);
       assert.equal("delivered_at" in sent.chat[0], false, "a send is not a delivery");
 
-      const poll = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
+      // This build's /api/poll refuses a request without the CLI client header (PR #28).
+      const poll = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`);
       const feedback = await poll.json();
       assert.equal(feedback.status, "feedback");
       assert.equal("delivery_seq" in feedback, false, "the poll response carries no stamp bookkeeping");
