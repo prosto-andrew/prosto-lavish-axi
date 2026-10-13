@@ -64,7 +64,13 @@ import {
   stateId,
 } from "./paths.js";
 import { detectTailscale } from "./tailscale.js";
-import { artifactTreeRoot, isArtifactPathError, isHtmlPath, resolveAllowedArtifactFile } from "./artifact-path.js";
+import {
+  artifactTreeRoot,
+  isArtifactPathError,
+  isHtmlPath,
+  isNtfsStreamPath,
+  resolveAllowedArtifactFile,
+} from "./artifact-path.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
 import { AsyncMutex } from "./async-mutex.js";
 import {
@@ -807,8 +813,9 @@ export async function serve({
   }
 
   // Pre-fix state.json can still name a non-HTML path. Never read that file back to a caller.
+  // LAVISH-HARDENED: nor an NTFS stream name, which passes the HTML check (see isNtfsStreamPath).
   function refuseNonHtmlArtifact(session, res) {
-    if (isHtmlPath(session.file)) return false;
+    if (isHtmlPath(session.file) && !isNtfsStreamPath(session.file)) return false;
     res.status(403).send("Forbidden");
     return true;
   }

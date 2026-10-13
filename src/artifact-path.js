@@ -14,6 +14,18 @@ export function isHtmlPath(file) {
 }
 
 /**
+ * LAVISH-HARDENED: on Windows a colon in the last path component names an NTFS alternate data
+ * stream (`child:evil.html`). realpath keeps the name, stat calls it a regular file, and the tree
+ * root of a stream on a directory is that directory's parent, so it is never an artifact. On POSIX
+ * the colon is an ordinary file-name character.
+ * @param {unknown} file
+ * @returns {boolean}
+ */
+export function isNtfsStreamPath(file) {
+  return process.platform === "win32" && path.win32.basename(String(file || "")).includes(":");
+}
+
+/**
  * Directory `/artifact/:key/*` may read: the canonical HTML file's own directory.
  * A caller cannot pick a different tree by registering a non-HTML path.
  * @param {string} file
@@ -59,7 +71,7 @@ export async function resolveAllowedArtifactFile(file) {
     throw new ArtifactPathError();
   }
   const canonical = await realpath(path.resolve(requested));
-  if (!isHtmlPath(canonical)) {
+  if (!isHtmlPath(canonical) || isNtfsStreamPath(canonical)) {
     throw new ArtifactPathError();
   }
   const info = await stat(canonical);
