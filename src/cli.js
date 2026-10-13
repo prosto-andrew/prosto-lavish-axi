@@ -29,6 +29,7 @@ import { findPlaybook, listPlaybooks, playbookIds, PLAYBOOK_ROUTER_HELP } from "
 import { analyzeSelfPaint, SELF_PAINT_WARNING } from "./self-paint.js";
 import { openServerLog } from "./server-log.js";
 import { LAVISH_CLIENT_CLI, LAVISH_CLIENT_HEADER, resolveDesignAssetPath, serve } from "./server.js";
+import { isHtmlPath } from "./artifact-path.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
 import { guardSetTypeOfService } from "./socket-tos-guard.js";
 import { initDefaultTelemetry } from "./telemetry.js";
@@ -811,10 +812,6 @@ async function assertHtmlFile(file) {
       "Create the HTML artifact first, then run `lavish-safe <html-file>`",
     ]);
   }
-}
-
-function isHtmlPath(file) {
-  return file.toLowerCase().endsWith(".html") || file.toLowerCase().endsWith(".htm");
 }
 
 const HEALTH_PROBE_TIMEOUT_MS = 500;

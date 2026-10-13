@@ -64,6 +64,13 @@ import {
   stateId,
 } from "./paths.js";
 import { detectTailscale } from "./tailscale.js";
+import {
+  artifactTreeRoot,
+  isArtifactPathError,
+  isHtmlPath,
+  isNtfsStreamPath,
+  resolveAllowedArtifactFile,
+} from "./artifact-path.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
 import { AsyncMutex } from "./async-mutex.js";
 import {
@@ -805,6 +812,14 @@ export async function serve({
       );
   }
 
+  // Pre-fix state.json can still name a non-HTML path. Never read that file back to a caller.
+  // LAVISH-HARDENED: nor an NTFS stream name, which passes the HTML check (see isNtfsStreamPath).
+  function refuseNonHtmlArtifact(session, res) {
+    if (isHtmlPath(session.file) && !isNtfsStreamPath(session.file)) return false;
+    res.status(403).send("Forbidden");
+    return true;
+  }
+
   // LAVISH-HARDENED: the sandbox policy goes on before anything under /artifact can answer, so the
   // redirects, the Host allowlist's 403, the router's 400 for a malformed escape and every 404 or
   // 409 carry it too, not only the documents and files.
@@ -946,7 +961,7 @@ export async function serve({
 
   app.post("/api/sessions", async (req, res, next) => {
     try {
-      const file = await canonicalFile(req.body.file);
+      const file = await resolveAllowedArtifactFile(req.body?.file);
       const key = sessionKey(file);
       const reopen = Boolean(req.body.reopen);
       const existing = await store.findByKey(key);
@@ -987,6 +1002,14 @@ export async function serve({
         ...(stateWarning ? { state_warning: stateWarning } : {}),
       });
     } catch (error) {
+      if (isArtifactPathError(error)) {
+        res.status(error.statusCode).json({
+          status: "error",
+          code: error.code,
+          error: error.message,
+        });
+        return;
+      }
       next(error);
     }
   });
@@ -1484,6 +1507,7 @@ export async function serve({
         res.status(404).json({ error: "session not found" });
         return;
       }
+      if (refuseNonHtmlArtifact(session, res)) return;
       const source = await readFile(session.file, "utf8");
       const root = path.dirname(session.file);
       const { html, warnings } = await buildSelfContainedHtml(source, {
@@ -1538,6 +1562,7 @@ export async function serve({
         return;
       }
       const session = chromeLoad.session;
+      if (refuseNonHtmlArtifact(session, res)) return;
       await watchSessionUntilShutdown(session);
       const artifactHtml = await readFile(session.file, "utf8").catch(() => "");
       const { faviconTag, title } = extractArtifactHead(artifactHtml);
@@ -1656,6 +1681,7 @@ export async function serve({
         sendSessionNotFound(req, res);
         return;
       }
+      if (refuseNonHtmlArtifact(beforeRead.session, res)) return;
       if (!beforeRead.valid) {
         sendArtifactLoadExpired(res);
         return;
@@ -1679,11 +1705,12 @@ export async function serve({
         sendSessionNotFound(req, res);
         return;
       }
+      if (refuseNonHtmlArtifact(verified.session, res)) return;
       if (!verified.valid) {
         sendArtifactLoadExpired(res);
         return;
       }
-      const root = path.dirname(verified.session.file);
+      const root = artifactTreeRoot(verified.session.file);
       const file = await resolveArtifactAsset(root, req.params[2]);
       if (!file) {
         res.status(403).send("Forbidden");
@@ -1820,6 +1847,7 @@ export async function serve({
         res.status(404).json({ error: "session not found" });
         return;
       }
+      if (refuseNonHtmlArtifact(session, res)) return;
       const html = await readFile(session.file, "utf8").catch(() => "");
       const sources = extractMermaidSources(html).map(({ index, source }) => ({
         index,
@@ -2772,9 +2800,9 @@ function normalizeOrigin(value) {
 }
 
 // Confines an asset request lexically first, then - like export-bundle.js's guardedRead -
-// resolves the real (symlink-followed) path and refuses anything that escapes the artifact
-// directory, so a symlink placed beside the artifact can't make this route serve an outside
-// file (e.g. ~/.ssh/id_rsa).
+// resolves the real (symlink-followed) path and refuses anything that escapes the session's
+// artifact tree (the HTML file's directory), so a symlink placed beside the artifact can't
+// make this route serve an outside file (e.g. ~/.ssh/id_rsa).
 export async function resolveArtifactAsset(root, assetPath) {
   const file = path.resolve(root, assetPath);
   const relative = path.relative(root, file);
