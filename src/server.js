@@ -1875,6 +1875,13 @@ export async function serve({
   // for `%% lavish-icon` nodes. Read-only: Lavish never writes that directory.
   app.get("/api/whiteboard-libraries", async (req, res, next) => {
     try {
+      // LAVISH-HARDENED: only the review page fetches the list, so refuse another site's page
+      // before the directory is read, as the export and attachment reads do (isOwnPageFetch).
+      res.vary("Sec-Fetch-Site");
+      if (!isOwnPageFetch(req)) {
+        res.status(403).json({ error: "cross-site whiteboard library read rejected" });
+        return;
+      }
       if (hasPresentOriginOrReferer(req) && !isSameOriginRequest(req, allowedHostnames, allowAnyHostname)) {
         res.status(403).json({ error: "cross-origin whiteboard library request rejected" });
         return;

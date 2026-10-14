@@ -471,3 +471,37 @@ test("mermaid-sources hashes follow referenced library items only for icon diagr
     await ctx.close();
   }
 });
+
+// LAVISH-HARDENED: only the review page, a same-origin document, fetches the library list. A page
+// on another site, another loopback port, or opened from disk sends its own Sec-Fetch-Site, and
+// with no Origin or Referer (a no-cors fetch, a <script>) it would pass the Origin check above.
+// Vary keeps a copy cached for the review from answering another loopback port, which shares the
+// review's cache partition (ports are not part of a site).
+test("GET /api/whiteboard-libraries refuses other sites' pages", async () => {
+  const ctx = await startWhiteboardServer();
+  try {
+    const libraryDir = path.join(ctx.dir, "excalidraw-libraries");
+    await mkdir(libraryDir);
+    await writeFile(path.join(libraryDir, "fixture.excalidrawlib"), libraryFile([["Gear", 10]]));
+    const librariesFrom = (site) =>
+      fetch(`${ctx.base}/api/whiteboard-libraries`, site === undefined ? {} : { headers: { "sec-fetch-site": site } });
+
+    for (const site of ["cross-site", "same-site", "bogus", ""]) {
+      const res = await librariesFrom(site);
+      assert.equal(res.status, 403, site);
+      assert.deepEqual(await res.json(), { error: "cross-site whiteboard library read rejected" });
+      assert.match(res.headers.get("vary") || "", /sec-fetch-site/i, site);
+    }
+    for (const site of ["same-origin", "none", undefined]) {
+      const res = await librariesFrom(site);
+      assert.equal(res.status, 200, String(site));
+      assert.deepEqual(
+        (await res.json()).libraries.map((library) => library.id),
+        ["fixture"],
+      );
+      assert.match(res.headers.get("vary") || "", /sec-fetch-site/i, String(site));
+    }
+  } finally {
+    await ctx.close();
+  }
+});

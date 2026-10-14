@@ -220,3 +220,55 @@ test("parseExcalidrawLibrary keeps every generated ref unique", () => {
   assert.equal(new Set(refs).size, 3);
   for (const item of library.items) assert.equal(findLibraryItem([library], item.ref), item);
 });
+
+// LAVISH-HARDENED: a library is a file the user downloaded, so only plain drawing elements reach
+// the whiteboard. Excalidraw renders an `iframe` element's customData.generationData.html as a live
+// srcdoc document with no click, and WebRTC from it is beyond the frame's policy; an `embeddable`
+// frames its link, an `image` points at files a library never carries, and a `link` opens another
+// site on a click.
+test("parseExcalidrawLibrary keeps only plain drawing elements, without customData or links", () => {
+  const plain = ["rectangle", "diamond", "ellipse", "arrow", "line", "freedraw", "text"];
+  const active = ["iframe", "embeddable", "image", "frame", "magicframe", "selection", "made-up"];
+  const generated = { generationData: { status: "done", html: "<script>parent.postMessage(1, '*')</script>" } };
+  const library = parseExcalidrawLibrary(
+    JSON.stringify({
+      libraryItems: [
+        {
+          name: "Mixed",
+          elements: [
+            ...plain.map((type) => square(`p-${type}`, { type, link: "https://example.com/", customData: generated })),
+            ...active.map((type) => square(`a-${type}`, { type, link: "https://example.com/", customData: generated })),
+          ],
+        },
+        { name: "Active only", elements: active.map((type) => square(`o-${type}`, { type })) },
+      ],
+    }),
+    { id: "lib" },
+  );
+  assert.deepEqual(
+    library.items.map((item) => item.name),
+    ["Mixed"],
+  );
+  const [mixed] = library.items;
+  assert.deepEqual(
+    mixed.elements.map((element) => element.type),
+    plain,
+  );
+  for (const element of mixed.elements) {
+    assert.equal("customData" in element, false, element.type);
+    assert.equal("link" in element, false, element.type);
+  }
+  for (const element of toExcalidrawLibraryItems([library])[0].elements) {
+    assert.deepEqual(element.customData, { lavishLibraryRef: "lib/Mixed" });
+  }
+  assert.throws(
+    () =>
+      parseExcalidrawLibrary(
+        JSON.stringify({ libraryItems: [{ name: "Frame", elements: [square("f", { type: "iframe" })] }] }),
+        {
+          id: "x",
+        },
+      ),
+    /no usable items/,
+  );
+});

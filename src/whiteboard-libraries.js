@@ -38,6 +38,24 @@ function liveElements(elements) {
   );
 }
 
+// LAVISH-HARDENED: a library is a file the user downloaded from the internet, so only plain drawing
+// elements reach the whiteboard, and without `customData` or `link`. Excalidraw renders an `iframe`
+// element's customData.generationData.html as a live srcdoc document with no click, and WebRTC from
+// it is beyond the frame's policy; an `embeddable` frames its link, an `image` points at files a
+// library never carries, and a `link` opens another site on a click. verify-hardening.mjs checks it.
+const LIBRARY_ELEMENT_TYPES = new Set(["rectangle", "diamond", "ellipse", "arrow", "line", "freedraw", "text"]);
+
+function libraryElements(elements) {
+  return liveElements(elements)
+    .filter((element) => LIBRARY_ELEMENT_TYPES.has(element.type))
+    .map((element) => {
+      const plain = { ...element };
+      delete plain.customData;
+      delete plain.link;
+      return plain;
+    });
+}
+
 // Unnamed items (common in v1 libraries) are named after their title: the
 // largest text that has at least two letters or digits. That skips decoration
 // such as braces, single glyphs, and small placeholder copy.
@@ -79,7 +97,7 @@ export function parseExcalidrawLibrary(text, { id }) {
   const items = [];
   const taken = new Set();
   rawItems.forEach((item, index) => {
-    const elements = liveElements(item?.elements);
+    const elements = libraryElements(item?.elements);
     if (elements.length === 0) return;
     const baseName = derivedItemName(item, elements, index);
     // Reserve every final name, so a generated "Queue #2" never collides with

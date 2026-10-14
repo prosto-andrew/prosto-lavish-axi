@@ -2360,6 +2360,9 @@ test("libraries output tells the user where to put files when none are installed
   assert.equal(output.dir, "/home/me/.lavish-axi/excalidraw-libraries");
   assert.deepEqual(output.libraries, []);
   assert.match(output.help.join("\n"), /\.excalidrawlib/);
+  // LAVISH-HARDENED: the hint names no website - the build reaches no external host, and an agent
+  // reading it is not sent browsing.
+  assert.doesNotMatch(output.help.join("\n"), /https?:\/\//);
   assert.equal(output.items, undefined);
 });
 
@@ -2376,8 +2379,9 @@ test("libraries output lists counts, skips, and points at item search", () => {
   assert.deepEqual(output.skipped, [{ file: "broken.excalidrawlib", reason: "not valid JSON" }]);
   assert.equal(output.items, undefined);
   const help = output.help.join("\n");
-  assert.match(help, /lavish-axi libraries --search <text>/);
-  assert.match(help, /lavish-axi design/);
+  // LAVISH-HARDENED: agents run what the hints name, so they name the launcher.
+  assert.match(help, /lavish-safe libraries --search <text>/);
+  assert.match(help, /lavish-safe design/);
 });
 
 test("libraries output filters item refs by search terms and library", () => {
@@ -2415,14 +2419,18 @@ test("libraries output bounds long item listings", () => {
 
 test("libraries help documents the command and the directory", () => {
   const help = getCommandHelp("libraries");
-  assert.match(help, /lavish-axi libraries \[--search <text>\] \[--library <id>\]/);
+  // LAVISH-HARDENED: the help names the launcher, not the upstream binary.
+  assert.match(help, /lavish-safe libraries \[--search <text>\] \[--library <id>\]/);
   assert.match(help, /excalidraw-libraries/);
   assert.equal(normalizeArgv(["libraries"])[0], "libraries");
 });
 
 test("design output owns the library icon directive and the diagram playbook points at it", () => {
   const icons = createDesignOutput().whiteboard_tooling.library_icons;
-  assert.match(icons.use_when, /lavish-axi libraries/);
+  // LAVISH-HARDENED: the guidance names the launcher, and this build has no share; an exported
+  // copy shows the Mermaid source rather than rendering it.
+  assert.match(icons.use_when, /lavish-safe libraries/);
+  assert.doesNotMatch(JSON.stringify(icons), /lavish-axi|\bshared\b/);
   assert.equal(icons.syntax, "%% lavish-icon <node-id> <library-id>/<item name>");
   assert.match(icons.example, /^flowchart /);
   assert.match(icons.example, /%% lavish-icon api /);

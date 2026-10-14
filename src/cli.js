@@ -775,7 +775,7 @@ export function createLibrariesOutput({ dir, libraries, skipped, search = "", li
   }
   if (libraries.length === 0) {
     output.help = [
-      `Copy Excalidraw library files (.excalidrawlib, for example from https://libraries.excalidraw.com) into ${dir}; every whiteboard's library panel then lists their items`,
+      `Copy Excalidraw library files (.excalidrawlib) into ${dir}; every whiteboard's library panel then lists their items`,
     ];
     return output;
   }
@@ -790,9 +790,9 @@ export function createLibrariesOutput({ dir, libraries, skipped, search = "", li
   }
   output.help = [
     output.more_items
-      ? "Narrow the list with `lavish-axi libraries --search <text>`"
-      : "Run `lavish-axi libraries --search <text>` or `--library <id>` to list item refs",
-    "To show an item as a node icon in a whiteboard flowchart, see `whiteboard_tooling.library_icons` in `lavish-axi design`",
+      ? "Narrow the list with `lavish-safe libraries --search <text>`"
+      : "Run `lavish-safe libraries --search <text>` or `--library <id>` to list item refs",
+    "To show an item as a node icon in a whiteboard flowchart, see `whiteboard_tooling.library_icons` in `lavish-safe design`",
   ];
   return output;
 }

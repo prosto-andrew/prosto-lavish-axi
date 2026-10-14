@@ -53,7 +53,7 @@ function mustNotExist(rel) {
 
 // The upstream release this tree was last merged from and audited against. The launchers
 // defer to this pin through --quiet. Bump it only after re-running every check.
-const AUDITED_VERSION = "0.1.84";
+const AUDITED_VERSION = "0.1.85";
 
 check(`checkout is the audited version ${AUDITED_VERSION}`, () => {
   const pkg = JSON.parse(read("package.json"));
@@ -404,7 +404,7 @@ check("the review chrome loads nothing from another origin", () => {
   return "default-src none; every source is this server; data: icons only";
 });
 
-check("whiteboard frame is served under that policy", () => {
+check("whiteboard frame is served under that policy and gets only plain library drawings", () => {
   const dist = read("dist/cli.mjs");
   mustContain(dist, "whiteboardContentSecurityPolicy", "dist/cli.mjs");
   const route = dist.slice(dist.indexOf('app.get("/whiteboard-frame"'));
@@ -426,7 +426,27 @@ check("whiteboard frame is served under that policy", () => {
   for (const token of ["allow-same-origin", "allow-popups-to-escape-sandbox"]) {
     if (sandbox.split(/\s+/).includes(token)) throw new Error(`the whiteboard frame sandbox grants ${token}`);
   }
-  return `${sandbox}; Excalidraw cannot reach its baked-in upstream endpoints`;
+  // Library items (.excalidrawlib files the user downloads) reach this frame as data, and
+  // Excalidraw turns some element types into live content the policy above cannot hold: an
+  // `iframe` element's customData.generationData.html becomes a srcdoc document whose WebRTC
+  // reaches any host. The parser the server and CLI run keeps only plain drawing elements and drops
+  // their customData and link.
+  const plainLibraryDrawings = [
+    /LIBRARY_ELEMENT_TYPES\d* = (?:\/\* @__PURE__ \*\/ )?new Set\(\["rectangle", "diamond", "ellipse", "arrow", "line", "freedraw", "text"\]\);/,
+    /function libraryElements\d*\(elements\) \{\s*return liveElements\d*\(elements\)\s*\.filter\(\(element\) => LIBRARY_ELEMENT_TYPES\d*\.has\(element\.type\)\)\s*\.map\(\(element\) => \{\s*const plain = \{ \.\.\.element \};\s*delete plain\.customData;\s*delete plain\.link;\s*return plain;\s*\}\);\s*\}/,
+    /const elements = libraryElements\d*\(item\?\.elements\);/,
+  ];
+  inOrder(
+    read("src/whiteboard-libraries.js"),
+    plainLibraryDrawings,
+    "the library parser in src/whiteboard-libraries.js",
+  );
+  try {
+    inOrder(dist, plainLibraryDrawings, "the library parser in dist/cli.mjs");
+  } catch (error) {
+    throw new Error(`${error.message} - ${REBUILD}`, { cause: error });
+  }
+  return `${sandbox}; Excalidraw cannot reach its baked-in upstream endpoints; library items are plain drawings`;
 });
 
 check("whiteboard assets load locally, never from a CDN", () => {
@@ -574,16 +594,31 @@ check("the skill generator cannot reinstate the upstream package", () => {
   return "the stub points only at the local launcher";
 });
 
+// The subcommands an agent or a reader could run: the CLI's own COMMANDS set, read from src/cli.js
+// so that a command an upstream merge adds (0.1.85's `libraries`) is covered without editing a list
+// here, plus the SDK-reserved `update`, which this build refuses.
+function launcherSubcommands() {
+  const set = /\nconst COMMANDS = new Set\(\[([^\]]*)\]\);/.exec(read("src/cli.js"))?.[1];
+  const names = set ? [...set.matchAll(/"([^"]*)"/g)].map((match) => match[1]) : [];
+  if (names.length === 0) {
+    throw new Error("src/cli.js has no COMMANDS set, so the launcher-name checks cannot list the subcommands");
+  }
+  const odd = names.find((name) => !/^[a-z][a-z-]*$/.test(name));
+  if (odd !== undefined) throw new Error(`src/cli.js COMMANDS holds ${JSON.stringify(odd)}, not a plain subcommand`);
+  return [...names, "update"];
+}
+
+// The upstream binary run with a subcommand, a file argument (`<html-file>`) or a flag.
+function upstreamRunPattern(flags) {
+  return new RegExp(`${"lavish" + "-axi"}(?= (?:${[...launcherSubcommands(), "<", "--"].join("|")}))`, flags);
+}
+
 check("CLI guidance names the launcher, never the upstream binary", () => {
   // Every next_step, help line and error hint the CLI emits is read by an agent as a
   // command to run. While they named the upstream binary, following them verbatim meant
   // invoking the package this build exists to avoid - and on a machine that blocks it,
   // stalling the review loop at its first step.
-  const upstream = "lavish" + "-axi";
-  const runnable = new RegExp(
-    upstream + "(?= (?:design|poll|reply|playbook|end|export|stop|share|setup|server|<|--))",
-    "g",
-  );
+  const runnable = upstreamRunPattern("g");
   for (const file of ["src/cli.js", "src/server.js", "src/design-reference.js", "src/playbooks.js", "dist/cli.mjs"]) {
     const hits = read(file).match(runnable);
     if (hits) throw new Error(`${file} still tells the agent to run the upstream binary (${hits.length}x)`);
@@ -608,9 +643,7 @@ check("user docs never send the reader to the upstream package", () => {
   // The same subcommand shapes the CLI guidance check refuses: the upstream binary run with
   // a command, a file argument or a flag. docs/invariants.md keeps upstream's binary name
   // for its internals and says so, so only the reader-facing files are held to this.
-  const runs = new RegExp(
-    `${upstream}(?= (?:design|poll|reply|playbook|end|export|stop|share|setup|server|update|<|--))`,
-  );
+  const runs = upstreamRunPattern("");
   const docs = readdirSync(path.join(root, "docs"))
     .filter((name) => name.endsWith(".md"))
     .map((name) => `docs/${name}`);
@@ -750,7 +783,7 @@ function handlerAt(source, route, file = "src/server.js") {
 // The route that serves the files beside an artifact, under the current load's token.
 const ARTIFACT_FILES_ROUTE = "/^\\/artifact\\/([^/]+)\\/([^/]+)\\/(.+)$/";
 
-check("other pages cannot read an artifact's files, attachments or export", () => {
+check("other pages cannot read an artifact's files, attachments, export or whiteboard libraries", () => {
   // A foreign page's <script>, <img> or <link> reaches these routes with no header that tells it
   // apart from the artifact's own request: Chrome sends the sandboxed frame's loads with neither
   // Origin nor Referer, exactly like an HTML file opened from disk. So a file beside an artifact is
@@ -800,14 +833,20 @@ check("other pages cannot read an artifact's files, attachments or export", () =
     where("/artifact file handler"),
   );
 
-  // Attachments and the export are asked for only by the same-origin review page, so there the
-  // browser's own Sec-Fetch-Site does tell them apart, before any disk access; Vary keeps a cached
-  // copy from answering a page on another loopback port, which shares the review's cache partition
-  // (ports are not part of a site). A framed export would otherwise drop the artifact, local files
-  // inlined, into the user's downloads.
+  // Attachments, the export and the whiteboard library list are asked for only by the same-origin
+  // review page, so there the browser's own Sec-Fetch-Site does tell them apart, before any disk
+  // access; Vary keeps a cached copy from answering a page on another loopback port, which shares
+  // the review's cache partition (ports are not part of a site). A framed export would otherwise
+  // drop the artifact, local files inlined, into the user's downloads.
   const ownPageRoutes = [
     { route: '"/api/:key/attachments/:id"', label: "attachment GET handler", then: "statAttachmentForServe(" },
     { route: '"/api/:key/export"', label: "export handler", then: "store.findByKey(" },
+    // The bundle may suffix both names.
+    {
+      route: '"/api/whiteboard-libraries"',
+      label: "whiteboard library handler",
+      then: /loadExcalidrawLibraries\d*\(libraryDir\d*\)/,
+    },
   ];
   const ownPageOrder = (guard, then) => [
     'res.vary("Sec-Fetch-Site");',
@@ -852,7 +891,7 @@ check("other pages cannot read an artifact's files, attachments or export", () =
   } catch (error) {
     throw new Error(`${error.message} - ${REBUILD}`);
   }
-  return "files only under the current load token; attachments and the export only for the review page";
+  return "files only under the current load token; attachments, the export and the library list only for the review page";
 });
 
 check("mermaid is vendored for offline rendering", () => {
