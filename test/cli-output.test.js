@@ -19,6 +19,7 @@ import {
   createDesignOutput,
   createExportOutput,
   createHomeOutput,
+  createLibrariesOutput,
   createOpenOutput,
   createPollOutput,
   createPlaybookOutput,
@@ -2340,4 +2341,104 @@ test("opening an artifact names that session as the one to reload across a versi
     recorder.close();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+function fixtureLibraries() {
+  const item = (library, name) => ({ ref: `${library}/${name}`, name, elements: [] });
+  return [
+    { id: "aws", items: [item("aws", "AWS Lambda"), item("aws", "Lambda Function"), item("aws", "Amazon S3")] },
+    { id: "system-design", items: [item("system-design", "Queue")] },
+  ];
+}
+
+test("libraries output tells the user where to put files when none are installed", () => {
+  const output = createLibrariesOutput({
+    dir: "/home/me/.lavish-axi/excalidraw-libraries",
+    libraries: [],
+    skipped: [],
+  });
+  assert.equal(output.dir, "/home/me/.lavish-axi/excalidraw-libraries");
+  assert.deepEqual(output.libraries, []);
+  assert.match(output.help.join("\n"), /\.excalidrawlib/);
+  // LAVISH-HARDENED: the hint names no website - the build reaches no external host, and an agent
+  // reading it is not sent browsing.
+  assert.doesNotMatch(output.help.join("\n"), /https?:\/\//);
+  assert.equal(output.items, undefined);
+});
+
+test("libraries output lists counts, skips, and points at item search", () => {
+  const output = createLibrariesOutput({
+    dir: "/x",
+    libraries: fixtureLibraries(),
+    skipped: [{ file: "/x/broken.excalidrawlib", reason: "not valid JSON" }],
+  });
+  assert.deepEqual(output.libraries, [
+    { id: "aws", items: 3 },
+    { id: "system-design", items: 1 },
+  ]);
+  assert.deepEqual(output.skipped, [{ file: "broken.excalidrawlib", reason: "not valid JSON" }]);
+  assert.equal(output.items, undefined);
+  const help = output.help.join("\n");
+  // LAVISH-HARDENED: agents run what the hints name, so they name the launcher.
+  assert.match(help, /lavish-safe libraries --search <text>/);
+  assert.match(help, /lavish-safe design/);
+});
+
+test("libraries output filters item refs by search terms and library", () => {
+  const searched = createLibrariesOutput({ dir: "/x", libraries: fixtureLibraries(), skipped: [], search: "lambda" });
+  assert.deepEqual(searched.items, [{ ref: "aws/AWS Lambda" }, { ref: "aws/Lambda Function" }]);
+  const both = createLibrariesOutput({ dir: "/x", libraries: fixtureLibraries(), skipped: [], search: "aws lambda" });
+  assert.deepEqual(both.items, [{ ref: "aws/AWS Lambda" }, { ref: "aws/Lambda Function" }]);
+  const library = createLibrariesOutput({
+    dir: "/x",
+    libraries: fixtureLibraries(),
+    skipped: [],
+    library: "system-design",
+  });
+  assert.deepEqual(library.items, [{ ref: "system-design/Queue" }]);
+  const none = createLibrariesOutput({ dir: "/x", libraries: fixtureLibraries(), skipped: [], search: "kafka" });
+  assert.deepEqual(none.items, []);
+});
+
+test("libraries output bounds long item listings", () => {
+  const many = Array.from({ length: 120 }, (_, index) => ({
+    ref: `big/Icon ${index}`,
+    name: `Icon ${index}`,
+    elements: [],
+  }));
+  const output = createLibrariesOutput({
+    dir: "/x",
+    libraries: [{ id: "big", items: many }],
+    skipped: [],
+    library: "big",
+  });
+  assert.equal(output.items.length, 50);
+  assert.equal(output.more_items, 70);
+  assert.match(output.help.join("\n"), /--search/);
+});
+
+test("libraries help documents the command and the directory", () => {
+  const help = getCommandHelp("libraries");
+  // LAVISH-HARDENED: the help names the launcher, not the upstream binary.
+  assert.match(help, /lavish-safe libraries \[--search <text>\] \[--library <id>\]/);
+  assert.match(help, /excalidraw-libraries/);
+  assert.equal(normalizeArgv(["libraries"])[0], "libraries");
+});
+
+test("design output owns the library icon directive and the diagram playbook points at it", () => {
+  const icons = createDesignOutput().whiteboard_tooling.library_icons;
+  // LAVISH-HARDENED: the guidance names the launcher, and this build has no share; an exported
+  // copy shows the Mermaid source rather than rendering it.
+  assert.match(icons.use_when, /lavish-safe libraries/);
+  assert.doesNotMatch(JSON.stringify(icons), /lavish-axi|\bshared\b/);
+  assert.equal(icons.syntax, "%% lavish-icon <node-id> <library-id>/<item name>");
+  assert.match(icons.example, /^flowchart /);
+  assert.match(icons.example, /%% lavish-icon api /);
+  assert.match(icons.notes, /plain node/);
+  assert.match(icons.notes, /Added library item/);
+
+  const diagram = JSON.stringify(createPlaybookOutput(["diagram"]));
+  assert.match(diagram, /whiteboard_tooling\.library_icons/);
+  assert.doesNotMatch(diagram, /%% lavish-icon/, "the syntax has one owner surface");
+  assert.doesNotMatch(JSON.stringify(createHomeOutput({ bin: "lavish-axi", sessions: [] })), /lavish-icon|libraries/);
 });

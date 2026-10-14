@@ -33,6 +33,7 @@ import { isHtmlPath } from "./artifact-path.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
 import { guardSetTypeOfService } from "./socket-tos-guard.js";
 import { initDefaultTelemetry } from "./telemetry.js";
+import { excalidrawLibrariesDir, loadExcalidrawLibraries } from "./whiteboard-library-store.js";
 
 const COMMANDS = new Set([
   "open",
@@ -46,6 +47,7 @@ const COMMANDS = new Set([
   "setup",
   "export",
   "share",
+  "libraries",
 ]);
 
 // LAVISH-HARDENED: `share` and `setup` are removed from this build. They stay registered
@@ -171,6 +173,7 @@ export async function run(argv) {
         export: exportCommand,
         share: disabledCommand("share"),
         update: disabledCommand("update"),
+        libraries: librariesCommand,
       },
       getCommandHelp: (command) => getCommandHelp(command, { agent }),
     });
@@ -742,6 +745,56 @@ export async function shutdownServerOnPort(
     freed = await portFreeWaiter(baseUrl, 3000);
   }
   return { server: { status: freed ? "stopped" : "stopping", port } };
+}
+
+const LIBRARY_ITEM_LIST_LIMIT = 50;
+
+async function librariesCommand(args) {
+  const dir = excalidrawLibrariesDir(path.dirname(stateFile()));
+  const { libraries, skipped } = await loadExcalidrawLibraries(dir);
+  return createLibrariesOutput({
+    dir: collapseHomeDirectory(dir, os.homedir()),
+    libraries,
+    skipped,
+    search: flagValue(args, "--search") || "",
+    library: flagValue(args, "--library") || "",
+  });
+}
+
+/**
+ * @param {{ dir: string, libraries: { id: string, items: { ref: string, name: string }[] }[], skipped: { file: string, reason: string }[], search?: string, library?: string }} options
+ */
+export function createLibrariesOutput({ dir, libraries, skipped, search = "", library = "" }) {
+  /** @type {Record<string, any>} */
+  const output = {
+    dir,
+    libraries: libraries.map((entry) => ({ id: entry.id, items: entry.items.length })),
+  };
+  if (skipped.length > 0) {
+    output.skipped = skipped.map((entry) => ({ file: path.basename(entry.file), reason: entry.reason }));
+  }
+  if (libraries.length === 0) {
+    output.help = [
+      `Copy Excalidraw library files (.excalidrawlib) into ${dir}; every whiteboard's library panel then lists their items`,
+    ];
+    return output;
+  }
+  const terms = search.toLowerCase().split(/\s+/).filter(Boolean);
+  if (terms.length > 0 || library) {
+    const matches = libraries
+      .filter((entry) => !library || entry.id === library.toLowerCase())
+      .flatMap((entry) => entry.items)
+      .filter((item) => terms.every((term) => item.ref.toLowerCase().includes(term)));
+    output.items = matches.slice(0, LIBRARY_ITEM_LIST_LIMIT).map((item) => ({ ref: item.ref }));
+    if (matches.length > LIBRARY_ITEM_LIST_LIMIT) output.more_items = matches.length - LIBRARY_ITEM_LIST_LIMIT;
+  }
+  output.help = [
+    output.more_items
+      ? "Narrow the list with `lavish-safe libraries --search <text>`"
+      : "Run `lavish-safe libraries --search <text>` or `--library <id>` to list item refs",
+    "To show an item as a node icon in a whiteboard flowchart, see `whiteboard_tooling.library_icons` in `lavish-safe design`",
+  ];
+  return output;
 }
 
 async function playbookCommand(args) {
@@ -1593,7 +1646,7 @@ export function getCommandHelp(command, { agent = "generic" } = {}) {
 }
 
 function createTopLevelHelp({ agent = "generic" } = {}) {
-  return `lavish-safe - Lavish Editor AXI\n\nUsage:\n  lavish-safe\n  lavish-safe <html-file> [--no-open] [--no-gate] [--reopen]\n  lavish-safe poll <html-file> [--owner <label>] [--takeover] [--agent-reply "..."] [--agent-reply-file <path>]\n  lavish-safe reply <html-file> (--agent-reply "..." | --agent-reply-file <path>)\n  lavish-safe end <html-file>\n  lavish-safe export <html-file> [--out <path>]\n  lavish-safe stop\n  lavish-safe playbook [playbook_id]\n  lavish-safe design\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls until the user sends feedback, ends the session, or leaves every review window disconnected past the reconnect grace period, staying silent while it waits - never kill it. Layout issues the browser detects are passive: they collect in the user's Layout issues inbox in the Lavish top bar and reach the agent only when the user selects them and queues the fixes, as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} ${POLL_SEND_AND_END_RULE} Use \`lavish-safe reply\` when handing a result back without waiting for more feedback: it exits 0 only after the server accepts the reply, so the board stops showing Working. \`poll --agent-reply\` posts a reply and then keeps waiting.\n\n`;
+  return `lavish-safe - Lavish Editor AXI\n\nUsage:\n  lavish-safe\n  lavish-safe <html-file> [--no-open] [--no-gate] [--reopen]\n  lavish-safe poll <html-file> [--owner <label>] [--takeover] [--agent-reply "..."] [--agent-reply-file <path>]\n  lavish-safe reply <html-file> (--agent-reply "..." | --agent-reply-file <path>)\n  lavish-safe end <html-file>\n  lavish-safe export <html-file> [--out <path>]\n  lavish-safe stop\n  lavish-safe playbook [playbook_id]\n  lavish-safe design\n  lavish-safe libraries [--search <text>] [--library <id>]\n\n${DESIGN_SYSTEM_HINT}\n\nNote: poll long-polls until the user sends feedback, ends the session, or leaves every review window disconnected past the reconnect grace period, staying silent while it waits - never kill it. Layout issues the browser detects are passive: they collect in the user's Layout issues inbox in the Lavish top bar and reach the agent only when the user selects them and queues the fixes, as an ordinary tag "layout-warnings" prompt. Do not pass --timeout-ms during normal agent use; it is for tests and debugging only. ${pollExecutionGuidance({ agent })} ${POLL_SEND_AND_END_RULE} Use \`lavish-safe reply\` when handing a result back without waiting for more feedback: it exits 0 only after the server accepts the reply, so the board stops showing Working. \`poll --agent-reply\` posts a reply and then keeps waiting.\n\n`;
 }
 
 function createCommandHelp({ agent = "generic" } = {}) {
@@ -1606,6 +1659,7 @@ function createCommandHelp({ agent = "generic" } = {}) {
     share: `The 'share' command is REMOVED from this hardened build. It published the artifact to ht-ml.app, a third-party host, publicly by default and with no delete endpoint. No flag re-enables it, and this build offers no other way to publish. Use 'lavish-safe export <html-file>' for a self-contained local copy instead, and hand the user that file.\n`,
     stop: `Usage: lavish-safe stop [--port <port>]\n\nShut down the background Lavish Editor server. The server also stops itself when no browser, poll, or request has reached it for a while (LAVISH_AXI_IDLE_TIMEOUT_MS, default 30m) and immediately when the last session ends with nothing connected.\n`,
     playbook: `Usage: lavish-safe playbook [playbook_id]\n\nList focused artifact guidance playbooks, or show one playbook by ID. Known IDs: diagram, table, comparison, plan, code, input, explanation, slides.\n\n${PLAYBOOK_ROUTER_HELP}\n\nExamples:\n  lavish-safe playbook\n  lavish-safe playbook diagram\n  lavish-safe playbook input\n`,
+    libraries: `Usage: lavish-safe libraries [--search <text>] [--library <id>]\n\nList the Excalidraw libraries (.excalidrawlib files) the user copied into ~/.lavish-axi/excalidraw-libraries, or LAVISH_AXI_STATE_DIR/excalidraw-libraries when set. Their items appear in every whiteboard's library panel. --search lists item refs whose ref contains every search word; --library lists one library's item refs. Lavish only reads this directory and never downloads libraries.\n\nExamples:\n  lavish-safe libraries\n  lavish-safe libraries --search lambda\n  lavish-safe libraries --library aws-architecture-icons\n`,
     design: `Usage: lavish-safe design\n\nShow a copy-pasteable LOCAL snippet for Tailwind CSS browser runtime v4 + DaisyUI v5 + themes (served by this machine's own Lavish server - this build makes no CDN requests), the whiteboard (Mermaid) opt-in snippet, a content-to-playbook router, an optional layout safety CSS snippet, plus technical reference for DaisyUI components. ${PLAYBOOK_ROUTER_HELP} The snippet loads from the local server, so an artifact that uses it is styled in a review and in an export, not when opened directly from disk. This local snippet is the design fallback, not the default: inspect the subject project before falling back, and paste the layout safety CSS only when useful for dense nested grid/flex layouts, badges, wide fonts, or local media. ${DESIGN_PRIORITY_RULE}\n`,
     setup: `The 'setup' command is REMOVED from this hardened build. It installed persistent SessionStart hooks and agent-plugin registrations outside the project directory. Nothing needs to be installed: run this build through the \`lavish-safe\` launcher, which verifies it before every start.\n`,
     server: `Usage: lavish-safe server [--port 4387] [--verbose]\n\nRun the local Lavish Editor server. Pass --verbose (or set LAVISH_AXI_DEBUG=1) to log session and watcher events to stderr. Detached server output is appended to ~/.lavish-axi/server.log, or LAVISH_AXI_STATE_DIR/server.log when set, for startup and crash diagnostics; past 1 MiB, the next start moves it to server.log.1.\n\nThis hardened build binds to 127.0.0.1 and nothing else. LAVISH_AXI_HOST is ignored and Tailscale detection is removed, so the server is never reachable from another machine or from a tailnet. See README's Allowed hosts section for Host allowlisting and LAVISH_AXI_ALLOWED_HOSTS. LAVISH_AXI_NO_OPEN=1 (or --no-open) suppresses the local browser launch.\n`,

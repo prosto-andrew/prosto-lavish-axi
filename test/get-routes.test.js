@@ -27,6 +27,7 @@ const REVIEWED_GET_ROUTES = new Map([
   ['"/whiteboard-frame"', "read-only: the channel token is a stateless HMAC"],
   ["/^\\/whiteboard-assets\\/(.+)$/", "read-only: vendored asset"],
   ['"/api/:key/mermaid-sources"', "read-only"],
+  ['"/api/whiteboard-libraries"', "read-only; refused to other sites before the library directory is read"],
   ['"/api/:key/whiteboard/:index"', "read-only"],
   ['"/api/:key/attachments/:id"', "read-only"],
 ]);
