@@ -1,6 +1,6 @@
 # Hardened lavish-axi — setup
 
-This checkout is lavish-axi **0.1.87** with five capabilities removed **at source level**
+This checkout is lavish-axi **0.1.89** with five capabilities removed **at source level**
 (not merely switched off by an environment variable):
 
 | Removed                          | How                                                                                                                                                                          |

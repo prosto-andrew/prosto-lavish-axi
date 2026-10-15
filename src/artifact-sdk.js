@@ -2268,6 +2268,11 @@ export function createArtifactSdk(
     if (hadCard) scheduleReviewStateReport();
   }
 
+  // Apple platforms use Cmd where others use Ctrl, both for shortcut hints and link-follow clicks.
+  function isApplePlatform() {
+    return /Mac|iP(hone|ad|od)/.test(navigator.platform);
+  }
+
   function showAnnotationCard(target, options = {}) {
     cancelPendingDraftRestore();
     const root = ensureShadow();
@@ -2313,7 +2318,7 @@ export function createArtifactSdk(
           : c.tag === "mermaid-node"
             ? "Tell the agent what to change about this diagram node..."
             : "Tell the agent what to change about this element...";
-    const sendNowHint = /Mac|iP(hone|ad|od)/.test(navigator.platform) ? "⌘" : "Ctrl";
+    const sendNowHint = isApplePlatform() ? "⌘" : "Ctrl";
     card.innerHTML =
       '<div class="lavish-heading">' +
       heading +
@@ -2441,13 +2446,14 @@ export function createArtifactSdk(
       tryQueue();
     };
     textarea.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      // WebKit fires compositionend before the IME-confirming keydown, leaving only keyCode 229 to mark it.
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
         event.preventDefault();
         const sendNow = (event.ctrlKey || event.metaKey) && (!!textarea.value.trim() || attachments.hasReady());
         const queued = tryQueue();
         // postMessage delivery is ordered, so the queued prompt lands before the send.
         if (queued && sendNow) sendQueuedPrompts();
-      } else if (event.key === "Escape" && !event.isComposing) {
+      } else if (event.key === "Escape" && !event.isComposing && event.keyCode !== 229) {
         // Close only when there is nothing to lose; excludes isComposing since mid-IME text isn't in textarea.value yet.
         if (textarea.value.trim() || attachments.hasPending() || attachments.hasErrors() || attachments.hasReady())
           return;
@@ -2623,11 +2629,13 @@ export function createArtifactSdk(
         isInteractiveControl(event.target)
       )
         return;
-      // Ctrl/Cmd-click on a link follows it (the browser opens a new tab) instead of annotating,
-      // so links stay usable without leaving annotate mode. Checked before the queued-note branch
-      // so the modifier always wins, and it clears a pending text-selection swallow so the next
-      // plain click is not eaten.
-      if ((event.ctrlKey || event.metaKey) && /** @type {Element} */ (event.target)?.closest?.("a[href]")) {
+      // Cmd-click (macOS) or Ctrl-click (elsewhere) on a link follows it (the browser opens a new
+      // tab) instead of annotating, so links stay usable without leaving annotate mode. Meta off
+      // macOS is the Super/Windows key, not a follow gesture, so it annotates like a plain click.
+      // Checked before the queued-note branch so the modifier always wins, and it clears a pending
+      // text-selection swallow so the next plain click is not eaten.
+      const followModifier = isApplePlatform() ? event.metaKey : event.ctrlKey;
+      if (followModifier && /** @type {Element} */ (event.target)?.closest?.("a[href]")) {
         ignoreNextClick = false;
         return;
       }

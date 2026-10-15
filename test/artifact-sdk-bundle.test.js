@@ -115,6 +115,7 @@ function bootSdk({
   mermaidContainers = [],
   baseURI = "http://127.0.0.1/artifact/abc/index.html",
   htmlAnnotate = null,
+  platform = "Linux",
 } = {}) {
   const posted = [];
   const documentListeners = [];
@@ -139,7 +140,7 @@ function bootSdk({
 
   const sandbox = {
     parent: { postMessage: (message) => posted.push(message) },
-    navigator: { platform: "Linux" },
+    navigator: { platform },
     CSS: { escape: (value) => String(value) },
     Element: class Element {},
     MutationObserver: class MutationObserver {
@@ -551,6 +552,22 @@ test("Escape during IME composition leaves an empty annotation card open", () =>
   assert.notEqual(paragraph.style.outline, "", "a composing Escape belongs to the IME, not the card");
 });
 
+test("the Enter that confirms an IME conversion in WebKit leaves the annotation card open", () => {
+  const sdk = bootSdk();
+  const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
+
+  sdk.click(paragraph);
+  const textarea = sdk.card().querySelector("textarea");
+  textarea.value = "漢字";
+  const listener = textarea.listeners.find((entry) => entry.type === "keydown");
+  let prevented = false;
+  // WebKit fires compositionend before this keydown, so only keyCode 229 marks it as the IME's.
+  listener.handler({ key: "Enter", isComposing: false, keyCode: 229, preventDefault: () => (prevented = true) });
+
+  assert.equal(prevented, false, "the IME keeps its Enter");
+  assert.notEqual(paragraph.style.outline, "", "the card stays open");
+});
+
 test("Escape leaves an annotation card with typed text open and untouched", () => {
   const sdk = bootSdk();
   const paragraph = appendTo(sdk.body, cell("p", "Just prose"));
@@ -863,9 +880,15 @@ function buildLink(sdk) {
   return { link, inner };
 }
 
-for (const modifier of ["ctrlKey", "metaKey"]) {
-  test(`${modifier}-click on a link in annotate mode follows the link instead of annotating`, () => {
-    const sdk = bootSdk();
+// The follow modifier is the platform's own: Cmd on macOS, Ctrl elsewhere. Meta on Linux/Windows
+// is the Super/Windows key, which is not a link-follow gesture there, so it annotates like a plain click.
+for (const [platform, modifier] of [
+  ["MacIntel", "metaKey"],
+  ["Linux x86_64", "ctrlKey"],
+  ["Win32", "ctrlKey"],
+]) {
+  test(`${modifier}-click on a link on ${platform} follows the link instead of annotating`, () => {
+    const sdk = bootSdk({ platform });
     const { link, inner } = buildLink(sdk);
 
     for (const target of [link, inner]) {
@@ -873,6 +896,22 @@ for (const modifier of ["ctrlKey", "metaKey"]) {
       assert.equal(event.defaultPrevented, false, "the browser's own link handling runs");
     }
     assert.equal(sdk.cards().length, 0);
+  });
+}
+
+for (const [platform, modifier] of [
+  ["Linux x86_64", "metaKey"],
+  ["Win32", "metaKey"],
+  ["MacIntel", "ctrlKey"],
+]) {
+  test(`${modifier}-click on a link on ${platform} annotates like a plain click`, () => {
+    const sdk = bootSdk({ platform });
+    const { link } = buildLink(sdk);
+
+    const event = sdk.click(link, { [modifier]: true });
+
+    assert.equal(event.defaultPrevented, true, "the SDK keeps the frame from navigating");
+    assert.match(sdk.card().innerHTML, /Annotate &lt;a&gt;/);
   });
 }
 
