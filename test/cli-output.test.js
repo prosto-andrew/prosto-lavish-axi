@@ -1951,10 +1951,12 @@ test("shouldRestartServer restarts when the running server reports a different v
   assert.equal(shouldRestartServer("0.1.4", { ok: true, version: "0.1.3" }), true);
 });
 
-test("shouldRestartServer adopts a server that is newer than the CLI", () => {
-  assert.equal(shouldRestartServer("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.5" }), false);
-  assert.equal(shouldRestartServer("0.1.85", { ok: true, app: "lavish-axi", version: "0.1.86" }), false);
-  assert.equal(shouldRestartServer("0.1.4", { ok: true, app: "lavish-axi", version: "1.0.0" }), false);
+// LAVISH-HARDENED: #416 is not taken. /health cannot show that a newer server is a hardened
+// build, so this fork replaces a server of any other version, newer included.
+test("shouldRestartServer replaces a server that is newer than the CLI", () => {
+  assert.equal(shouldRestartServer("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.5" }), true);
+  assert.equal(shouldRestartServer("0.1.85", { ok: true, app: "lavish-axi", version: "0.1.86" }), true);
+  assert.equal(shouldRestartServer("0.1.4", { ok: true, app: "lavish-axi", version: "1.0.0" }), true);
 });
 
 test("shouldRestartServer replaces a server whose version is not plain x.y.z", () => {
@@ -1963,9 +1965,11 @@ test("shouldRestartServer replaces a server whose version is not plain x.y.z", (
   assert.equal(shouldRestartServer("0.1.87-beta.1", { ok: true, app: "lavish-axi", version: "0.1.88" }), true);
 });
 
-test("shouldRestartServer compares versions numerically, not as strings", () => {
+// LAVISH-HARDENED: #416 is not taken. /health cannot show that a newer server is a hardened
+// build, so this fork replaces a server of any other version, newer included.
+test("shouldRestartServer replaces any other version, older or newer", () => {
   assert.equal(shouldRestartServer("0.1.10", { ok: true, app: "lavish-axi", version: "0.1.9" }), true);
-  assert.equal(shouldRestartServer("0.1.9", { ok: true, app: "lavish-axi", version: "0.1.10" }), false);
+  assert.equal(shouldRestartServer("0.1.9", { ok: true, app: "lavish-axi", version: "0.1.10" }), true);
   assert.equal(shouldRestartServer("1.0.0", { ok: true, app: "lavish-axi", version: "0.9.99" }), true);
 });
 
@@ -2006,12 +2010,11 @@ test("serverReplacementReason names a local-build force apart from a real versio
   assert.equal(serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.3" }, true), "upgrade");
 });
 
-test("serverReplacementReason names nothing for a server newer than the CLI", () => {
-  assert.equal(serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.5" }), "");
-  assert.equal(
-    serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.5" }, true),
-    "local-build",
-  );
+// LAVISH-HARDENED: #416 is not taken. /health cannot show that a newer server is a hardened
+// build, so this fork replaces a server of any other version, newer included.
+test("serverReplacementReason calls replacing a newer server an upgrade", () => {
+  assert.equal(serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.5" }), "upgrade");
+  assert.equal(serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.5" }, true), "upgrade");
 });
 
 test("serverReplacementReason names nothing when no replacement is warranted", () => {
@@ -2032,8 +2035,10 @@ test("shouldKillProcessOnPort only kills Lavish servers with a mismatched versio
   assert.equal(shouldKillProcessOnPort("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.4" }), false);
 });
 
-test("shouldKillProcessOnPort leaves a Lavish server that is newer than the CLI", () => {
-  assert.equal(shouldKillProcessOnPort("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.5" }), false);
+// LAVISH-HARDENED: #416 is not taken. /health cannot show that a newer server is a hardened
+// build, so this fork replaces a server of any other version, newer included.
+test("shouldKillProcessOnPort kills a Lavish server that is newer than the CLI", () => {
+  assert.equal(shouldKillProcessOnPort("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.5" }), true);
   assert.equal(shouldKillProcessOnPort("0.1.10", { ok: true, app: "lavish-axi", version: "0.1.9" }), true);
 });
 
@@ -2378,6 +2383,51 @@ test("opening an artifact names that session as the one to reload across a versi
     await fetch(`${base}/shutdown`, { method: "POST" }).catch(() => {});
     // The node:http probe, not fetch: a fetch that reaches the closing listener can die on macOS
     // with an uncaught setTypeOfService EINVAL (src/socket-tos-guard.js) this test cannot catch.
+    await waitForPortFree(base, 3000);
+    recorder.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// LAVISH-HARDENED: #416 is not taken. A running server newer than this CLI is replaced like an
+// older one and is never handed the session: /health cannot show that a newer server is hardened.
+test("opening an artifact replaces a running server that is newer than the CLI", async () => {
+  const recorder = await startShutdownRecorder("999.0.0");
+  const dir = await mkdtemp(path.join(os.tmpdir(), "lavish-open-newer-"));
+  const stateDir = path.join(dir, "state");
+  const artifact = path.join(dir, "board.html");
+  await writeFile(artifact, "<!doctype html><html><body>board</body></html>");
+  const base = `http://127.0.0.1:${recorder.port}`;
+
+  try {
+    // Spawned asynchronously, as above: the recorder runs in this process.
+    const child = spawn(
+      process.execPath,
+      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), artifact, "--no-open"],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        env: {
+          ...process.env,
+          LAVISH_AXI_PORT: String(recorder.port),
+          LAVISH_AXI_STATE_DIR: stateDir,
+          LAVISH_AXI_TELEMETRY: "0",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.stdout.resume();
+    const code = await new Promise((resolve) => child.on("exit", resolve));
+
+    // Adopting it would send the session to the recorder, which answers 404, and stop nothing.
+    assert.deepEqual(recorder.bodies, [{ reload_key: sessionKey(await canonicalFile(artifact)), reason: "upgrade" }]);
+    assert.equal(code, 0, stderr);
+  } finally {
+    // The CLI replaced the recorder with a real server on that port; stop it again.
+    await fetch(`${base}/shutdown`, { method: "POST" }).catch(() => {});
     await waitForPortFree(base, 3000);
     recorder.close();
     await rm(dir, { recursive: true, force: true });

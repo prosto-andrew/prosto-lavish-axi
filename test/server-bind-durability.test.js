@@ -189,7 +189,8 @@ test("a stale control-channel server is replaced only once per CLI invocation", 
 
     assert.equal(await countShutdowns({ ok: true, app: "lavish-axi", version: VERSION, network_stale: true }), 1);
     assert.equal(await countShutdowns({ ok: true, app: "lavish-axi", version: "0.0.1", network_stale: true }), 2);
-    assert.equal(await countShutdowns({ ok: true, app: "lavish-axi", version: "999.0.0", network_stale: true }), 1);
+    // LAVISH-HARDENED: #416 is not taken, so a newer stale server is replaced for its version too.
+    assert.equal(await countShutdowns({ ok: true, app: "lavish-axi", version: "999.0.0", network_stale: true }), 2);
   });
 });
 

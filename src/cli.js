@@ -1020,7 +1020,7 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
     existing.network_stale === true &&
     !forceRestart &&
     typeof existing.version === "string" &&
-    !isServerOlderThanCli(VERSION, existing.version);
+    existing.version === VERSION;
   let networkRestarted = replacedForNetwork;
   let raceRestarted = false;
   let deadline = Date.now() + 5000;
@@ -1065,31 +1065,16 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
 // Returns true when the running server is a different (or pre-handshake) version than
 // what this CLI was built with - i.e. the user just upgraded and the stale server needs
 // to step aside.
+// LAVISH-HARDENED: upstream 0.1.87 (#416) adopts a running server newer than the CLI. This
+// build does not: /health cannot show that a server is a hardened build, and a stock server
+// using the same state directory reports the same state_id, so a server of any other version,
+// newer included, is replaced by this checkout's own.
 export function shouldRestartServer(currentVersion, healthBody, forceRestart = false) {
   if (!healthBody || typeof healthBody !== "object") return false;
   if (forceRestart && healthBody.app === "lavish-axi") return true;
   if (healthBody.network_stale === true && healthBody.app === "lavish-axi") return true;
   if (typeof healthBody.version !== "string" || healthBody.version === "") return true;
-  return isServerOlderThanCli(currentVersion, healthBody.version);
-}
-
-// A running server newer than this CLI is adopted, never replaced: two installed versions on one
-// machine would otherwise restart each other's server in turn. Numeric, so 0.1.9 is older than
-// 0.1.10. A version that does not parse falls back to "different means replace".
-function isServerOlderThanCli(currentVersion, runningVersion) {
-  if (runningVersion === currentVersion) return false;
-  const current = parseReleaseVersion(currentVersion);
-  const running = parseReleaseVersion(runningVersion);
-  if (!current || !running) return true;
-  for (let index = 0; index < 3; index += 1) {
-    if (running[index] !== current[index]) return running[index] < current[index];
-  }
-  return false;
-}
-
-function parseReleaseVersion(version) {
-  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(String(version));
-  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
+  return healthBody.version !== currentVersion;
 }
 
 // Which branch of `shouldRestartServer` actually fired, because that is what the other open
@@ -1098,11 +1083,7 @@ function parseReleaseVersion(version) {
 export function serverReplacementReason(currentVersion, healthBody, forceRestart = false) {
   if (!shouldRestartServer(currentVersion, healthBody, forceRestart)) return "";
   const runningVersion = healthBody.version;
-  if (
-    typeof runningVersion !== "string" ||
-    runningVersion === "" ||
-    isServerOlderThanCli(currentVersion, runningVersion)
-  ) {
+  if (typeof runningVersion !== "string" || runningVersion === "" || runningVersion !== currentVersion) {
     return "upgrade";
   }
   return forceRestart ? "local-build" : "";
@@ -1128,7 +1109,7 @@ export function shouldKillProcessOnPort(currentVersion, healthBody) {
   if (!healthBody || typeof healthBody !== "object") return false;
   if (typeof healthBody.version !== "string" || healthBody.version === "") return true;
   if (healthBody.app !== "lavish-axi") return false;
-  return isServerOlderThanCli(currentVersion, healthBody.version);
+  return healthBody.version !== currentVersion;
 }
 
 async function canControlServerOnPort(baseUrl, healthBody, processMatchesLavish) {
