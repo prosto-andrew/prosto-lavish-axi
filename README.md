@@ -1,6 +1,6 @@
 > ## Hardened fork - not upstream lavish-axi
 >
-> This fork is upstream **v0.1.87** with five capabilities removed **at source level**,
+> This fork is upstream **v0.1.89** with five capabilities removed **at source level**,
 > for private use on trusted machines. It is not a drop-in replacement for the published
 > package and is not meant to be published to npm.
 >
