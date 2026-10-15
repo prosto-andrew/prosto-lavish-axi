@@ -53,7 +53,7 @@ function mustNotExist(rel) {
 
 // The upstream release this tree was last merged from and audited against. The launchers
 // defer to this pin through --quiet. Bump it only after re-running every check.
-const AUDITED_VERSION = "0.1.86";
+const AUDITED_VERSION = "0.1.87";
 
 check(`checkout is the audited version ${AUDITED_VERSION}`, () => {
   const pkg = JSON.parse(read("package.json"));
@@ -301,7 +301,31 @@ check("the bundled CLI spawns the bundled server", () => {
   const bundled =
     /bundledEntry = fileURLToPath\d*\(new URL\("\.\/server\.mjs", moduleUrl\)\);\s*if \(existsSync\d*\(bundledEntry\)\) return bundledEntry;/;
   if (!bundled.test(read("dist/cli.mjs"))) throw new Error(`dist/cli.mjs does not prefer dist/server.mjs - ${REBUILD}`);
-  return "the server runs the same verified bundle as the CLI";
+  // LAVISH-HARDENED: #416 is not taken. The server must be the same verified bundle as this CLI, so
+  // a running server of any other version, newer included, is replaced; /health cannot show that a
+  // newer one is hardened. The bundle may append a numeric suffix to a name. Whole-line comments are
+  // ignored, so a note that names upstream's helper is not mistaken for code using it. The tests pin
+  // the rest of the rule (serverReplacementReason, ensureServer).
+  const versionRule = "returnhealthBody.version!==currentVersion;";
+  const lastLineOf = (source, name) =>
+    new RegExp(`\\n(?:export )?function ${name}\\d*\\([^)]*\\) \\{\\n([\\s\\S]*?)\\n\\}\\n`)
+      .exec(source)?.[1]
+      .trim()
+      .split("\n")
+      .at(-1)
+      .replace(/\s+/g, "");
+  for (const file of ["src/cli.js", "dist/cli.mjs"]) {
+    const code = read(file).replace(/^\s*\/\/.*$/gm, "");
+    const hint = file.startsWith("dist/") ? ` - ${REBUILD}` : "";
+    if (/\bisServerOlderThanCli\b/.test(code))
+      throw new Error(`${file} adopts a newer running server (isServerOlderThanCli)${hint}`);
+    for (const name of ["shouldRestartServer", "shouldKillProcessOnPort"]) {
+      if (lastLineOf(code, name) !== versionRule) {
+        throw new Error(`${name} in ${file} no longer replaces a server of any other version${hint}`);
+      }
+    }
+  }
+  return "the server runs the same verified bundle as the CLI, whose version helpers replace a server of any other version";
 });
 
 // scripts/build.js opens both bundles with this line (after the hashbang), so the build says what

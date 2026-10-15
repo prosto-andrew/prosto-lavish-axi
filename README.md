@@ -1,6 +1,6 @@
 > ## Hardened fork - not upstream lavish-axi
 >
-> This fork is upstream **v0.1.86** with five capabilities removed **at source level**,
+> This fork is upstream **v0.1.87** with five capabilities removed **at source level**,
 > for private use on trusted machines. It is not a drop-in replacement for the published
 > package and is not meant to be published to npm.
 >
@@ -18,6 +18,10 @@
 > Two later upstream additions were not taken when merging 0.1.82: the opt-in Herdr chime
 > (0.1.74), which spawned a `herdr` binary from `PATH`, and multi-address serving (0.1.78):
 > `server --also-listen` is refused and the CLI looks for a running server on loopback only.
+>
+> The 0.1.87 merge did not take upstream's adoption of a running server newer than the CLI (#416):
+> `/health` cannot show that a server is a hardened build, so `lavish-safe` still replaces a
+> running server of any other version, newer included.
 >
 > The agent-facing help text (`--help`, `design`, `playbook`) was rewritten to match, so
 > nothing instructs an agent to publish, install hooks, or fetch from a CDN.

@@ -1,6 +1,6 @@
 # Hardened lavish-axi — setup
 
-This checkout is lavish-axi **0.1.86** with five capabilities removed **at source level**
+This checkout is lavish-axi **0.1.87** with five capabilities removed **at source level**
 (not merely switched off by an environment variable):
 
 | Removed                          | How                                                                                                                                                                          |
@@ -113,6 +113,9 @@ node verify-hardening.mjs
 and bump the version pinned in `verify-hardening.mjs` (the launchers defer to it) only once
 every check passes. Until then the launchers refuse to start, so a half-merged tree never runs. The 0.1.82 merge left out upstream's Herdr chime (it spawned a
 `herdr` binary) and its multi-address serving (`server --also-listen`, interface-sweep discovery).
+The 0.1.87 merge left out upstream's adoption of a running server newer than the CLI (#416): this
+build still replaces a server of any other version, because `/health` does not say whether a server
+is hardened.
 The original 0.1.62 patch script (`harden_lavish.py`) is gone from the tree; it refused every
 other version, and git history keeps it.
 

@@ -1065,6 +1065,10 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
 // Returns true when the running server is a different (or pre-handshake) version than
 // what this CLI was built with - i.e. the user just upgraded and the stale server needs
 // to step aside.
+// LAVISH-HARDENED: upstream 0.1.87 (#416) adopts a running server newer than the CLI. This
+// build does not: /health cannot show that a server is a hardened build, and a stock server
+// using the same state directory reports the same state_id, so a server of any other version,
+// newer included, is replaced by this checkout's own.
 export function shouldRestartServer(currentVersion, healthBody, forceRestart = false) {
   if (!healthBody || typeof healthBody !== "object") return false;
   if (forceRestart && healthBody.app === "lavish-axi") return true;
