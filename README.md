@@ -23,6 +23,9 @@
 > `/health` cannot show that a server is a hardened build, so `lavish-safe` still replaces a
 > running server of any other version, newer included.
 >
+> The browser-side policy pins every fetch and frame navigation to the local server but cannot
+> stop WebRTC; see [What still touches the network](hardening/SETUP.md#what-still-touches-the-network).
+>
 > The agent-facing help text (`--help`, `design`, `playbook`) was rewritten to match, so
 > nothing instructs an agent to publish, install hooks, or fetch from a CDN.
 >

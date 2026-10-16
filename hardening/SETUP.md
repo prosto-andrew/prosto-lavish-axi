@@ -147,6 +147,12 @@ which are served only under a secret path the review receives for each load. In 
 sends Fetch Metadata headers (current Chrome, Edge and Firefox, Safari 16.4 and later) they cannot
 load the images you attached either, which only the review page itself may load.
 
+What the policy cannot stop: a script inside an artifact can still reach another host through
+WebRTC (STUN/TURN), which no browser policy Lavish can send closes, and an artifact can open a
+popup, or show a link you follow with Ctrl/Cmd-click, to any address. Lavish never adds
+third-party script to an artifact, so this matters only when an artifact carries script copied
+from elsewhere: treat such an artifact like any web page you open.
+
 One consequence to know about: Mermaid now loads from the local server by a root path
 (`/design/mermaid/...`), so Mermaid diagrams render only inside a Lavish review. An
 **exported** or directly opened copy shows each diagram's Mermaid source as text, whether
