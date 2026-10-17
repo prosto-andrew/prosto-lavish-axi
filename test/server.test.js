@@ -2874,8 +2874,9 @@ test("/api/sessions refuses a non-HTML path so its directory cannot become an ar
     assert.equal(created.status, 400);
     assert.equal(body.status, "error");
     assert.equal(body.code, "VALIDATION_ERROR");
-    assert.match(body.error, /HTML file/);
-    assert.doesNotMatch(body.error, /secret/);
+    // LAVISH-HARDENED: the whole message, so no part of the refused path - its name or its
+    // directory - reaches the caller.
+    assert.equal(body.error, "Lavish Editor expects an HTML file");
 
     // This build serves files only under the current load's token (/artifact/<key>/<token>/...), so a
     // token-less /artifact/<key>/.env answers 404 for any key. Prove instead that the refused path left
@@ -2905,7 +2906,8 @@ test("/api/sessions refuses an HTML symlink to a non-HTML file", fileSymlinks, a
     const body = await created.json();
     assert.equal(created.status, 400);
     assert.equal(body.code, "VALIDATION_ERROR");
-    assert.match(body.error, /HTML file/);
+    // LAVISH-HARDENED: the whole message, so neither the link nor its target's path reaches the caller.
+    assert.equal(body.error, "Lavish Editor expects an HTML file");
   } finally {
     await server.close();
     await rm(dir, { recursive: true, force: true });

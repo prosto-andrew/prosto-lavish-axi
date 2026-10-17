@@ -86,8 +86,5 @@
     "type": "git",
     "url": "git+https://github.com/prosto-andrew/prosto-lavish-axi.git"
   },
-  "homepage": "https://github.com/prosto-andrew/prosto-lavish-axi#readme",
-  "publishConfig": {
-    "access": "public"
-  }
+  "homepage": "https://github.com/prosto-andrew/prosto-lavish-axi#readme"
 }
