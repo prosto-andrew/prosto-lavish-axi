@@ -654,15 +654,23 @@ check("the skill generator cannot reinstate the upstream package", () => {
 
 // The subcommands an agent or a reader could run: the CLI's own COMMANDS set, read from src/cli.js
 // so that a command an upstream merge adds (0.1.85's `libraries`) is covered without editing a list
-// here, plus the SDK-reserved `update`, which this build refuses.
+// here, plus the SDK-reserved `update`, which this build refuses. Every element must be a literal
+// name: a spread, a constant or another quote style would drop its names from the list unnoticed.
 function launcherSubcommands() {
   const set = /\nconst COMMANDS = new Set\(\[([^\]]*)\]\);/.exec(read("src/cli.js"))?.[1];
-  const names = set ? [...set.matchAll(/"([^"]*)"/g)].map((match) => match[1]) : [];
-  if (names.length === 0) {
+  const elements = (set ?? "")
+    .replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "")
+    .split(",")
+    .map((element) => element.trim())
+    .filter(Boolean);
+  if (elements.length === 0) {
     throw new Error("src/cli.js has no COMMANDS set, so the launcher-name checks cannot list the subcommands");
   }
-  const odd = names.find((name) => !/^[a-z][a-z-]*$/.test(name));
-  if (odd !== undefined) throw new Error(`src/cli.js COMMANDS holds ${JSON.stringify(odd)}, not a plain subcommand`);
+  const names = elements.map((element) => {
+    const name = /^"([a-z][a-z-]*)"$/.exec(element)?.[1];
+    if (!name) throw new Error(`src/cli.js COMMANDS holds ${element.slice(0, 40)}, not a literal subcommand name`);
+    return name;
+  });
   return [...names, "update"];
 }
 

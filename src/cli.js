@@ -29,7 +29,7 @@ import { findPlaybook, listPlaybooks, playbookIds, PLAYBOOK_ROUTER_HELP } from "
 import { analyzeSelfPaint, SELF_PAINT_WARNING } from "./self-paint.js";
 import { openServerLog } from "./server-log.js";
 import { LAVISH_CLIENT_CLI, LAVISH_CLIENT_HEADER, resolveDesignAssetPath, serve } from "./server.js";
-import { isHtmlPath } from "./artifact-path.js";
+import { ARTIFACT_HTML_ERROR, isArtifactPathError, isHtmlPath, resolveAllowedArtifactFile } from "./artifact-path.js";
 import { BUILD_ID } from "./build-id.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
 import { guardSetTypeOfService } from "./socket-tos-guard.js";
@@ -867,6 +867,19 @@ async function assertHtmlFile(file) {
       "Create the HTML artifact first, then run `lavish-safe <html-file>`",
     ]);
   }
+  // LAVISH-HARDENED: the server's own rule, on the real path, before any server is asked or started:
+  // an HTML-named link to another file, or a directory named like HTML, used to start the server and
+  // then fail on its bare 400.
+  try {
+    await resolveAllowedArtifactFile(file);
+  } catch (error) {
+    if (!isArtifactPathError(error)) throw error;
+    const real = await canonicalFile(file).catch(() => "");
+    throw new AxiError(ARTIFACT_HTML_ERROR, "VALIDATION_ERROR", [
+      ...(real && real !== path.resolve(file) ? [`${file} resolves to ${real}`] : []),
+      "Run `lavish-safe <html-file>` on a regular .html or .htm file",
+    ]);
+  }
 }
 
 const HEALTH_PROBE_TIMEOUT_MS = 500;
@@ -1022,6 +1035,7 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
   const replacedForNetwork = isThisBuild(existing) && existing.network_stale === true && !forceRestart;
   let networkRestarted = replacedForNetwork;
   let raceRestarted = false;
+  let lastHealth;
   let deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
     const {
@@ -1031,6 +1045,7 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
       foreign: liveForeign,
     } = await findRunningServer(port, { reconcileNetwork: true });
     if (liveForeign) throw otherInstallationError(port, liveForeign);
+    lastHealth = health;
     if (health && !shouldRestartServer(VERSION, health)) return adoptServer(liveUrl, liveDuplicates, reloadKey);
     // LAVISH-HARDENED: the network-only restart, and keeping the server once it is spent, apply to a
     // server of this very build alone.
@@ -1058,9 +1073,26 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
     await delay(100);
   }
   if (unidentified) throw unidentifiedListenerError(unidentified);
+  if (lastHealth?.app === "lavish-axi" && !isThisBuild(lastHealth)) throw otherLavishBuildError(port, lastHealth);
   throw new AxiError("Lavish Editor server did not start", "SERVER_ERROR", [
     `Run \`lavish-safe server --port ${port}\` to inspect server startup`,
   ]);
+}
+
+// LAVISH-HARDENED: the port is still held, after the one race restart, by a Lavish server of this
+// installation but of another version or build - most likely another CLI starting its own server at
+// the same moment. Saying so beats claiming this CLI's own server did not start.
+function otherLavishBuildError(port, health) {
+  const version = typeof health.version === "string" && health.version ? health.version : "unknown";
+  const build = typeof health.hardened_build === "string" && health.hardened_build ? "another build" : "a stock build";
+  return new AxiError(
+    `Port ${port} is held by another Lavish server (version ${version}, ${build}) that did not hand it over`,
+    "SERVER_ERROR",
+    [
+      "Another Lavish command may be starting its own server right now; run this command again once it is done",
+      "If this repeats, run `lavish-safe stop`, then this command again",
+    ],
+  );
 }
 
 // Pure helper so the upgrade-detection logic is unit-testable without spinning up HTTP.
@@ -1143,18 +1175,21 @@ export function shouldKillProcessOnPort(currentVersion, healthBody, currentBuild
 
 // LAVISH-HARDENED: whether a listener's command line is a Lavish server process: node running a server
 // entry with the `server` command - this build's dist/server.mjs or bin/lavish-axi-server.js, the
-// stock package's, an old release's bin/lavish-axi.js, or a CLI bundle (dist/cli.mjs). The last is
+// stock package's, an old release's bin/lavish-axi.js, or a CLI bundle (dist/cli.mjs). The bundle is
 // how stock releases up to 0.1.17, which ship only dist/ and have no /shutdown, run their detached
 // server - the case this fallback exists for - and how `lavish-safe server` serves in the
-// foreground. Quoted Windows paths are included. The line must also name Lavish somewhere (its
-// path), so a checkout in a directory without "lavish" cannot be identified; nor could it before.
+// foreground. The stock package's npm bin link (a global bin directory, or node_modules/.bin, which
+// npx uses too) counts as well: on POSIX the kernel runs the link's shebang, so the command line
+// names the extensionless link rather than the bundle behind it. Quoted Windows paths are included.
+// The line must also name Lavish somewhere (its path), so a checkout in a directory without "lavish"
+// cannot be identified; nor could it before.
 // Upstream matched "lavish-axi" anywhere, which also matches a test run or an editor opened on a
 // checkout whose path contains it.
 export function isLavishServerCommand(command) {
   const text = String(command || "");
   return (
     /lavish/i.test(text) &&
-    /(?:^|[\\/\s"'])(?:server\.mjs|cli\.mjs|lavish-axi-server\.js|lavish-axi\.js)["']?\s+server(?:\s|$)/.test(text)
+    /(?:^|[\\/\s"'])(?:server\.mjs|cli\.mjs|lavish-axi-server\.js|lavish-axi(?:\.js)?)["']?\s+server(?:\s|$)/.test(text)
   );
 }
 

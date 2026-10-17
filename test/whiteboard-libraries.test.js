@@ -119,6 +119,31 @@ test("parseExcalidrawLibrary rejects malformed files with a reason", () => {
   assert.throws(() => parseExcalidrawLibrary('{"libraryItems":[]}', { id: "x" }), /no usable items/);
 });
 
+// LAVISH-HARDENED: item names come from a file downloaded from the internet and reach the agent in
+// `lavish-safe libraries` output and the reviewer in the library panel. That output prints format
+// characters raw (U+202E reverses what follows it, so a ref can read as another name), and control
+// characters have no place in a name, so both are removed, from refs looked up too.
+test("parseExcalidrawLibrary removes control and format characters from item names", () => {
+  const library = parseExcalidrawLibrary(
+    JSON.stringify({
+      libraryItems: [
+        { name: "Invoice‮gnp.exe", elements: [square("a")] },
+        { name: "Zero​width⁠joined", elements: [square("b")] },
+        { name: "\u001b[31mRed\u001b[0m \u0007Bell", elements: [square("c")] },
+        { elements: [square("d"), label("t", "Title ‮‏ text")] },
+        { name: "‮​", elements: [square("e")] },
+      ],
+    }),
+    { id: "lib" },
+  );
+  assert.deepEqual(
+    library.items.map((item) => item.name),
+    ["Invoicegnp.exe", "Zerowidthjoined", "[31mRed[0m Bell", "Title text", "item-5"],
+  );
+  assert.equal(findLibraryItem([library], "lib/Invoicegnp.exe")?.name, "Invoicegnp.exe");
+  assert.equal(findLibraryItem([library], "lib/Invoice‮gnp.exe")?.name, "Invoicegnp.exe");
+});
+
 test("findLibraryItem matches refs case-insensitively with collapsed whitespace", () => {
   const libraries = [
     parseExcalidrawLibrary(JSON.stringify({ libraryItems: [{ name: "AWS Lambda", elements: [square("a")] }] }), {
