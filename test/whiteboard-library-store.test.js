@@ -78,6 +78,10 @@ test("loadExcalidrawLibraries reports unreadable and non-file entries as skipped
     } catch {
       t.diagnostic("symlinks unavailable; dangling-link case not exercised");
     }
+    // LAVISH-HARDENED: Windows refuses that file symlink without Developer Mode or elevation, but a
+    // junction needs no privilege, so the unreadable case runs there too. Other platforms ignore the
+    // type and make a second dangling symlink.
+    await symlink(path.join(dir, "missing-dir"), path.join(dir, "dangling-junction.excalidrawlib"), "junction");
     const { libraries, skipped } = await loadExcalidrawLibraries(dir);
     assert.deepEqual(
       libraries.map((entry) => entry.id),
@@ -86,6 +90,7 @@ test("loadExcalidrawLibraries reports unreadable and non-file entries as skipped
     const reasons = new Map(skipped.map((entry) => [path.basename(entry.file), entry.reason]));
     assert.equal(reasons.get("folder.excalidrawlib"), "not a file");
     if (linked) assert.match(reasons.get("dangling.excalidrawlib") || "", /could not read/);
+    assert.match(reasons.get("dangling-junction.excalidrawlib") || "", /could not read/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

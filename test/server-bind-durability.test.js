@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import childProcess, { spawn } from "node:child_process";
 import { once } from "node:events";
 import { closeSync, openSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
+import { syncBuiltinESMExports } from "node:module";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -28,6 +29,39 @@ async function withTempDir(run) {
     return await run(dir);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+}
+
+// LAVISH-HARDENED: `run()` in this process spawns a real detached server into the test's state dir.
+// A server that reaches `ensureStateDir` after the dir is removed creates it again and leaves it
+// behind, empty. Watch what the CLI spawns (named imports of a builtin follow its exports after
+// syncBuiltinESMExports) and stop each server before the dir goes.
+async function withCliTempDir(t, body) {
+  const spawnSpy = t.mock.method(childProcess, "spawn");
+  syncBuiltinESMExports();
+  try {
+    return await withTempDir(async (dir) => {
+      try {
+        return await body(dir);
+      } finally {
+        const servers = spawnSpy.mock.calls
+          .map((call) => call.result)
+          .filter((child) => child?.spawnargs.includes("server"));
+        await Promise.all(
+          servers.map(async (child) => {
+            if (child.exitCode !== null || child.signalCode !== null) return;
+            const exited = once(child, "exit");
+            // The CLI unrefs its detached server; without this the wait would not hold the event loop.
+            child.ref();
+            child.kill();
+            await exited;
+          }),
+        );
+      }
+    });
+  } finally {
+    spawnSpy.mock.restore();
+    syncBuiltinESMExports();
   }
 }
 
@@ -138,8 +172,8 @@ test("a degraded bind stays quiet while the requested address is still unavailab
   });
 });
 
-test("a stale control-channel server is replaced only once per CLI invocation", { timeout: 20_000 }, async () => {
-  await withTempDir(async (dir) => {
+test("a stale control-channel server is replaced only once per CLI invocation", { timeout: 20_000 }, async (t) => {
+  await withCliTempDir(t, async (dir) => {
     const artifact = await writeArtifact(dir);
 
     async function countShutdowns(healthBody) {
@@ -213,8 +247,8 @@ test("a stale control-channel server is replaced only once per CLI invocation", 
 test(
   "a stale server of this version but another build is not adopted after the network restart",
   { timeout: 20_000 },
-  async () => {
-    await withTempDir(async (dir) => {
+  async (t) => {
+    await withCliTempDir(t, async (dir) => {
       const artifact = await writeArtifact(dir);
       const requests = [];
       const reasons = [];

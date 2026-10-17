@@ -30,6 +30,7 @@ async function chromePath() {
     "/usr/bin/google-chrome",
     "/usr/bin/chromium",
     "/usr/bin/chromium-browser",
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
   ].filter(Boolean);
   for (const candidate of candidates) {
     try {
