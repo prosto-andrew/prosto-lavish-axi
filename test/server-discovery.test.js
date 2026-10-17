@@ -9,9 +9,11 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { BUILD_ID } from "../src/build-id.js";
 import { run, stopCommand, VERSION } from "../src/cli.js";
 import { stateId } from "../src/paths.js";
 import { serve } from "../src/server.js";
+import { canonicalFile, sessionKey } from "../src/session-store.js";
 
 // 192.0.2.0/24 is TEST-NET-1: assigned to no interface, so binding it fails with EADDRNOTAVAIL.
 const UNBINDABLE_HOST = "192.0.2.1";
@@ -324,6 +326,48 @@ test("listing sessions sets an unreadable state.json aside and says so on stderr
   });
 });
 
+// LAVISH-HARDENED: listing sessions reads which ones have a listening agent from /health, and only a
+// server of this installation may say so; a responder that is not Lavish is not believed.
+test("listing sessions shows listeners only from this installation's server", async () => {
+  await withTempDir(async (dir) => {
+    const artifact = await writeArtifact(dir);
+    const key = sessionKey(await canonicalFile(artifact));
+    const session = { key, file: artifact, url: `http://127.0.0.1/session/${key}`, status: "open" };
+    await writeFile(path.join(dir, "state.json"), JSON.stringify({ sessions: { [key]: session } }));
+    const listeners = [{ key, label: "agent-listener" }];
+    const ours = {
+      ok: true,
+      app: "lavish-axi",
+      version: VERSION,
+      hardened_build: BUILD_ID,
+      state_id: stateId(path.join(dir, "state.json")),
+      listeners,
+    };
+    const notLavish = { ok: true, version: VERSION, listeners };
+
+    for (const [body, shown] of [
+      [ours, true],
+      [notLavish, false],
+    ]) {
+      const responder = createHttpServer((req, res) => {
+        if (req.url?.startsWith("/health")) {
+          res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(body));
+        } else {
+          res.writeHead(404).end();
+        }
+      });
+      await new Promise((resolve) => responder.listen({ host: "127.0.0.1", port: 0 }, () => resolve(undefined)));
+      const { port } = /** @type {{ port: number }} */ (responder.address());
+      try {
+        const output = await withEnv(cliEnv(dir, port, "127.0.0.1"), () => captureCli([]));
+        assert.equal(output.includes("agent-listener"), shown, output);
+      } finally {
+        await new Promise((resolve) => responder.close(() => resolve(undefined)));
+      }
+    }
+  });
+});
+
 test("another installation's server on loopback is never used or stopped", { timeout: 20_000 }, async () => {
   await withTempDir(async (dir) => {
     const artifact = await writeArtifact(dir);
@@ -366,18 +410,22 @@ test("stopping a pre-handshake server signals only the process at its own addres
   await withTempDir(async (dir) => {
     const port = await freePort(otherHost);
     // Answers /health with no app or version and has no /shutdown, like the oldest releases.
+    // LAVISH-HARDENED: its command line is a server entry run with the `server` command
+    // (`<dir>/server.mjs server <host> <port>`, the directory naming Lavish), the shape the PID
+    // fallback recognises (isLavishServerCommand); upstream matched "lavish-axi" anywhere in it.
     const preHandshake = await spawnListener(
       dir,
-      "lavish-axi-pre-handshake.mjs",
+      "server.mjs",
       "127.0.0.1",
       port,
       `import { createServer } from "node:http";
-const [host, port] = process.argv.slice(2);
+const [host, port] = process.argv.slice(-2);
 createServer((req, res) => {
   if (req.url.startsWith("/health")) res.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}');
   else res.writeHead(404).end();
 }).listen({ host, port: Number(port) }, () => console.log("listening"));
 `,
+      ["server"],
     );
     const unrelated = await spawnListener(
       dir,
@@ -408,11 +456,15 @@ function lsofAvailable() {
 
 // A child process listening at host:port. The script's file name is what `ps` shows, so a
 // pre-handshake Lavish server is one whose name says lavish-axi and an unrelated one is not.
+// LAVISH-HARDENED: this build tells a Lavish server by a server entry followed by the `server`
+// command, so `command` goes between the script and its address.
 
-async function spawnListener(dir, name, host, port, source) {
+async function spawnListener(dir, name, host, port, source, command = []) {
   const script = path.join(dir, name);
   await writeFile(script, source);
-  const child = spawn(process.execPath, [script, host, String(port)], { stdio: ["ignore", "pipe", "inherit"] });
+  const child = spawn(process.execPath, [script, ...command, host, String(port)], {
+    stdio: ["ignore", "pipe", "inherit"],
+  });
   const [line] = await once(child.stdout, "data");
   assert.equal(String(line).trim(), "listening");
   return child;

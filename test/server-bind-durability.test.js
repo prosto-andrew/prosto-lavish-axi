@@ -12,6 +12,7 @@ import test from "node:test";
 
 import WebSocket from "ws";
 
+import { BUILD_ID } from "../src/build-id.js";
 import { fetchHealth, run, stopCommand, VERSION } from "../src/cli.js";
 import { serve } from "../src/server.js";
 
@@ -187,12 +188,89 @@ test("a stale control-channel server is replaced only once per CLI invocation", 
       return shutdowns;
     }
 
-    assert.equal(await countShutdowns({ ok: true, app: "lavish-axi", version: VERSION, network_stale: true }), 1);
+    // LAVISH-HARDENED: the one network restart is for a server of this very build.
+    assert.equal(
+      await countShutdowns({
+        ok: true,
+        app: "lavish-axi",
+        version: VERSION,
+        hardened_build: BUILD_ID,
+        network_stale: true,
+      }),
+      1,
+    );
     assert.equal(await countShutdowns({ ok: true, app: "lavish-axi", version: "0.0.1", network_stale: true }), 2);
     // LAVISH-HARDENED: #416 is not taken, so a newer stale server is replaced for its version too.
     assert.equal(await countShutdowns({ ok: true, app: "lavish-axi", version: "999.0.0", network_stale: true }), 2);
   });
 });
+
+// LAVISH-HARDENED: the network restart keeps only a server of this very build. A stale server of this
+// version but another build is replaced like any other build and is never adopted, even once the
+// network restart is spent. This fake never frees the port, so the CLI ends with an error after two
+// shutdown requests instead of handing it the session. In this process the CLI's own PID is excluded
+// from the PID fallback, so nothing is signalled.
+test(
+  "a stale server of this version but another build is not adopted after the network restart",
+  { timeout: 20_000 },
+  async () => {
+    await withTempDir(async (dir) => {
+      const artifact = await writeArtifact(dir);
+      const requests = [];
+      const reasons = [];
+      const fake = createHttpServer((req, res) => {
+        requests.push(`${req.method} ${req.url?.split("?")[0]}`);
+        if (req.url?.startsWith("/health")) {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify({
+              ok: true,
+              app: "lavish-axi",
+              version: VERSION,
+              hardened_build: "an-older-build",
+              network_stale: true,
+            }),
+          );
+          return;
+        }
+        let raw = "";
+        req.on("data", (chunk) => (raw += chunk));
+        req.on("end", () => {
+          const shutdown = req.method === "POST" && req.url === "/shutdown";
+          if (shutdown) reasons.push(raw ? JSON.parse(raw).reason : undefined);
+          res.writeHead(shutdown ? 200 : 404, { "content-type": "application/json" });
+          res.end("{}");
+        });
+      });
+      await listen(fake, { host: "127.0.0.1", port: 0 });
+      const port = /** @type {{ port: number }} */ (fake.address()).port;
+      try {
+        await withEnv(
+          {
+            LAVISH_AXI_PORT: String(port),
+            LAVISH_AXI_HOST: "127.0.0.1",
+            LAVISH_AXI_STATE_DIR: dir,
+            LAVISH_AXI_NO_OPEN: "1",
+            LAVISH_AXI_TELEMETRY: "0",
+            LAVISH_AXI_IDLE_TIMEOUT_MS: "1000",
+          },
+          async () => {
+            try {
+              await run(["open", artifact, "--no-open"]);
+            } catch {
+              // The CLI cannot free the port, so it ends with an error; the requests are the contract.
+            }
+          },
+        );
+      } finally {
+        await new Promise((resolve) => fake.close(() => resolve(undefined)));
+      }
+      // Both requests replace another build; a network-only restart would name no reason.
+      assert.deepEqual(reasons, ["local-build", "local-build"], requests.join(", "));
+      assert.ok(!requests.includes("POST /api/sessions"), "the stale server of another build was handed the session");
+    });
+  },
+);
 
 test("an occupied loopback control address prevents binding another listener", ipv6LoopbackOnly, async () => {
   await withTempDir(async (dir) => {

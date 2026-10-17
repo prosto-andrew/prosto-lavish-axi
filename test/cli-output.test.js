@@ -28,6 +28,7 @@ import {
   detectInvokingAgent,
   fetchJson,
   getCommandHelp,
+  isLavishServerCommand,
   normalizeArgv,
   pollInterruptedText,
   pollWaitBannerText,
@@ -47,7 +48,9 @@ import {
   VERSION,
   waitForPortFree,
 } from "../src/cli.js";
+import { BUILD_ID } from "../src/build-id.js";
 import { DESIGN_PRIORITY_RULE, DESIGN_SYSTEM_HINT } from "../src/design-reference.js";
+import { stateId } from "../src/paths.js";
 import { createSkillMarkdown } from "../src/skill.js";
 import { SELF_PAINT_WARNING } from "../src/self-paint.js";
 import { serve } from "../src/server.js";
@@ -1240,7 +1243,8 @@ test("poll feedback and the next step are emitted before the bulky DOM snapshot"
   const server = createServer((req, res) => {
     if (new URL(req.url || "/", "http://localhost").pathname === "/health") {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, app: "lavish-axi", version: VERSION }));
+      // LAVISH-HARDENED: the CLI keeps a running server only when it reports this build.
+      res.end(JSON.stringify({ ok: true, app: "lavish-axi", version: VERSION, hardened_build: BUILD_ID }));
       return;
     }
     if (req.url?.startsWith("/api/poll?")) {
@@ -1303,7 +1307,7 @@ test("poll sends the CLI client header on GET and on takeover POST", async () =>
   const server = createServer((req, res) => {
     if (new URL(req.url || "/", "http://localhost").pathname === "/health") {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, app: "lavish-axi", version: VERSION }));
+      res.end(JSON.stringify({ ok: true, app: "lavish-axi", version: VERSION, hardened_build: BUILD_ID }));
       return;
     }
     if (req.url?.startsWith("/api/poll?")) {
@@ -1930,19 +1934,28 @@ test("local built CLI opens restart the server only when a developer opts in", (
   );
 });
 
+// LAVISH-HARDENED: a running server is reused only when it is this build - a Lavish server of this
+// version that reports this build's id. A responder that does not say it is Lavish is never reused.
 test("shouldRestartServer reuses a server running the same version", () => {
-  assert.equal(shouldRestartServer("0.1.4", { ok: true, version: "0.1.4" }), false);
+  assert.equal(
+    shouldRestartServer("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.4", hardened_build: BUILD_ID }),
+    false,
+  );
+  assert.equal(shouldRestartServer("0.1.4", { ok: true, version: "0.1.4" }), true);
 });
 
+// LAVISH-HARDENED: the server reports this build's id, so the network-only restart names no reason.
 test("shouldRestartServer restarts a same-version server after a Tailscale transition", () => {
-  const health = { ok: true, app: "lavish-axi", version: "0.1.4", network_stale: true };
+  const health = { ok: true, app: "lavish-axi", version: "0.1.4", hardened_build: BUILD_ID, network_stale: true };
   assert.equal(shouldRestartServer("0.1.4", health), true);
   assert.equal(serverReplacementReason("0.1.4", health), "");
 });
 
+// LAVISH-HARDENED: a responder that is not Lavish is never reused, forced or not; ensureServer refuses
+// it as a non-Lavish server rather than replacing it.
 test("shouldRestartServer restarts same-version Lavish servers when forced", () => {
   assert.equal(shouldRestartServer("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.4" }, true), true);
-  assert.equal(shouldRestartServer("0.1.4", { ok: true, app: "other", version: "0.1.4" }, true), false);
+  assert.equal(shouldRestartServer("0.1.4", { ok: true, app: "other", version: "0.1.4" }, true), true);
 });
 
 test("shouldRestartServer restarts when the running server reports a different version", () => {
@@ -2002,8 +2015,10 @@ test("shouldRestartServer does not restart when /health was unreachable", () => 
 test("serverReplacementReason names a local-build force apart from a real version change", () => {
   assert.equal(serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.3" }), "upgrade");
   assert.equal(serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi" }), "upgrade");
+  // LAVISH-HARDENED: only a server that reports a build id can be a local build; without one it is a
+  // stock server, and replacing that is an upgrade.
   assert.equal(
-    serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.4" }, true),
+    serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.4", hardened_build: BUILD_ID }, true),
     "local-build",
   );
   // A version difference is an upgrade even when the local-build force is also set.
@@ -2017,8 +2032,12 @@ test("serverReplacementReason calls replacing a newer server an upgrade", () => 
   assert.equal(serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.5" }, true), "upgrade");
 });
 
+// LAVISH-HARDENED: no replacement is warranted only for this very build.
 test("serverReplacementReason names nothing when no replacement is warranted", () => {
-  assert.equal(serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.4" }), "");
+  assert.equal(
+    serverReplacementReason("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.4", hardened_build: BUILD_ID }),
+    "",
+  );
   assert.equal(serverReplacementReason("0.1.4", null), "");
 });
 
@@ -2030,9 +2049,13 @@ test("shouldKillProcessOnPort kills pre-handshake Lavish servers after shutdown 
   assert.equal(shouldKillProcessOnPort("0.1.4", { ok: true }), true);
 });
 
+// LAVISH-HARDENED: a same-version server is spared only when it is this build.
 test("shouldKillProcessOnPort only kills Lavish servers with a mismatched version", () => {
   assert.equal(shouldKillProcessOnPort("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.3" }), true);
-  assert.equal(shouldKillProcessOnPort("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.4" }), false);
+  assert.equal(
+    shouldKillProcessOnPort("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.4", hardened_build: BUILD_ID }),
+    false,
+  );
 });
 
 // LAVISH-HARDENED: #416 is not taken. /health cannot show that a newer server is a hardened
@@ -2040,6 +2063,134 @@ test("shouldKillProcessOnPort only kills Lavish servers with a mismatched versio
 test("shouldKillProcessOnPort kills a Lavish server that is newer than the CLI", () => {
   assert.equal(shouldKillProcessOnPort("0.1.4", { ok: true, app: "lavish-axi", version: "0.1.5" }), true);
   assert.equal(shouldKillProcessOnPort("0.1.10", { ok: true, app: "lavish-axi", version: "0.1.9" }), true);
+});
+
+// LAVISH-HARDENED: /health names the build (hardened_build, a fresh id per `scripts/build.js` run), so
+// a stock server of this installation and an older build of this version are replaced like another
+// version, and a responder that is not Lavish is never reused.
+test("shouldRestartServer replaces a same-version server of another build or without a build id", () => {
+  const sameVersion = { ok: true, app: "lavish-axi", version: "0.1.4" };
+  assert.equal(shouldRestartServer("0.1.4", { ...sameVersion, hardened_build: "build-a" }, false, "build-a"), false);
+  assert.equal(shouldRestartServer("0.1.4", { ...sameVersion, hardened_build: "build-b" }, false, "build-a"), true);
+  assert.equal(shouldRestartServer("0.1.4", sameVersion, false, "build-a"), true);
+  assert.equal(shouldRestartServer("0.1.4", { ...sameVersion, hardened_build: "" }, false, "build-a"), true);
+  assert.equal(shouldRestartServer("0.1.4", { ...sameVersion, hardened_build: "source" }, false, "build-a"), true);
+});
+
+test("shouldRestartServer never reuses a responder that is not Lavish, whatever version it reports", () => {
+  assert.equal(
+    shouldRestartServer("0.1.4", { ok: true, version: "0.1.4", hardened_build: "build-a" }, false, "build-a"),
+    true,
+  );
+  assert.equal(
+    shouldRestartServer(
+      "0.1.4",
+      { ok: true, app: "other", version: "0.1.4", hardened_build: "build-a" },
+      false,
+      "build-a",
+    ),
+    true,
+  );
+});
+
+test("serverReplacementReason calls another build a local build and a server without a build id an upgrade", () => {
+  const sameVersion = { ok: true, app: "lavish-axi", version: "0.1.4" };
+  assert.equal(
+    serverReplacementReason("0.1.4", { ...sameVersion, hardened_build: "build-b" }, false, "build-a"),
+    "local-build",
+  );
+  assert.equal(serverReplacementReason("0.1.4", sameVersion, false, "build-a"), "upgrade");
+  assert.equal(serverReplacementReason("0.1.4", sameVersion, true, "build-a"), "upgrade");
+  assert.equal(
+    serverReplacementReason(
+      "0.1.4",
+      { ...sameVersion, hardened_build: "build-b", network_stale: true },
+      false,
+      "build-a",
+    ),
+    "local-build",
+  );
+  assert.equal(
+    serverReplacementReason(
+      "0.1.4",
+      { ...sameVersion, hardened_build: "build-a", network_stale: true },
+      false,
+      "build-a",
+    ),
+    "",
+  );
+  assert.equal(serverReplacementReason("0.1.4", { ok: true, version: "0.1.4" }, false, "build-a"), "");
+  assert.equal(serverReplacementReason("0.1.4", { ok: true }, false, "build-a"), "");
+});
+
+test("shouldKillProcessOnPort may kill a same-version Lavish server of another build or without a build id", () => {
+  const sameVersion = { ok: true, app: "lavish-axi", version: "0.1.4" };
+  assert.equal(shouldKillProcessOnPort("0.1.4", { ...sameVersion, hardened_build: "build-a" }, "build-a"), false);
+  assert.equal(shouldKillProcessOnPort("0.1.4", { ...sameVersion, hardened_build: "build-b" }, "build-a"), true);
+  assert.equal(shouldKillProcessOnPort("0.1.4", sameVersion, "build-a"), true);
+  assert.equal(
+    shouldKillProcessOnPort(
+      "0.1.4",
+      { ok: true, app: "other", version: "0.1.4", hardened_build: "build-b" },
+      "build-a",
+    ),
+    false,
+  );
+});
+
+// LAVISH-HARDENED: `lavish-safe stop` falls back to the PID for a server of this version but another
+// build that ignores /shutdown, as for another version; a server of this very build is never signalled.
+test("lavish-safe stop may signal a same-version server of another build that ignores /shutdown", async () => {
+  for (const [hardenedBuild, expectedKills, status] of [
+    ["an-older-build", 1, "stopped"],
+    [BUILD_ID, 0, "stopping"],
+  ]) {
+    let kills = 0;
+    const output = await shutdownServerOnPort(4387, {
+      baseUrl: "http://127.0.0.1:4387",
+      currentVersion: "0.1.4",
+      fetchHealth: async () => ({ ok: true, app: "lavish-axi", version: "0.1.4", hardened_build: hardenedBuild }),
+      requestShutdown: async () => {},
+      waitForPortFree: async () => kills > 0,
+      killServerProcess: () => {
+        kills += 1;
+        return true;
+      },
+      processMatchesLavish: () => true,
+    });
+    assert.equal(kills, expectedKills, hardenedBuild);
+    assert.deepEqual(output, { server: { status, port: 4387 } });
+  }
+});
+
+// LAVISH-HARDENED: the PID fallback signals a process only when its command line runs a Lavish
+// server entry with the `server` command. Upstream matched "lavish-axi" anywhere in it, which also
+// matches a test run or an editor opened on a checkout whose path contains it.
+test("isLavishServerCommand recognises Lavish server processes and nothing that merely names a checkout", () => {
+  const servers = [
+    "node /home/u/prosto-lavish-axi/dist/server.mjs server --port 4387",
+    '"C:\\Program Files\\nodejs\\node.exe" "D:\\Skills setup\\lavish-axi-main\\prosto-lavish-axi\\dist\\server.mjs" server --port 4387',
+    "C:\\nodejs\\node.exe D:\\src\\prosto-lavish-axi\\bin\\lavish-axi-server.js server --port 4399",
+    "/usr/bin/node /usr/lib/node_modules/lavish-axi/dist/server.mjs server --port 4387",
+    "node /opt/lavish-axi/bin/lavish-axi.js server",
+    // `lavish-safe server` (and stock `lavish-axi server`) run the CLI bundle in the foreground.
+    '"C:\\Program Files\\nodejs\\node.exe" "D:\\checkout\\prosto-lavish-axi\\dist\\cli.mjs" server --verbose',
+    // Stock releases up to 0.1.17 ship only dist/ and run their detached server from the CLI bundle.
+    "/usr/bin/node /usr/lib/node_modules/lavish-axi/dist/cli.mjs server --port 4387",
+  ];
+  const others = [
+    '"C:\\Program Files\\nodejs\\node.exe" --test D:\\Skills setup\\lavish-axi-main\\prosto-lavish-axi\\test\\cli-output.test.js',
+    "code D:\\Skills setup\\lavish-axi-main\\prosto-lavish-axi",
+    "node /home/u/prosto-lavish-axi/dist/cli.mjs poll report.html",
+    "node /home/u/prosto-lavish-axi/dist/server.mjs",
+    "node /home/u/prosto-lavish-axi/dist/server.mjs servers",
+    "node /home/u/other-app/dist/server.mjs server --port 4387",
+    "node -e script lavish-axi-stuck-server",
+    "",
+  ];
+  for (const command of servers) assert.equal(isLavishServerCommand(command), true, command);
+  for (const command of others) assert.equal(isLavishServerCommand(command), false, command);
+  assert.equal(isLavishServerCommand(undefined), false);
 });
 
 test("shutdownServerOnPort kills pre-handshake Lavish servers when shutdown does not free the port", async () => {
@@ -2231,12 +2382,16 @@ test("stop command reports when no server is running", async () => {
 
 // A stand-in for a running server of another version: it answers /health, records what the CLI
 // actually puts on the wire at /shutdown, and then frees the port like a real one.
-async function startShutdownRecorder(version = "0.0.0-previous") {
+// LAVISH-HARDENED: `health` adds to or overrides its /health body (state_id, hardened_build, app), and
+// `requests` lists every request as "METHOD /path", so a test can see a session handed to it.
+async function startShutdownRecorder(version = "0.0.0-previous", health = {}) {
   const bodies = [];
+  const requests = [];
   const server = createServer((req, res) => {
+    requests.push(`${req.method} ${new URL(req.url || "/", "http://localhost").pathname}`);
     if (new URL(req.url || "/", "http://localhost").pathname === "/health") {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, app: "lavish-axi", version }));
+      res.end(JSON.stringify({ ok: true, app: "lavish-axi", version, ...health }));
       return;
     }
     if (req.url === "/shutdown" && req.method === "POST") {
@@ -2257,7 +2412,7 @@ async function startShutdownRecorder(version = "0.0.0-previous") {
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(undefined)));
   const address = /** @type {import("node:net").AddressInfo} */ (server.address());
-  return { bodies, port: address.port, close: () => server.close() };
+  return { bodies, requests, port: address.port, close: () => server.close() };
 }
 
 test("lavish-safe stop tells the server it was stopped, and names no session to reload", async () => {
@@ -2431,6 +2586,123 @@ test("opening an artifact replaces a running server that is newer than the CLI",
     await waitForPortFree(base, 3000);
     recorder.close();
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// LAVISH-HARDENED: a running server is kept only when /health shows it is this very build (its
+// version and hardened_build). The CLI runs from source here, so this build's id is BUILD_ID.
+async function buildFixture(prefix) {
+  const dir = await mkdtemp(path.join(os.tmpdir(), prefix));
+  const stateDir = path.join(dir, "state");
+  await mkdir(stateDir);
+  const artifact = path.join(dir, "board.html");
+  await writeFile(artifact, "<!doctype html><html><body>board</body></html>");
+  return { dir, stateDir, artifact, ownStateId: stateId(path.join(stateDir, "state.json")) };
+}
+
+// Spawned asynchronously: the recorder runs in this process, so a blocking spawnSync would deadlock
+// the CLI's own /health request against it.
+function openFromSource(port, stateDir, artifact) {
+  return new Promise((resolve) => {
+    const child = spawn(
+      process.execPath,
+      [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), artifact, "--no-open"],
+      {
+        cwd: fileURLToPath(new URL("..", import.meta.url)),
+        env: {
+          ...process.env,
+          LAVISH_AXI_PORT: String(port),
+          LAVISH_AXI_STATE_DIR: stateDir,
+          LAVISH_AXI_TELEMETRY: "0",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let output = "";
+    child.stdout.on("data", (chunk) => (output += chunk));
+    child.stderr.on("data", (chunk) => (output += chunk));
+    child.on("close", (code) => resolve({ code, output }));
+  });
+}
+
+// The CLI replaced the recorder with a real server on that port; stop it again.
+async function stopReplacement(base) {
+  await fetch(`${base}/shutdown`, { method: "POST" }).catch(() => {});
+  await waitForPortFree(base, 3000);
+}
+
+test("opening an artifact replaces a stock server of this version as an upgrade", async () => {
+  const fixture = await buildFixture("lavish-open-stock-");
+  const recorder = await startShutdownRecorder(VERSION, { state_id: fixture.ownStateId });
+  try {
+    const { code, output } = await openFromSource(recorder.port, fixture.stateDir, fixture.artifact);
+
+    assert.deepEqual(recorder.bodies, [
+      { reload_key: sessionKey(await canonicalFile(fixture.artifact)), reason: "upgrade" },
+    ]);
+    assert.ok(!recorder.requests.includes("POST /api/sessions"), "the stock server was handed the session");
+    assert.equal(code, 0, output);
+  } finally {
+    await stopReplacement(`http://127.0.0.1:${recorder.port}`);
+    recorder.close();
+    await rm(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test("opening an artifact replaces an older build of this version as a local build", async () => {
+  const fixture = await buildFixture("lavish-open-old-build-");
+  const recorder = await startShutdownRecorder(VERSION, {
+    state_id: fixture.ownStateId,
+    hardened_build: "an-older-build",
+  });
+  try {
+    const { code, output } = await openFromSource(recorder.port, fixture.stateDir, fixture.artifact);
+
+    assert.deepEqual(recorder.bodies, [
+      { reload_key: sessionKey(await canonicalFile(fixture.artifact)), reason: "local-build" },
+    ]);
+    assert.ok(!recorder.requests.includes("POST /api/sessions"), "the older build was handed the session");
+    assert.equal(code, 0, output);
+  } finally {
+    await stopReplacement(`http://127.0.0.1:${recorder.port}`);
+    recorder.close();
+    await rm(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test("opening an artifact keeps a running server of this very build", async () => {
+  const fixture = await buildFixture("lavish-open-same-build-");
+  const recorder = await startShutdownRecorder(VERSION, { state_id: fixture.ownStateId, hardened_build: BUILD_ID });
+  try {
+    // The recorder has no session route, so the CLI fails after handing it the session.
+    await openFromSource(recorder.port, fixture.stateDir, fixture.artifact);
+
+    assert.deepEqual(recorder.bodies, []);
+    assert.ok(recorder.requests.includes("POST /api/sessions"), recorder.requests.join(", "));
+  } finally {
+    recorder.close();
+    await rm(fixture.dir, { recursive: true, force: true });
+  }
+});
+
+test("opening an artifact refuses a responder that is not Lavish, even one reporting this CLI's version", async () => {
+  const fixture = await buildFixture("lavish-open-not-lavish-");
+  const recorder = await startShutdownRecorder(VERSION, { app: "other-app", hardened_build: BUILD_ID });
+  try {
+    const { code, output } = await openFromSource(recorder.port, fixture.stateDir, fixture.artifact);
+
+    assert.notEqual(code, 0, output);
+    assert.match(output, /SERVER_ERROR/);
+    assert.match(output, /occupied by a non-Lavish server/);
+    assert.deepEqual(recorder.bodies, []);
+    assert.deepEqual(
+      recorder.requests.filter((request) => request !== "GET /health"),
+      [],
+      "the CLI sent the responder something other than a health probe",
+    );
+  } finally {
+    recorder.close();
+    await rm(fixture.dir, { recursive: true, force: true });
   }
 });
 

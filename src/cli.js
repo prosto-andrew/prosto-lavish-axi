@@ -30,6 +30,7 @@ import { analyzeSelfPaint, SELF_PAINT_WARNING } from "./self-paint.js";
 import { openServerLog } from "./server-log.js";
 import { LAVISH_CLIENT_CLI, LAVISH_CLIENT_HEADER, resolveDesignAssetPath, serve } from "./server.js";
 import { isHtmlPath } from "./artifact-path.js";
+import { BUILD_ID } from "./build-id.js";
 import { canonicalFile, sessionKey, SessionStore } from "./session-store.js";
 import { guardSetTypeOfService } from "./socket-tos-guard.js";
 import { initDefaultTelemetry } from "./telemetry.js";
@@ -843,9 +844,10 @@ async function visibleSessions() {
     log: (line) => process.stderr.write(`[lavish] WARNING: ${line}\n`),
   });
   const sessions = (await store.listSessions()).filter((session) => session.status !== "ended");
-  const { health } = await findRunningServer(defaultPort());
+  // LAVISH-HARDENED: only this installation's server says which sessions have a listening agent.
+  const { health, owned } = await findRunningServer(defaultPort());
   const listeners = new Map(
-    Array.isArray(health?.listeners)
+    owned && Array.isArray(health?.listeners)
       ? health.listeners
           .filter((listener) => listener && typeof listener.key === "string")
           .map((listener) => [listener.key, listener.label || "agent-listener"])
@@ -911,6 +913,8 @@ function otherInstallationError(port, foreign) {
 // is probed in parallel and each probe is bounded, so a hanging or foreign address cannot mask
 // loopback, and a response whose app is lavish-axi wins over a foreign /health. When nothing
 // answers, the primary URL is still returned so callers have something to spawn against and report.
+// LAVISH-HARDENED: `owned` says whether the server returned is this installation's (`isOwnedServer`)
+// rather than whatever else answered at a control address.
 async function findRunningServer(port, { reconcileNetwork = false } = {}) {
   const controlHosts = new Set([clientHost(), LOOPBACK_HOST]);
   const probed = await Promise.all(
@@ -931,15 +935,15 @@ async function findRunningServer(port, { reconcileNetwork = false } = {}) {
   if (!chosen) {
     const other = found.find((entry) => controlHosts.has(entry.host));
     return other
-      ? { baseUrl: other.baseUrl, health: other.health, duplicates: [], foreign }
-      : { baseUrl: serverBaseUrl(clientHost(), port), health: null, duplicates: [], foreign };
+      ? { baseUrl: other.baseUrl, health: other.health, duplicates: [], foreign, owned: false }
+      : { baseUrl: serverBaseUrl(clientHost(), port), health: null, duplicates: [], foreign, owned: false };
   }
   let health = chosen.health;
   if (reconcileNetwork) {
     health =
       (await probeHealth(chosen.baseUrl, { reconcileNetwork: true, timeoutMs: HEALTH_RECONCILE_TIMEOUT_MS })) ?? health;
   }
-  return { baseUrl: chosen.baseUrl, health, duplicates: ownedDuplicates(owned, chosen), foreign };
+  return { baseUrl: chosen.baseUrl, health, duplicates: ownedDuplicates(owned, chosen), foreign, owned: true };
 }
 
 // Other Lavish daemons of this installation on the same port. An address the chosen server itself
@@ -1014,13 +1018,8 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
     }
   }
   await startServer(port);
-  const replacedForNetwork =
-    Boolean(existing) &&
-    existing.app === "lavish-axi" &&
-    existing.network_stale === true &&
-    !forceRestart &&
-    typeof existing.version === "string" &&
-    existing.version === VERSION;
+  // LAVISH-HARDENED: only a server of this very build is restarted for the network alone.
+  const replacedForNetwork = isThisBuild(existing) && existing.network_stale === true && !forceRestart;
   let networkRestarted = replacedForNetwork;
   let raceRestarted = false;
   let deadline = Date.now() + 5000;
@@ -1033,23 +1032,26 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
     } = await findRunningServer(port, { reconcileNetwork: true });
     if (liveForeign) throw otherInstallationError(port, liveForeign);
     if (health && !shouldRestartServer(VERSION, health)) return adoptServer(liveUrl, liveDuplicates, reloadKey);
-    // Another daemon won the port while ours was starting (ours exits when a Lavish server already
-    // owns loopback) - an older release. Retire it and start once more rather than wait it out.
-    if (health?.app === "lavish-axi" && health.network_stale !== true && !raceRestarted) {
-      raceRestarted = true;
-      await stopDuplicateServers(liveDuplicates, { reloadKey });
-      await requestShutdown(liveUrl, { reloadKey, reason: serverReplacementReason(VERSION, health) });
-      if (!(await waitForPortFree(liveUrl, 3000))) break;
-      await startServer(port);
-      deadline = Date.now() + 5000;
-      continue;
-    }
-    if (health?.network_stale === true && health.app === "lavish-axi") {
+    // LAVISH-HARDENED: the network-only restart, and keeping the server once it is spent, apply to a
+    // server of this very build alone.
+    if (health?.network_stale === true && isThisBuild(health)) {
       if (networkRestarted) return adoptServer(liveUrl, liveDuplicates, reloadKey);
       await requestShutdown(liveUrl, { reloadKey, reason: "" });
       if (!(await waitForPortFree(liveUrl, 3000))) break;
       await startServer(port);
       networkRestarted = true;
+      deadline = Date.now() + 5000;
+      continue;
+    }
+    // Another daemon won the port while ours was starting (ours exits when a Lavish server already
+    // owns loopback) - another version or build, stale or not. Retire it and start once more rather
+    // than wait it out.
+    if (health?.app === "lavish-axi" && !raceRestarted) {
+      raceRestarted = true;
+      await stopDuplicateServers(liveDuplicates, { reloadKey });
+      await requestShutdown(liveUrl, { reloadKey, reason: serverReplacementReason(VERSION, health) });
+      if (!(await waitForPortFree(liveUrl, 3000))) break;
+      await startServer(port);
       deadline = Date.now() + 5000;
       continue;
     }
@@ -1066,27 +1068,51 @@ async function ensureServer({ forceRestart = false, reloadKey = "" } = {}) {
 // what this CLI was built with - i.e. the user just upgraded and the stale server needs
 // to step aside.
 // LAVISH-HARDENED: upstream 0.1.87 (#416) adopts a running server newer than the CLI. This
-// build does not: /health cannot show that a server is a hardened build, and a stock server
-// using the same state directory reports the same state_id, so a server of any other version,
-// newer included, is replaced by this checkout's own.
-export function shouldRestartServer(currentVersion, healthBody, forceRestart = false) {
+// build does not: a stock server using the same state directory reports the same state_id, so a
+// server of any other version, newer included, is replaced by this checkout's own. /health also
+// names the build (`hardened_build`, src/build-id.js), so the server is kept only when it is this
+// very build: a stock server, an older build of this version, and a responder that does not say it
+// is Lavish are not. ensureServer then refuses such a responder as a non-Lavish server, unless it
+// reports no version and its process is a Lavish server (`canControlServerOnPort`: a pre-handshake
+// release), which it replaces.
+export function shouldRestartServer(currentVersion, healthBody, forceRestart = false, currentBuildId = BUILD_ID) {
   if (!healthBody || typeof healthBody !== "object") return false;
-  if (forceRestart && healthBody.app === "lavish-axi") return true;
-  if (healthBody.network_stale === true && healthBody.app === "lavish-axi") return true;
+  if (healthBody.app !== "lavish-axi") return true;
+  if (forceRestart) return true;
+  if (healthBody.network_stale === true) return true;
   if (typeof healthBody.version !== "string" || healthBody.version === "") return true;
+  if (healthBody.hardened_build !== currentBuildId) return true;
   return healthBody.version !== currentVersion;
+}
+
+// LAVISH-HARDENED: the one server this CLI may keep: a Lavish server of this version reporting this
+// build's id.
+function isThisBuild(health) {
+  return health?.app === "lavish-axi" && health.version === VERSION && health.hardened_build === BUILD_ID;
 }
 
 // Which branch of `shouldRestartServer` actually fired, because that is what the other open
 // review pages are told. A local-build force replaces a server of the SAME version, so calling it
 // an upgrade would be false on both counts; only a version this CLI does not match is one.
-export function serverReplacementReason(currentVersion, healthBody, forceRestart = false) {
-  if (!shouldRestartServer(currentVersion, healthBody, forceRestart)) return "";
+// LAVISH-HARDENED: so is a server that reports no build id - a stock server; one that reports
+// another id is an older (or another) build of this version, a local build. A responder that does
+// not say it is Lavish gets no reason: ensureServer refuses it, or, for a pre-handshake release found
+// by its process, replaces a server that predates shutdown reasons.
+export function serverReplacementReason(currentVersion, healthBody, forceRestart = false, currentBuildId = BUILD_ID) {
+  if (!shouldRestartServer(currentVersion, healthBody, forceRestart, currentBuildId)) return "";
+  if (healthBody.app !== "lavish-axi") return "";
   const runningVersion = healthBody.version;
-  if (typeof runningVersion !== "string" || runningVersion === "" || runningVersion !== currentVersion) {
+  const runningBuild = healthBody.hardened_build;
+  if (
+    typeof runningVersion !== "string" ||
+    runningVersion === "" ||
+    runningVersion !== currentVersion ||
+    typeof runningBuild !== "string" ||
+    runningBuild === ""
+  ) {
     return "upgrade";
   }
-  return forceRestart ? "local-build" : "";
+  return forceRestart || runningBuild !== currentBuildId ? "local-build" : "";
 }
 
 // LAVISH-HARDENED: the launchers run this checkout's dist/cli.mjs on every invocation, so
@@ -1105,11 +1131,31 @@ function localSourceServerExists() {
   return existsSync(fileURLToPath(new URL("../src/server.js", import.meta.url)));
 }
 
-export function shouldKillProcessOnPort(currentVersion, healthBody) {
+// LAVISH-HARDENED: a Lavish server of another build that ignored /shutdown may be signalled too, as
+// one of another version may; a server of this very build never is.
+export function shouldKillProcessOnPort(currentVersion, healthBody, currentBuildId = BUILD_ID) {
   if (!healthBody || typeof healthBody !== "object") return false;
   if (typeof healthBody.version !== "string" || healthBody.version === "") return true;
   if (healthBody.app !== "lavish-axi") return false;
+  if (healthBody.hardened_build !== currentBuildId) return true;
   return healthBody.version !== currentVersion;
+}
+
+// LAVISH-HARDENED: whether a listener's command line is a Lavish server process: node running a server
+// entry with the `server` command - this build's dist/server.mjs or bin/lavish-axi-server.js, the
+// stock package's, an old release's bin/lavish-axi.js, or a CLI bundle (dist/cli.mjs). The last is
+// how stock releases up to 0.1.17, which ship only dist/ and have no /shutdown, run their detached
+// server - the case this fallback exists for - and how `lavish-safe server` serves in the
+// foreground. Quoted Windows paths are included. The line must also name Lavish somewhere (its
+// path), so a checkout in a directory without "lavish" cannot be identified; nor could it before.
+// Upstream matched "lavish-axi" anywhere, which also matches a test run or an editor opened on a
+// checkout whose path contains it.
+export function isLavishServerCommand(command) {
+  const text = String(command || "");
+  return (
+    /lavish/i.test(text) &&
+    /(?:^|[\\/\s"'])(?:server\.mjs|cli\.mjs|lavish-axi-server\.js|lavish-axi\.js)["']?\s+server(?:\s|$)/.test(text)
+  );
 }
 
 async function canControlServerOnPort(baseUrl, healthBody, processMatchesLavish) {
@@ -1204,7 +1250,7 @@ function lavishListenerPids(baseUrl) {
     const listeners = process.platform === "win32" ? windowsListeners(hostname, port) : posixListeners(hostname, port);
     return listeners
       .filter(
-        ({ pid, command }) => Number.isInteger(pid) && pid > 0 && pid !== process.pid && /lavish-axi/.test(command),
+        ({ pid, command }) => Number.isInteger(pid) && pid > 0 && pid !== process.pid && isLavishServerCommand(command),
       )
       .map(({ pid }) => pid);
   } catch {

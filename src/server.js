@@ -75,6 +75,7 @@ import {
 } from "./artifact-path.js";
 import { canonicalFile, SessionStore, sessionKey } from "./session-store.js";
 import { AsyncMutex } from "./async-mutex.js";
+import { BUILD_ID } from "./build-id.js";
 import {
   ACCEPTED_IMAGE_MIME,
   isValidAttachmentKey,
@@ -928,6 +929,8 @@ export async function serve({
       ok: true,
       app: "lavish-axi",
       version,
+      // LAVISH-HARDENED: which build this is (src/build-id.js); the CLI keeps only its own.
+      hardened_build: BUILD_ID,
       state_id: serverStateId,
       state_dir: path.dirname(stateFile),
       // Where this process is listening and every address it was asked to serve (bound or still

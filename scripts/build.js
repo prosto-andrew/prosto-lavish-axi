@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { chmod, copyFile, cp, mkdir, readFile } from "node:fs/promises";
 
 import * as esbuild from "esbuild";
@@ -13,6 +14,12 @@ const hardenedBanner = {
   js: `// LAVISH-HARDENED build of lavish-axi ${packageJson.version}: telemetry, publishing, non-loopback networking, setup hooks and CDN loads are removed at the source level. Check it with \`node verify-hardening.mjs\`.`,
 };
 
+// LAVISH-HARDENED: every build gets its own id (src/build-id.js), which /health reports. The CLI keeps
+// a running server only when it reports this id, so the first open after a rebuild replaces a server
+// still running the previous build. Random rather than a hash: a hash of the bundle cannot include
+// itself. verify-hardening.mjs checks that dist/cli.mjs carries one.
+const buildIdDefine = { __LAVISH_BUILD_ID__: JSON.stringify(randomUUID()) };
+
 await mkdir("dist", { recursive: true });
 
 await esbuild.build({
@@ -26,6 +33,7 @@ await esbuild.build({
   banner: hardenedBanner,
   define: {
     "process.env.LAVISH_AXI_BUILD_VERSION": JSON.stringify(packageJson.version),
+    ...buildIdDefine,
   },
 });
 
@@ -40,6 +48,7 @@ await esbuild.build({
   format: "esm",
   target: "node22",
   banner: hardenedBanner,
+  define: buildIdDefine,
   plugins: [
     {
       name: "external-cli",
