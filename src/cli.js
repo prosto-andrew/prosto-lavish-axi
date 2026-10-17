@@ -1320,11 +1320,17 @@ const WINDOWS_LISTENERS_SCRIPT = [
   "  }",
 ].join("\n");
 
+// The lookup takes about a second, but on a CPU-starved machine (16 threads, 48 busy processes) it
+// took up to 23 s, mostly waiting to be scheduled - PowerShell's start alone took up to 10.5 s. A
+// lookup cut short identifies nothing. It runs only for a server that does not say it is Lavish or
+// would not go away, so a long bound costs nothing in the ordinary case.
+const WINDOWS_LISTENER_LOOKUP_TIMEOUT_MS = 60_000;
+
 function windowsListeners(hostname, port) {
   const listing = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_LISTENERS_SCRIPT], {
     encoding: "utf8",
     windowsHide: true,
-    timeout: 15_000,
+    timeout: WINDOWS_LISTENER_LOOKUP_TIMEOUT_MS,
     env: { ...process.env, LAVISH_LISTEN_HOST: hostname.replace(/^\[|\]$/g, ""), LAVISH_LISTEN_PORT: String(port) },
   });
   if (listing.status !== 0) return [];
