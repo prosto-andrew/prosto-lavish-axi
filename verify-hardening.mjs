@@ -306,26 +306,60 @@ check("the bundled CLI spawns the bundled server", () => {
   // newer one is hardened. The bundle may append a numeric suffix to a name. Whole-line comments are
   // ignored, so a note that names upstream's helper is not mistaken for code using it. The tests pin
   // the rest of the rule (serverReplacementReason, ensureServer).
+  // LAVISH-HARDENED: the same holds for a build. /health reports the id scripts/build.js defines for
+  // every build (src/build-id.js), and a running server of this version but another build, or none
+  // (stock upstream), is replaced too, so a rebuild never keeps serving the previous build's code. The
+  // id compared is this build's own (the helpers' `currentBuildId = BUILD_ID` default), not one taken
+  // from the server.
   const versionRule = "returnhealthBody.version!==currentVersion;";
-  const lastLineOf = (source, name) =>
-    new RegExp(`\\n(?:export )?function ${name}\\d*\\([^)]*\\) \\{\\n([\\s\\S]*?)\\n\\}\\n`)
-      .exec(source)?.[1]
-      .trim()
-      .split("\n")
-      .at(-1)
-      .replace(/\s+/g, "");
+  const buildRule = "if(healthBody.hardened_build!==currentBuildId)returntrue;";
+  const helperOf = (source, name) => {
+    const match = new RegExp(`\\n(?:export )?function ${name}\\d*\\(([^)]*)\\) \\{\\n([\\s\\S]*?)\\n\\}\\n`).exec(
+      source,
+    );
+    return {
+      params: match?.[1].replace(/\s+/g, "") ?? "",
+      lastLines:
+        match?.[2]
+          .trim()
+          .split("\n")
+          .slice(-2)
+          .map((line) => line.replace(/\s+/g, "")) ?? [],
+    };
+  };
+  const withoutLineComments = (source) => source.replace(/^\s*\/\/.*$/gm, "");
   for (const file of ["src/cli.js", "dist/cli.mjs"]) {
-    const code = read(file).replace(/^\s*\/\/.*$/gm, "");
+    const code = withoutLineComments(read(file));
     const hint = file.startsWith("dist/") ? ` - ${REBUILD}` : "";
     if (/\bisServerOlderThanCli\b/.test(code))
       throw new Error(`${file} adopts a newer running server (isServerOlderThanCli)${hint}`);
     for (const name of ["shouldRestartServer", "shouldKillProcessOnPort"]) {
-      if (lastLineOf(code, name) !== versionRule) {
+      const {
+        params,
+        lastLines: [buildLine, versionLine],
+      } = helperOf(code, name);
+      if (versionLine !== versionRule) {
         throw new Error(`${name} in ${file} no longer replaces a server of any other version${hint}`);
+      }
+      if (buildLine !== buildRule) {
+        throw new Error(`${name} in ${file} no longer replaces a server of another build${hint}`);
+      }
+      if (!/,currentBuildId=BUILD_ID\d*,?$/.test(params)) {
+        throw new Error(`${name} in ${file} does not compare the server with this build's id${hint}`);
       }
     }
   }
-  return "the server runs the same verified bundle as the CLI, whose version helpers replace a server of any other version";
+  for (const file of ["src/server.js", "dist/cli.mjs"]) {
+    if (!/hardened_build:BUILD_ID\d*,/.test(withoutLineComments(read(file)).replace(/\s+/g, ""))) {
+      const hint = file.startsWith("dist/") ? ` - ${REBUILD}` : "";
+      throw new Error(`/health in ${file} does not report the build id${hint}`);
+    }
+  }
+  const builtId = /\bBUILD_ID\d* = true \? "[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}" : "source";/;
+  if (!builtId.test(read("dist/cli.mjs"))) {
+    throw new Error(`dist/cli.mjs carries no build id from scripts/build.js - ${REBUILD}`);
+  }
+  return "the server runs the same verified bundle as the CLI, whose version and build helpers replace a server of any other version or build";
 });
 
 // scripts/build.js opens both bundles with this line (after the hashbang), so the build says what

@@ -114,8 +114,8 @@ and bump the version pinned in `verify-hardening.mjs` (the launchers defer to it
 every check passes. Until then the launchers refuse to start, so a half-merged tree never runs. The 0.1.82 merge left out upstream's Herdr chime (it spawned a
 `herdr` binary) and its multi-address serving (`server --also-listen`, interface-sweep discovery).
 The 0.1.87 merge left out upstream's adoption of a running server newer than the CLI (#416): this
-build still replaces a server of any other version, because `/health` does not say whether a server
-is hardened.
+build keeps a running server only when `/health` shows it is this very build (its version and the
+build id `scripts/build.js` mints), so it still replaces a server of any other version or build.
 The original 0.1.62 patch script (`harden_lavish.py`) is gone from the tree; it refused every
 other version, and git history keeps it.
 
@@ -130,6 +130,23 @@ The one workflow kept, `.github/workflows/ci.yml`, lints, type-checks, tests and
 Linux, macOS and Windows, then runs `node verify-hardening.mjs` against that build, so a pull
 request that fails a check fails CI. Its actions are pinned to full commit SHAs, and its token
 can only read the repository.
+
+## Who it protects against
+
+The hardening protects you from **web pages in your browser** and from **other servers on Lavish's
+port**. A page you visit cannot drive the review, read an artifact's files, or reach the server
+through a hostname it controls (Host and Origin checks, a CLI-only header on polling, per-load file
+paths); in a browser that sends Fetch Metadata headers (current Chrome, Edge and Firefox, Safari
+16.4 and later) it cannot load your attached images either. A server on the port that is not this build is never handed your
+artifact: the CLI keeps a running server only when `/health` shows it is this very build (its
+version and the id `scripts/build.js` gives every build), replaces a stock (upstream) Lavish server or
+an older build that uses your state directory, and refuses anything that does not say it is Lavish.
+
+It does **not** protect you from **other programs or other users on this machine**. The Host and
+Origin checks stop browsers, not a local process, which can send any header it likes; the session
+key is the artifact's path, which is not a secret; and a local process can take the port before
+Lavish does and answer as if it were Lavish. Run Lavish on a machine where the other local
+accounts and programs are ones you trust.
 
 ## What still touches the network
 

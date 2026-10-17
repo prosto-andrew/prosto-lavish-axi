@@ -1268,6 +1268,21 @@ test("/health reports the server version so clients can detect upgrades", async 
   }
 });
 
+// LAVISH-HARDENED: /health also names the build, so the CLI keeps a running server only when it is
+// its own build. Run from source, as here, the build is "source"; scripts/build.js gives every
+// bundle a fresh id.
+test("/health names the build the server runs", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const body = await fetch(`http://127.0.0.1:${server.port}/health`).then((res) => res.json());
+    assert.equal(body.hardened_build, "source");
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("session URLs use the same IPv4 loopback host the server binds", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
   const artifact = path.join(dir, "artifact.html");
