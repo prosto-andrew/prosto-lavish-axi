@@ -22,9 +22,13 @@ export function libraryIdFromFileName(fileName) {
     .replace(/^-+|-+$/g, "");
 }
 
+// LAVISH-HARDENED: also drops control and format characters. Names come from a downloaded file and
+// reach the agent's terminal and the library panel, where U+202E and its kin reorder what is shown.
 function collapseWhitespace(text) {
   return String(text || "")
     .replace(/\s+/g, " ")
+    .replace(/[\p{Cc}\p{Cf}]/gu, "")
+    .replace(/ {2,}/g, " ")
     .trim();
 }
 

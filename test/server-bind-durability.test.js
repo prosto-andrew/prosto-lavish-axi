@@ -306,6 +306,115 @@ test(
   },
 );
 
+// LAVISH-HARDENED: after its one race restart the CLI names the server that kept the port - a Lavish
+// server of another version or build, most likely another CLI's own start at the same moment -
+// instead of saying its own server did not start. The CLI's spawn is replaced here: each server it
+// starts is another build's fake taking the port first, which is how losing that race looks. The
+// fake either keeps the port after /shutdown, or gives it up and is back at the next start. A server
+// of this very build that keeps the port (a network restart it did not take) is not another build,
+// so that case keeps the general error.
+test(
+  "a port that another Lavish build keeps after the race restart is named in the error",
+  { timeout: 30_000 },
+  async (t) => {
+    const realSpawn = childProcess.spawn;
+    const otherBuild = { ok: true, app: "lavish-axi", version: VERSION, hardened_build: "another-build" };
+    const thisBuildStale = {
+      ok: true,
+      app: "lavish-axi",
+      version: VERSION,
+      hardened_build: BUILD_ID,
+      network_stale: true,
+    };
+    for (const { givesUp, started } of [
+      { givesUp: false, started: otherBuild },
+      { givesUp: true, started: otherBuild },
+      { givesUp: false, started: thisBuildStale },
+    ]) {
+      await withTempDir(async (dir) => {
+        const artifact = await writeArtifact(dir);
+        const fakes = [];
+        const requests = [];
+        let port = 0;
+        async function listenFake(freesPort, health) {
+          const fake = createHttpServer((req, res) => {
+            const pathname = req.url?.split("?")[0];
+            requests.push(`${req.method} ${pathname}`);
+            if (pathname === "/health") {
+              res.writeHead(200, { "content-type": "application/json" });
+              res.end(JSON.stringify(health));
+              return;
+            }
+            req.resume();
+            req.on("end", () => {
+              const shutdown = req.method === "POST" && pathname === "/shutdown";
+              res.writeHead(shutdown ? 200 : 404, { "content-type": "application/json" });
+              res.end("{}");
+              if (shutdown && freesPort) {
+                fake.close();
+                fake.closeAllConnections();
+              }
+            });
+          });
+          await listen(fake, { host: "127.0.0.1", port });
+          port = /** @type {{ port: number }} */ (fake.address()).port;
+          fakes.push(fake);
+        }
+        // The server the CLI finds first steps aside, so the first replacement succeeds.
+        await listenFake(true, otherBuild);
+        let starts = 0;
+        const spawnSpy = t.mock.method(childProcess, "spawn", (command, args, options) => {
+          if (!args?.includes("server")) return realSpawn(command, args, options);
+          starts += 1;
+          void listenFake(givesUp, started);
+          return { unref() {} };
+        });
+        syncBuiltinESMExports();
+        let output = "";
+        const write = process.stdout.write;
+        try {
+          process.stdout.write = (chunk) => {
+            output += String(chunk);
+            return true;
+          };
+          await withEnv(
+            {
+              LAVISH_AXI_PORT: String(port),
+              LAVISH_AXI_HOST: "127.0.0.1",
+              LAVISH_AXI_STATE_DIR: dir,
+              LAVISH_AXI_NO_OPEN: "1",
+              LAVISH_AXI_TELEMETRY: "0",
+            },
+            () => run(["open", artifact, "--no-open"]),
+          );
+        } finally {
+          process.stdout.write = write;
+          spawnSpy.mock.restore();
+          syncBuiltinESMExports();
+          for (const fake of fakes) {
+            fake.closeAllConnections();
+            await new Promise((resolve) => fake.close(() => resolve(undefined)));
+          }
+        }
+        const label = `${started === otherBuild ? "another build" : "this build"} ${givesUp ? "gives the port up" : "keeps the port"}`;
+        assert.equal(starts, givesUp ? 2 : 1, label);
+        assert.ok(!requests.includes("POST /api/sessions"), label);
+        assert.match(output, /code: SERVER_ERROR/, label);
+        if (started !== otherBuild) {
+          assert.match(output, /error: Lavish Editor server did not start/, `${label}: ${output}`);
+          return;
+        }
+        assert.match(
+          output,
+          new RegExp(`error: "?Port ${port} is held by another Lavish server \\(version [^,]+, another build\\)`),
+          `${label}: ${output}`,
+        );
+        assert.doesNotMatch(output, /did not start/, label);
+      });
+    }
+  },
+);
+
 test("an occupied loopback control address prevents binding another listener", ipv6LoopbackOnly, async () => {
   await withTempDir(async (dir) => {
     // Drops each connection: startup probes an occupied loopback port for a Lavish owner, and a

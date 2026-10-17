@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -55,6 +55,22 @@ import { createSkillMarkdown } from "../src/skill.js";
 import { SELF_PAINT_WARNING } from "../src/self-paint.js";
 import { serve } from "../src/server.js";
 import { canonicalFile, sessionKey } from "../src/session-store.js";
+
+async function fileSymlinkUnavailable() {
+  const probe = await mkdtemp(path.join(os.tmpdir(), "lavish-symlink-probe-"));
+  try {
+    await symlink(path.join(probe, "target"), path.join(probe, "link"), "file");
+    return false;
+  } catch (error) {
+    return `file symlinks unavailable (${error.code || error.message}): Windows needs Developer Mode or an elevated shell`;
+  } finally {
+    await rm(probe, { recursive: true, force: true });
+  }
+}
+
+// A file has no junction equivalent, so the cases that need a real file symlink skip where the OS
+// refuses one instead of failing on EPERM.
+const fileSymlinks = { skip: await fileSymlinkUnavailable() };
 
 async function waitForPollListening(base, key, timeoutMs = 10_000) {
   const socket = new WebSocket(`${base.replace(/^http/, "ws")}/events/${key}`, { origin: base });
@@ -1364,6 +1380,76 @@ test("poll sends the CLI client header on GET and on takeover POST", async () =>
   }
 });
 
+// LAVISH-HARDENED: the CLI applies the server's own rule (resolveAllowedArtifactFile) to the real path
+// before it asks or starts a server, so an HTML-named link to another file, or a directory named like
+// HTML, is refused with a reason instead of the server's bare 400 after a start.
+async function openBeforeAnyServer(makeTarget) {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "lavish-open-real-path-"));
+  const requests = [];
+  const server = createServer((req, res) => {
+    const pathname = new URL(req.url || "/", "http://localhost").pathname;
+    requests.push(`${req.method} ${pathname}`);
+    req.resume();
+    if (pathname === "/health") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, app: "lavish-axi", version: VERSION, hardened_build: BUILD_ID }));
+      return;
+    }
+    res.writeHead(400, { "content-type": "application/json" });
+    res.end(JSON.stringify({ status: "error", code: "VALIDATION_ERROR", error: "Lavish Editor expects an HTML file" }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve(undefined)));
+  try {
+    const port = /** @type {import("node:net").AddressInfo} */ (server.address()).port;
+    const target = await makeTarget(dir);
+    const result = await new Promise((resolve) => {
+      const child = spawn(
+        process.execPath,
+        [fileURLToPath(new URL("../bin/lavish-axi.js", import.meta.url)), "open", target, "--no-open"],
+        {
+          cwd: fileURLToPath(new URL("..", import.meta.url)),
+          env: { ...process.env, LAVISH_AXI_STATE_DIR: dir, LAVISH_AXI_PORT: String(port), LAVISH_AXI_NO_OPEN: "1" },
+        },
+      );
+      let stdout = "";
+      child.stdout?.on("data", (chunk) => {
+        stdout += chunk.toString();
+      });
+      child.on("close", (status) => resolve({ status, stdout }));
+    });
+    return { ...result, requests };
+  } finally {
+    await new Promise((resolve) => server.close(() => resolve(undefined)));
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("open refuses a directory named like HTML before it reaches any server", async () => {
+  const { status, stdout, requests } = await openBeforeAnyServer(async (dir) => {
+    const target = path.join(dir, "folder.html");
+    await mkdir(target);
+    return target;
+  });
+  assert.deepEqual(requests, []);
+  assert.notEqual(status, 0);
+  assert.match(stdout, /error: Lavish Editor expects an HTML file\n/);
+  assert.match(stdout, /code: VALIDATION_ERROR/);
+});
+
+test("open refuses an HTML-named link to a non-HTML file before it reaches any server", fileSymlinks, async () => {
+  const { status, stdout, requests } = await openBeforeAnyServer(async (dir) => {
+    await writeFile(path.join(dir, "notes.md"), "# notes\n");
+    const target = path.join(dir, "link.html");
+    await symlink(path.join(dir, "notes.md"), target, "file");
+    return target;
+  });
+  assert.deepEqual(requests, []);
+  assert.notEqual(status, 0);
+  assert.match(stdout, /error: Lavish Editor expects an HTML file\n/);
+  assert.match(stdout, /code: VALIDATION_ERROR/);
+  assert.match(stdout, /link\.html resolves to [^\n]*notes\.md/);
+});
+
 test("feedback next step is Codex-aware when requested", () => {
   const output = createPollOutput({
     file: "/tmp/report.html",
@@ -2177,6 +2263,11 @@ test("isLavishServerCommand recognises Lavish server processes and nothing that 
     '"C:\\Program Files\\nodejs\\node.exe" "D:\\checkout\\prosto-lavish-axi\\dist\\cli.mjs" server --verbose',
     // Stock releases up to 0.1.17 ship only dist/ and run their detached server from the CLI bundle.
     "/usr/bin/node /usr/lib/node_modules/lavish-axi/dist/cli.mjs server --port 4387",
+    // A stock server started by hand through npm's bin link on POSIX: the kernel runs the link's
+    // shebang, so the command line names the link, not the bundle it points at.
+    "node /usr/local/bin/lavish-axi server --port 4387",
+    "/usr/bin/node /home/u/project/node_modules/.bin/lavish-axi server",
+    "node /home/u/.npm/_npx/1a2b3c/node_modules/.bin/lavish-axi server --port 4387",
   ];
   const others = [
     '"C:\\Program Files\\nodejs\\node.exe" --test D:\\Skills setup\\lavish-axi-main\\prosto-lavish-axi\\test\\cli-output.test.js',
@@ -2186,6 +2277,8 @@ test("isLavishServerCommand recognises Lavish server processes and nothing that 
     "node /home/u/prosto-lavish-axi/dist/server.mjs servers",
     "node /home/u/other-app/dist/server.mjs server --port 4387",
     "node -e script lavish-axi-stuck-server",
+    "node /usr/local/bin/lavish-axi poll report.html",
+    "node /usr/local/bin/lavish-axi",
     "",
   ];
   for (const command of servers) assert.equal(isLavishServerCommand(command), true, command);
