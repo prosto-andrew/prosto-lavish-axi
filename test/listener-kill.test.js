@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import childProcess, { spawn, spawnSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import test from "node:test";
 
 import { shutdownServerOnPort } from "../src/cli.js";
@@ -130,3 +131,56 @@ test(
     }
   },
 );
+
+// On a CPU-starved Windows machine (16 threads, 48 busy processes) the PowerShell listener lookup
+// took up to 23 s; a lookup cut short identifies nothing, and `stop` would turn away a server it can
+// control. PowerShell is replaced by a double that answers the way spawnSync does when the lookup
+// needs that long: the listener's line if the call's timeout outlasts it, a killed child otherwise.
+test("a Windows listener lookup as slow as on a starved CPU still identifies a pre-handshake server", async (t) => {
+  const LOOKUP_MS = 23_000;
+  const listenerPid = process.pid + 1;
+  const listenerLine = `${listenerPid}\t"C:\\Program Files\\nodejs\\node.exe" C:\\Users\\u\\lavish\\dist\\server.mjs server\r\n`;
+  const realSpawnSync = childProcess.spawnSync;
+  const lookups = [];
+  const spawnSyncSpy = t.mock.method(childProcess, "spawnSync", (command, args, options) => {
+    if (command !== "powershell.exe") return realSpawnSync(command, args, options);
+    lookups.push(options);
+    if (options?.timeout > 0 && options.timeout <= LOOKUP_MS) {
+      const error = Object.assign(new Error("spawnSync powershell.exe ETIMEDOUT"), {
+        code: "ETIMEDOUT",
+        syscall: "spawnSync powershell.exe",
+        path: "powershell.exe",
+        spawnargs: args,
+      });
+      return { pid: 4242, output: [null, "", ""], stdout: "", stderr: "", status: null, signal: "SIGTERM", error };
+    }
+    return { pid: 4242, output: [null, listenerLine, ""], stdout: listenerLine, stderr: "", status: 0, signal: null };
+  });
+  syncBuiltinESMExports();
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+  const port = 4399;
+  const shutdowns = [];
+  try {
+    // A pre-handshake server's /health names neither the app nor a version, so only its listener's
+    // command line can tell `stop` that it is Lavish. Nothing here dials the port.
+    const output = await shutdownServerOnPort(port, {
+      baseUrl: `http://127.0.0.1:${port}`,
+      fetchHealth: async () => ({ ok: true }),
+      requestShutdown: async (_baseUrl, options) => {
+        shutdowns.push(options);
+      },
+      waitForPortFree: async () => true,
+    });
+
+    assert.equal(lookups.length, 1, "the PowerShell lookup ran once");
+    // A lookup that never ends would hang the CLI, so the longer wait is still a bound.
+    assert.ok(Number.isFinite(lookups[0].timeout) && lookups[0].timeout > 0, "the lookup is still bounded");
+    assert.deepEqual(output, { server: { status: "stopped", port } });
+    assert.deepEqual(shutdowns, [{ reason: "stop" }]);
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+    spawnSyncSpy.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
