@@ -164,6 +164,9 @@ async function runBrowserFixture(t, fixtureName) {
           "--disable-gpu",
           "--disable-dev-shm-usage",
           "--no-sandbox",
+          // LAVISH-HARDENED: an extension registered on the machine otherwise installs into this fresh
+          // profile, and a Chrome killed mid-unpack leaves %TEMP%\scoped_dir* behind.
+          "--disable-extensions",
           `--user-data-dir=${profile}`,
           "--run-all-compositor-stages-before-draw",
           "--virtual-time-budget=20000",

@@ -53,6 +53,9 @@ async function headlessChromeState(chrome) {
         "--disable-gpu",
         "--disable-dev-shm-usage",
         "--no-sandbox",
+        // LAVISH-HARDENED: an extension registered on the machine otherwise installs into this fresh
+        // profile, and a Chrome killed mid-unpack leaves %TEMP%\scoped_dir* behind.
+        "--disable-extensions",
         `--user-data-dir=${path.join(root, "chrome-profile")}`,
         "--dump-dom",
         "about:blank",
@@ -242,6 +245,8 @@ async function runBrowserScenario(t, scenario, fixture, options = {}) {
         "--disable-gpu",
         "--disable-dev-shm-usage",
         "--no-sandbox",
+        // LAVISH-HARDENED: as in the launch probe above.
+        "--disable-extensions",
         `--user-data-dir=${path.join(root, "chrome-profile")}`,
         "--run-all-compositor-stages-before-draw",
         "--virtual-time-budget=5000",
