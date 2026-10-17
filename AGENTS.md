@@ -38,6 +38,7 @@ The review chrome under its own policy, same setup: `LAVISH_AXI_BROWSER_E2E=1 no
 - `pnpm-workspace.yaml` holds the supply-chain policy: a 7-day minimum release age with no package exempt, `trustPolicy: no-downgrade`, and install scripts for esbuild only. `verify-hardening.mjs` checks it and refuses any top-level key it has not reviewed, so a new pnpm setting is added to its `PNPM_WORKSPACE_KEYS` only once it is known to weaken nothing.
 - Tests that start the server set `LAVISH_AXI_STATE_DIR` and use an ephemeral port.
 - Tests that need a directory link create a junction on Windows, which needs no privilege. Only a case that needs a file symlink may skip, and only where the OS refuses one (Windows without Developer Mode or elevation).
+- Tests that launch Chrome give it its own `--user-data-dir` and `--disable-extensions`: an extension registered on the machine otherwise installs into every fresh profile, and a Chrome killed mid-unpack leaves `%TEMP%\scoped_dir*` behind.
 - `run()` returns on `--version` / `-v` / `-V` before `ensureStateDir` and the rest of startup (`test/cli-version.test.js`). New startup work goes after that short-circuit.
 - `canonicalFile` runs `realpath`. Two paths to the same file are one session.
 - `normalizeArgv` must let AXI `RESERVED_COMMANDS` (including `update`) pass through. A bare `lavish-safe update` must not become `open update`. This build shadows `update` with a refusal so the SDK self-updater never reaches the npm registry; `verify-hardening.mjs` checks it.

@@ -65,6 +65,9 @@ function dumpChromeDom(chrome, profileDir, url, timeoutMs) {
         "--disable-gpu",
         "--disable-dev-shm-usage",
         "--no-sandbox",
+        // An extension registered on the machine otherwise installs into this fresh profile, and a
+        // Chrome killed mid-unpack leaves %TEMP%\scoped_dir* behind.
+        "--disable-extensions",
         "--no-first-run",
         `--user-data-dir=${profileDir}`,
         "--enable-logging=stderr",
