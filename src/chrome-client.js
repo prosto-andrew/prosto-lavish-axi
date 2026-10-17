@@ -345,18 +345,29 @@ let sendHintPersistent = false;
 let sendFailureOwner = null;
 let sendAcknowledgementWarningVisible = false;
 
-// Chrome 155 drops an iframe.src assignment made shortly after a navigation that moves the frame
-// into another process (out of about:blank or an error page) has started to commit. Where that
-// window ends before the navigation's load was not measured (a load a slow image held back for
-// seconds did not drop the fallback's assignment), so one navigation is in flight at a time: the
-// next waits for the frame's load, and only the latest waiting URL is kept. A navigation that never
-// loads (a hung response, or a network error in Firefox, which fires no load for it) is released
-// by the fallback; assigning before the first navigation commits is safe.
+// Chrome 155 drops an iframe.src assignment made just after a navigation that moves the frame into
+// another process (out of about:blank or an error page) has started to commit, and for as long as
+// this page's main thread stays busy then - by every measurement, until this page has handled that
+// commit. So one navigation is in flight at a time, and only the latest waiting URL is kept. The
+// next one goes at the frame's load, or as soon as the navigation's document speaks with the
+// navigation's own load token, the first time the frame gets that token: in every measured run,
+// from about:blank and from an error page, that message reached this page only after the window
+// had closed. A navigation that repeats a token, or carries none, can be answered by the document
+// it replaces, so only its load releases it. A navigation that never loads (a hung response, or a
+// network error in Firefox, which fires no load for it) is released by the fallback; assigning
+// before the first navigation commits is safe.
 const ARTIFACT_FRAME_NAVIGATION_FALLBACK_MS = 3000;
 let frameNavigationPending = false;
 let frameNavigationQueued = "";
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let frameNavigationTimer;
+// While a navigation is in flight: its load token when the frame never had it before, else empty.
+// Read only under frameNavigationPending; it goes stale once the navigation settles.
+let frameNavigationSpeechToken = "";
+const assignedFrameTokens = new Set();
+// The document whose speech released its navigation has not fired its load yet. That load can still
+// come after the next navigation is assigned and before it commits, and it is not that one's load.
+let spokenFrameDocumentLoading = false;
 
 function navigateArtifactFrame(url) {
   if (frameNavigationPending) {
@@ -369,21 +380,42 @@ function navigateArtifactFrame(url) {
 function assignArtifactFrame(url) {
   frameNavigationPending = true;
   frameNavigationQueued = "";
+  const token = artifactFrameLoadToken(url);
+  frameNavigationSpeechToken = token && !assignedFrameTokens.has(token) ? token : "";
+  if (token) assignedFrameTokens.add(token);
   // Every inline whiteboard channel registered so far belongs to the document this replaces.
   inlineWhiteboardChannels.clear();
   clearTimeout(frameNavigationTimer);
-  frameNavigationTimer = setTimeout(settleArtifactFrameNavigation, ARTIFACT_FRAME_NAVIGATION_FALLBACK_MS);
+  frameNavigationTimer = setTimeout(releaseArtifactFrameNavigationByFallback, ARTIFACT_FRAME_NAVIGATION_FALLBACK_MS);
   frameNavigationTimer?.unref?.();
   frame.src = url;
 }
 
-// The frame's load, or the fallback. True when it went on to the waiting navigation.
+// The frame's load, its document speaking, or the fallback. True when it went on to the waiting
+// navigation.
 function settleArtifactFrameNavigation() {
   clearTimeout(frameNavigationTimer);
   frameNavigationPending = false;
   if (!frameNavigationQueued) return false;
   assignArtifactFrame(frameNavigationQueued);
   return true;
+}
+
+// No load and no word from the frame: it may show anything (a hung response, or an assignment Chrome
+// dropped), so a navigation that leaves nothing waiting is probed like a silent load.
+function releaseArtifactFrameNavigationByFallback() {
+  if (settleArtifactFrameNavigation()) return;
+  if (artifactSpokeToken !== artifactLoadToken) armArtifactAvailabilityProbe(artifactLoadToken);
+}
+
+function artifactFrameLoadToken(url) {
+  const match = /[?&]artifact_load_token=([^&#]*)/.exec(String(url));
+  if (!match) return "";
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return "";
+  }
 }
 
 function artifactFrameSrcForLoad(load) {
@@ -4180,8 +4212,11 @@ function handleInlineWhiteboardMessage(event, message) {
   if (index === null) return;
   if (message.type === "lavish-whiteboard:ready") {
     // While a navigation waits, the frame holds the outgoing document, and a whiteboard that boots
-    // now is one of its own: nothing but timing tells its window from the incoming document's.
-    if (frameNavigationQueued) return;
+    // now is one of its own: nothing but timing tells its window from the incoming document's. So
+    // too while a navigation with a newly assigned token is in flight and its document has not
+    // spoken: a document speaks before its whiteboards boot, and a navigation that went on that
+    // outgoing document's word leaves before the outgoing whiteboards have loaded.
+    if (frameNavigationQueued || (frameNavigationPending && frameNavigationSpeechToken)) return;
     if (liveInlineWhiteboardChannel(index)) return;
     const channelId = String(message.channelToken || "");
     if (!channelId) return;
@@ -4379,6 +4414,11 @@ window.addEventListener("message", (event) => {
 
   const msg = event.data || {};
   const messageToken = String(msg.artifact_load_token || "");
+  // Checked before the token below: a newer load may already be waiting behind this navigation.
+  if (frameNavigationPending && messageToken !== "" && messageToken === frameNavigationSpeechToken) {
+    spokenFrameDocumentLoading = true;
+    settleArtifactFrameNavigation();
+  }
   if (messageToken !== artifactLoadToken) {
     // A pass can be stamped by the load that just lost a token race. Ask the current artifact
     // document to run the audit again instead of consuming the only pass for this cycle.
@@ -4779,6 +4819,13 @@ document.addEventListener(
 // the entry's age is guaranteed to be refreshed before the page may disappear.
 document.addEventListener("visibilitychange", () => persistStash());
 frame.addEventListener("load", () => {
+  // The first load after a document spoke, while a navigation with a new token is in flight and has
+  // not spoken: that is the spoken document's own late load (a document's first message reaches
+  // this page before its load), so like a releasing load nothing is replayed into it, and the
+  // navigation still waits for its own load. A document that never speaks has its load taken here.
+  const spokenDocumentLoad = spokenFrameDocumentLoading && frameNavigationPending && frameNavigationSpeechToken;
+  spokenFrameDocumentLoading = false;
+  if (spokenDocumentLoad) return;
   // This load released a waiting navigation: its document is being replaced, so nothing is
   // replayed into it and it is not a silent artifact.
   if (settleArtifactFrameNavigation()) return;

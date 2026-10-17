@@ -4181,9 +4181,9 @@ test("a reopened review navigates its frame once, to the load it begins", async 
 });
 
 // Chrome 155 also loses an assignment made after a navigation that moves the frame into another
-// process (out of about:blank or an error page) has started to commit and before this page has
-// handled that navigation's load. So a navigation asked for while the frame is still loading waits
-// for that load (navigateArtifactFrame), and only the newest one waits.
+// process (out of about:blank or an error page) has started to commit, longer while this page is
+// busy. So a navigation asked for while the frame is still loading waits for that load or for its
+// document to speak (navigateArtifactFrame), and only the newest one waits.
 function harnessLoadSrc(n) {
   return `/artifact/abc/index.html?artifact_revision=${n}&artifact_load_token=harness-load-${n}`;
 }
@@ -4314,6 +4314,222 @@ test("after the fallback the next navigation goes at once", async () => {
   );
 });
 
+// The document of the navigation in flight speaking with that navigation's own, newly assigned
+// load token has committed, and the page handled the commit before that message reached it, so
+// Chrome no longer drops the next assignment. A slow image holding the load back then no longer
+// holds a waiting navigation for the whole fallback.
+function speak(chrome, token) {
+  chrome.sendFrameMessage({ type: "lavish:annotationMode", enabled: false, artifact_load_token: token });
+}
+
+test("a waiting navigation runs once the loading document speaks with its own load token", async () => {
+  const chrome = await bootWithManualFrameLoads();
+  await liveReload(chrome);
+  speak(chrome, "harness-load-1");
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1), harnessLoadSrc(2)],
+  );
+});
+
+test("after the loading document spoke, the next navigation goes at once", async () => {
+  const chrome = await bootWithManualFrameLoads();
+  speak(chrome, "harness-load-1");
+  await liveReload(chrome);
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1), harnessLoadSrc(2)],
+  );
+});
+
+test("a message stamped with another load token does not release the navigation", async () => {
+  const chrome = await bootWithManualFrameLoads();
+  await liveReload(chrome);
+  speak(chrome, "harness-load-2");
+  speak(chrome, "harness-load-0");
+  chrome.sendFrameMessage({ type: "lavish:annotationMode", enabled: false });
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1)],
+  );
+
+  chrome.frame.dispatch("load");
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1), harnessLoadSrc(2)],
+  );
+});
+
+// A second navigation with a token the frame already had can be answered by the document it
+// replaces, which speaks with that same token, so only its load or the fallback releases it.
+test("a navigation that repeats an assigned load token waits for its load whatever speaks", async () => {
+  const probes = [];
+  const chrome = await bootWithManualFrameLoads({
+    fetchImpl: probeRecordingFetch(probes, () => ({ ok: true, status: 200, json: async () => ({}) })),
+  });
+  chrome.frame.dispatch("load");
+  chrome.runTimers(8000);
+  await flushPromises();
+  await flushPromises();
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1), harnessLoadSrc(1)],
+  );
+  await liveReload(chrome);
+
+  speak(chrome, "harness-load-1");
+  chrome.sendFrameMessage({ type: "lavish:annotationMode", enabled: false });
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1), harnessLoadSrc(1)],
+  );
+
+  chrome.frame.dispatch("load");
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1), harnessLoadSrc(1), harnessLoadSrc(2)],
+  );
+});
+
+test("a load after the loading document spoke still replays into that document", async () => {
+  const chrome = await bootWithManualFrameLoads();
+  const count = (type) => chrome.postedToFrame.filter((message) => message.type === type).length;
+  const scrolls = count("lavish:restoreScroll");
+  speak(chrome, "harness-load-1");
+
+  chrome.frame.dispatch("load");
+  assert.equal(count("lavish:restoreScroll"), scrolls + 1);
+});
+
+test("a message from another window stamped with the waiting navigation's token does not release it", async () => {
+  const chrome = await bootWithManualFrameLoads();
+  await liveReload(chrome);
+  const stamped = { type: "lavish:annotationMode", enabled: false, artifact_load_token: "harness-load-1" };
+  chrome.sendInlineWhiteboardMessage(chrome.createInlineWhiteboard(), stamped);
+  chrome.sendInlineWhiteboardMessage(chrome.createForeignWindow(), stamped);
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1)],
+  );
+});
+
+// The document that spoke is still loading, and its load can come before the navigation it let go
+// commits. That load is not the navigation's own: nothing is released or replayed into the
+// document on its way out.
+test("the load of the document that spoke is not taken for the waiting navigation's load", async () => {
+  const chrome = await bootWithManualFrameLoads();
+  const count = (type) => chrome.postedToFrame.filter((message) => message.type === type).length;
+  await liveReload(chrome);
+  speak(chrome, "harness-load-1");
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1), harnessLoadSrc(2)],
+  );
+  const scrolls = count("lavish:restoreScroll");
+
+  chrome.frame.dispatch("load");
+  assert.equal(count("lavish:restoreScroll"), scrolls);
+  await liveReload(chrome);
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1), harnessLoadSrc(2)],
+  );
+
+  chrome.frame.dispatch("load");
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1), harnessLoadSrc(2), harnessLoadSrc(3)],
+  );
+});
+
+test("a navigation that went at once after the document spoke is not released by that document's load", async () => {
+  const chrome = await bootWithManualFrameLoads();
+  const count = (type) => chrome.postedToFrame.filter((message) => message.type === type).length;
+  speak(chrome, "harness-load-1");
+  await liveReload(chrome);
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1), harnessLoadSrc(2)],
+  );
+  const scrolls = count("lavish:restoreScroll");
+
+  chrome.frame.dispatch("load");
+  assert.equal(count("lavish:restoreScroll"), scrolls);
+  await liveReload(chrome);
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1), harnessLoadSrc(2)],
+  );
+
+  chrome.frame.dispatch("load");
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1), harnessLoadSrc(2), harnessLoadSrc(3)],
+  );
+});
+
+// No load and no word from the frame: the fallback releases the navigation, and the frame may show
+// anything (a hung response, or an assignment Chrome dropped). It is probed like a silent load.
+test("a navigation the fallback releases with nothing waiting is probed like a silent load", async () => {
+  const probes = [];
+  const chrome = await bootWithManualFrameLoads({
+    fetchImpl: probeRecordingFetch(probes, () => ({ ok: true, status: 200, json: async () => ({}) })),
+  });
+  chrome.runTimers(3000);
+  chrome.runTimers(8000);
+  await flushPromises();
+  await flushPromises();
+  assert.equal(probes.length, 1);
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1), harnessLoadSrc(1)],
+  );
+});
+
+// The document's word already said it rendered, so there is nothing fatal to probe for.
+test("the fallback probes nothing for a load that spoke", async () => {
+  const probes = [];
+  const chrome = await bootWithManualFrameLoads({
+    fetchImpl: probeRecordingFetch(probes, () => ({ ok: true, status: 200, json: async () => ({}) })),
+  });
+  chrome.frame.dispatch("load");
+  chrome.runTimers(8000);
+  await flushPromises();
+  await flushPromises();
+  assert.equal(probes.length, 1);
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1), harnessLoadSrc(1)],
+  );
+
+  speak(chrome, "harness-load-1");
+  chrome.runTimers(3000);
+  chrome.runTimers(8000);
+  await flushPromises();
+  await flushPromises();
+  assert.equal(probes.length, 1);
+});
+
+// The spoken document's own load ends its time as the outgoing one: a navigation after it is
+// released by its own load, even when its document never speaks.
+test("once the document that spoke has loaded, a later navigation's load is its own", async () => {
+  const chrome = await bootWithManualFrameLoads();
+  speak(chrome, "harness-load-1");
+  chrome.frame.dispatch("load");
+  await liveReload(chrome);
+  await liveReload(chrome);
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1), harnessLoadSrc(2)],
+  );
+
+  chrome.frame.dispatch("load");
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1), harnessLoadSrc(2), harnessLoadSrc(3)],
+  );
+});
+
 // The waiting load began before the review ended and is the newest one; the one it replaces was
 // retired by that begin, so its files would answer 409 under the ended overlay.
 test("a navigation waiting when the review ends still runs at the load", async () => {
@@ -4345,6 +4561,58 @@ test("a whiteboard of the document being replaced is not registered while the ne
   const chrome = await bootWithManualFrameLoads({ fetchImpl: async (url) => whiteboardFetch(String(url)) });
   await liveReload(chrome);
 
+  const outgoing = await initializeInlineWhiteboard(chrome, "outgoing-channel");
+  assert.deepEqual(outgoing.posted, []);
+});
+
+// Once the outgoing document has spoken, the next navigation goes before that document's
+// whiteboards have loaded, so their ready can come with nothing waiting any more. A document speaks
+// before its whiteboards boot, so until the incoming one speaks every ready is the outgoing one's.
+test("a whiteboard of the document being replaced is not registered before the incoming document speaks", async () => {
+  const chrome = await bootWithManualFrameLoads({ fetchImpl: async (url) => whiteboardFetch(String(url)) });
+  await liveReload(chrome);
+  speak(chrome, "harness-load-1");
+  assert.equal(chrome.srcLoads.at(-1)?.src, harnessLoadSrc(2));
+
+  const outgoing = await initializeInlineWhiteboard(chrome, "outgoing-channel");
+  assert.deepEqual(outgoing.posted, []);
+
+  outgoing.close();
+  speak(chrome, "harness-load-2");
+  const incoming = await initializeInlineWhiteboard(chrome, "incoming-channel");
+  assert.equal(incoming.posted.at(-1)?.type, "lavish-whiteboard:init");
+  assert.equal(incoming.posted.at(-1)?.channelId, "incoming-channel");
+});
+
+// A navigation that repeats a token has no release by speech, so the whiteboards of its document
+// register as they boot, before its load - unless a newer navigation already waits behind it.
+async function bootIntoSilentRetry() {
+  const chrome = await bootWithManualFrameLoads({
+    fetchImpl: async (url) => {
+      if (String(url).includes("probe=1")) return { ok: true, status: 200, json: async () => ({}) };
+      return whiteboardFetch(String(url));
+    },
+  });
+  chrome.frame.dispatch("load");
+  chrome.runTimers(8000);
+  await flushPromises();
+  await flushPromises();
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    [harnessLoadSrc(1), harnessLoadSrc(1)],
+  );
+  return chrome;
+}
+
+test("a whiteboard of a document navigated again with its own token registers before that load", async () => {
+  const chrome = await bootIntoSilentRetry();
+  const whiteboard = await initializeInlineWhiteboard(chrome, "retry-channel");
+  assert.equal(whiteboard.posted.at(-1)?.type, "lavish-whiteboard:init");
+});
+
+test("a whiteboard is not registered while a navigation waits behind one that repeats a token", async () => {
+  const chrome = await bootIntoSilentRetry();
+  await liveReload(chrome);
   const outgoing = await initializeInlineWhiteboard(chrome, "outgoing-channel");
   assert.deepEqual(outgoing.posted, []);
 });
