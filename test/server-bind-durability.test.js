@@ -172,7 +172,10 @@ test("a degraded bind stays quiet while the requested address is still unavailab
   });
 });
 
-test("a stale control-channel server is replaced only once per CLI invocation", { timeout: 20_000 }, async (t) => {
+// LAVISH-HARDENED: on Windows a case that ends with the fake still on the port costs ~6 s (the 2 s
+// wait, the PowerShell listener lookup, the 3 s loop), and here the third case takes that path too
+// (#416 is not taken): 16.6-19.2 s in full runs left 20 s no margin on a busy machine.
+test("a stale control-channel server is replaced only once per CLI invocation", { timeout: 40_000 }, async (t) => {
   await withCliTempDir(t, async (dir) => {
     const artifact = await writeArtifact(dir);
 

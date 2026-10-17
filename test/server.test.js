@@ -7226,3 +7226,57 @@ test("chat-sync stamps a note seen when a poll takes it, working when the artifa
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// The test above takes a note that was queued before the poll. A poll that waits and then wakes for
+// a note answers from its own exit, as a heartbeat stream (the CLI default) or, with timeoutMs, as
+// plain JSON; neither carries the take's stamp bookkeeping.
+test("a long poll that wakes for a note carries no delivery_seq, streamed or with timeoutMs", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "lavish-serve-"));
+  const artifact = path.join(dir, "artifact.html");
+  await writeFile(artifact, "<!doctype html><html><body><h1>Hello</h1></body></html>");
+  const server = await serve({ port: 0, stateFile: path.join(dir, "state.json"), version: "9.9.9-test" });
+  try {
+    const base = `http://127.0.0.1:${server.port}`;
+    const open = await fetch(`${base}/api/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ file: artifact }),
+    });
+    const { key } = await open.json();
+    const presence = await startPresenceStream(base, key);
+    try {
+      for (const [mode, query] of [
+        ["streamed", ""],
+        ["timeoutMs", "&timeoutMs=5000"],
+      ]) {
+        const poll = pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}${query}`).then((res) =>
+          res.json(),
+        );
+        while ((await presence.next()) !== "listening");
+
+        const submitted = await fetch(`${base}/api/${key}/prompts`, {
+          method: "POST",
+          headers: { "content-type": "application/json", origin: base },
+          body: JSON.stringify({
+            prompts: [{ prompt: `Make it ${mode}`, tag: "message", selector: "body", text: "" }],
+          }),
+        });
+        assert.equal(submitted.status, 200);
+
+        const feedback = await poll;
+        assert.equal(feedback.status, "feedback", mode);
+        assert.deepEqual(
+          feedback.prompts.map(({ prompt }) => prompt),
+          [`Make it ${mode}`],
+          mode,
+        );
+        assert.equal("delivery_seq" in feedback, false, `${mode}: the poll response carries no stamp bookkeeping`);
+      }
+    } finally {
+      await presence.close();
+    }
+  } finally {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
