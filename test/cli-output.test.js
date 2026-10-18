@@ -395,10 +395,28 @@ test("design output prints local asset URLs, never a CDN", () => {
   assert.match(output.design.summary, /opened directly from disk is unstyled/);
 });
 
-test("design output recommends luxury as the default theme and warns against @apply on DaisyUI classes", () => {
+// LAVISH-FORK: the default is the luxury/caramellatte pair that follows the reviewer's light/dark side
+// (specs/2026-10-18-theme-switcher-design.md 8 and 14); upstream recommended luxury alone.
+test("design output defaults to the luxury/caramellatte pair and warns against @apply on DaisyUI classes", () => {
   const output = createDesignOutput();
 
-  assert.ok(output.theme_usage.some((item) => /default.*luxury|luxury.*default/i.test(item)));
+  const [defaultTheme] = output.theme_usage;
+  assert.match(defaultTheme, /theme_switch_snippet/);
+  assert.match(defaultTheme, /luxury/);
+  assert.match(defaultTheme, /caramellatte/);
+  // The design-priority rule outranks the pair: a theme or scheme the user, the subject project's
+  // design system or the mocked product fixes is kept (final review, spec 14.5).
+  const fixedBy = /the user, the subject project's design system, or the product being mocked/i;
+  assert.match(defaultTheme, fixedBy);
+  // The script would overwrite that theme, so it goes; the style still tunes a fixed caramellatte.
+  assert.match(defaultTheme, /without the snippet's `<script>`/);
+  assert.match(defaultTheme, /keep its `<style>` if that theme is `caramellatte`/);
+  const noDaisyUi = output.theme_usage.find(
+    (item) => /prefers-color-scheme/.test(item) && /without DaisyUI|not use DaisyUI/i.test(item),
+  );
+  assert.ok(noDaisyUi, "an item tells artifacts without DaisyUI to style both sides");
+  assert.match(noDaisyUi, fixedBy, "and keeps a single scheme the project or product has");
+  assert.ok(output.themes.includes("caramellatte"));
   assert.ok(output.theme_usage.some((item) => item.includes("@apply") && /daisyui/i.test(item)));
   assert.ok(output.theme_usage.some((item) => /aborts the entire|no Tailwind styles/i.test(item)));
 });
