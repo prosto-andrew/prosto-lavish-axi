@@ -8,6 +8,8 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { findChrome, launchBrowser } from "./cdp-browser.js";
+
 // The regression boundary for the attachment upload token break: the SDK once
 // sent lavish:uploadAttachment via a raw parent.postMessage with no
 // artifact_load_token, and the chrome drops EVERY artifact message whose token
@@ -16,7 +18,10 @@ import { fileURLToPath } from "node:url";
 // runs the whole production path in a real browser - real SDK in the sandboxed
 // artifact iframe, real chrome gate, real server - and requires an actual
 // image to land in the attachment store and ride a prompt back to the agent.
+// LAVISH-HARDENED: headless Chrome over CDP (`./cdp-browser.js`) instead of chrome-devtools-axi.
 const runBrowserE2e = process.env.LAVISH_AXI_BROWSER_E2E === "1";
+const chromePath = runBrowserE2e ? await findChrome() : "";
+const browserSkip = !runBrowserE2e || (!chromePath && "Chrome or Chromium is required (set CHROME_PATH)");
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 // A 2x1 PNG (the same bytes the server attachment tests use).
@@ -122,7 +127,7 @@ const ARTIFACT_HTML = `<!doctype html>
 
 test(
   "annotation and Conversation image uploads round-trip through the real browser chrome",
-  { skip: !runBrowserE2e, timeout: 300_000 },
+  { skip: browserSkip, timeout: 300_000 },
   async () => {
     const temp = await mkdtemp(path.join(tmpdir(), "lavish-attach-e2e-"));
     const port = await freePort();
@@ -135,20 +140,15 @@ test(
       LAVISH_AXI_HOST: "127.0.0.1",
       LAVISH_AXI_LINK_HOST: "127.0.0.1",
     };
-    const chromeEnv = {
-      CHROME_DEVTOOLS_AXI_SESSION: `lavish-attach-e2e-${process.pid}`,
-      CHROME_DEVTOOLS_AXI_USER_DATA_DIR: path.join(temp, "chrome"),
-    };
+    let browser;
 
-    function evaluate(expression) {
-      return run("chrome-devtools-axi", ["eval", expression], chromeEnv);
+    // The evaluated value as text, the way the checks below read it.
+    async function evaluate(expression) {
+      return String(await browser.evaluate(expression));
     }
-    // chrome-devtools-axi renders the evaluated value as a JSON string, and an expression that
-    // already JSON.stringify()s its result is encoded twice - so unwrap until it stops being JSON.
+    // An expression that already JSON.stringify()s its result is unwrapped until it stops being JSON.
     function decode(output) {
-      const raw = output.match(/result:\s*("(?:[^"\\]|\\.)*")/s)?.[1];
-      assert.ok(raw, output);
-      let value = JSON.parse(raw);
+      let value = output;
       while (typeof value === "string") {
         try {
           value = JSON.parse(value);
@@ -159,7 +159,7 @@ test(
       return value;
     }
     function wait(ms) {
-      run("chrome-devtools-axi", ["wait", String(ms)], chromeEnv, ms + 45_000);
+      return browser.wait(ms);
     }
     async function waitForAttachmentFile() {
       const dir = path.join(stateDir, "attachments");
@@ -175,7 +175,7 @@ test(
           // The attachments dir does not exist until the first upload lands.
         }
         if (Date.now() > deadline) {
-          const title = evaluate("document.title");
+          const title = await evaluate("document.title");
           assert.fail(`no attachment stored within 90s (chrome page title: ${title})`);
         }
         await new Promise((resolve) => setTimeout(resolve, 500));
@@ -183,6 +183,7 @@ test(
     }
 
     try {
+      browser = await launchBrowser({ chromePath, profileDir: path.join(temp, "chrome") });
       const artifact = path.join(temp, "attach.html");
       await writeFile(artifact, ARTIFACT_HTML);
       const output = run(process.execPath, ["bin/lavish-axi.js", artifact, "--no-open"], lavishEnv);
@@ -190,17 +191,13 @@ test(
       assert.ok(url, output);
       const key = new URL(url).pathname.split("/").pop();
 
-      run("chrome-devtools-axi", ["open", url], chromeEnv);
-      wait(4500);
+      await browser.open(url);
+      await wait(4500);
 
       // A REAL click through the chrome into the sandboxed artifact iframe opens
       // the annotation card - the driver only performs the paste a browser cannot
       // synthesize cross-frame.
-      const snapshot = run("chrome-devtools-axi", ["snapshot"], chromeEnv);
-      const target = snapshot.split("\n").find((line) => /Attach a reference image to this paragraph/.test(line));
-      assert.ok(target, `annotatable paragraph missing from snapshot:\n${snapshot}`);
-      const uid = target.trim().split(/\s+/)[0].replace(/^uid=/, "");
-      run("chrome-devtools-axi", ["click", `@${uid}`], chromeEnv);
+      await browser.clickInArtifact("#annotate-me");
 
       // The upload must pass the chrome's artifact_load_token gate and land in
       // the content-addressed store - named exactly sha256(content) + .png.
@@ -218,12 +215,12 @@ test(
       // require the agent-facing poll to carry the server-vetted local path.
       const deadline = Date.now() + 60_000;
       for (;;) {
-        const pills = evaluate('document.querySelectorAll(".bubble.queued").length');
+        const pills = await evaluate('document.querySelectorAll(".bubble.queued").length');
         if (pills.includes("1")) break;
         if (Date.now() > deadline) assert.fail(`queued note never appeared: ${pills}`);
-        wait(500);
+        await wait(500);
       }
-      evaluate('document.getElementById("send").click()');
+      await evaluate('document.getElementById("send").click()');
       const poll = run(
         process.execPath,
         ["bin/lavish-axi.js", "poll", artifact, "--timeout-ms", "20000"],
@@ -239,11 +236,11 @@ test(
         body: JSON.stringify({ text: "Annotation received." }),
       });
       assert.equal(replied.status, 200);
-      wait(500);
+      await wait(500);
 
       // Exercise the top-level Conversation composer separately. Image-only paste
       // must upload, queue, and reach poll without relying on annotation-card code.
-      evaluate(`(() => {
+      await evaluate(`(() => {
         const bin = atob("${PNG_B64}");
         const bytes = new Uint8Array(bin.length);
         for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
@@ -255,12 +252,12 @@ test(
       })()`);
       const conversationDeadline = Date.now() + 60_000;
       for (;;) {
-        const ready = evaluate('document.querySelectorAll(".chat-attachment-ready").length');
+        const ready = await evaluate('document.querySelectorAll(".chat-attachment-ready").length');
         if (ready.includes("1")) break;
         if (Date.now() > conversationDeadline) assert.fail(`Conversation image never became ready: ${ready}`);
-        wait(500);
+        await wait(500);
       }
-      evaluate('document.getElementById("send").click()');
+      await evaluate('document.getElementById("send").click()');
       const conversationPoll = run(
         process.execPath,
         ["bin/lavish-axi.js", "poll", artifact, "--timeout-ms", "20000"],
@@ -274,15 +271,15 @@ test(
       // A rejected file must READ as an error. The message lives in a child span
       // whose own rule paints it faint, so an error color set only on the chip is
       // overridden and the text renders as ordinary status copy.
-      evaluate(`(() => {
+      await evaluate(`(() => {
         const dt = new DataTransfer();
         dt.items.add(new File(["notes"], "notes.pdf", { type: "application/pdf" }));
         document.getElementById("chatComposer").dispatchEvent(
           new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }),
         );
       })()`);
-      wait(500);
-      const errorColors = evaluate(`(() => {
+      await wait(500);
+      const errorColors = await evaluate(`(() => {
         const status = document.querySelector(".chat-attachment-error .chat-attachment-status");
         if (!status) return "missing-error-chip";
         const danger = getComputedStyle(document.documentElement).getPropertyValue("--danger").trim();
@@ -299,8 +296,8 @@ test(
       assert.equal(colors.actual, colors.expected, `error status must render in --danger:\n${errorColors}`);
     } finally {
       run(process.execPath, ["bin/lavish-axi.js", "stop", "--port", String(port)], lavishEnv, 15_000);
-      run("chrome-devtools-axi", ["stop"], chromeEnv);
-      await rm(temp, { recursive: true, force: true });
+      await browser?.close();
+      await rm(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
     }
   },
 );

@@ -7,13 +7,18 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { findChrome, launchBrowser } from "./cdp-browser.js";
+
 // The phone-width conversation surface, measured in a real browser. Before this change the panel
 // was a fixed-fraction strip under the artifact: at 390x844 the composer alone consumed it and
 // left the chat log a 72px sliver, and on a short phone the chat log had no height at all while
 // the Send row ran past the viewport. The sheet replaces that split, and these assertions are the
 // geometry an end user would notice: nothing clipped, every control inside the viewport, the
 // artifact never under the dock, and the desktop layout untouched.
+// LAVISH-HARDENED: headless Chrome over CDP (`./cdp-browser.js`) instead of chrome-devtools-axi.
 const runBrowserE2e = process.env.LAVISH_AXI_BROWSER_E2E === "1";
+const chromePath = runBrowserE2e ? await findChrome() : "";
+const browserSkip = !runBrowserE2e || (!chromePath && "Chrome or Chromium is required (set CHROME_PATH)");
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 function run(command, args, env, timeout = 45_000) {
@@ -94,7 +99,7 @@ const GEOMETRY = `() => {
 
 test(
   "the conversation is a dock and bottom sheet on a phone, and unchanged on desktop",
-  { skip: !runBrowserE2e, timeout: 300_000 },
+  { skip: browserSkip, timeout: 300_000 },
   async () => {
     const temp = await mkdtemp(path.join(tmpdir(), "lavish-mobile-sheet-"));
     const port = await freePort();
@@ -106,16 +111,10 @@ test(
       LAVISH_AXI_HOST: "127.0.0.1",
       LAVISH_AXI_LINK_HOST: "127.0.0.1",
     };
-    const chromeEnv = {
-      CHROME_DEVTOOLS_AXI_SESSION: `lavish-mobile-sheet-${process.pid}`,
-      CHROME_DEVTOOLS_AXI_USER_DATA_DIR: path.join(temp, "chrome"),
-    };
+    let browser;
 
-    function evaluate(expression) {
-      const output = run("chrome-devtools-axi", ["eval", expression], chromeEnv);
-      const raw = output.match(/result:\s*("(?:[^"\\]|\\.)*")/s)?.[1];
-      assert.ok(raw, output);
-      let value = JSON.parse(raw);
+    async function evaluate(expression) {
+      let value = await browser.evaluate(expression);
       while (typeof value === "string") {
         try {
           value = JSON.parse(value);
@@ -127,16 +126,16 @@ test(
     }
 
     function wait(ms) {
-      run("chrome-devtools-axi", ["wait", String(ms)], chromeEnv, ms + 45_000);
+      return browser.wait(ms);
     }
 
     function emulate(viewport) {
-      run("chrome-devtools-axi", ["emulate", "--viewport", viewport], chromeEnv);
+      return browser.emulate(viewport);
     }
 
-    function open(url, settleMs = 4000) {
-      run("chrome-devtools-axi", ["open", url], chromeEnv);
-      wait(settleMs);
+    async function open(url, settleMs = 4000) {
+      await browser.open(url);
+      await wait(settleMs);
     }
 
     function geometry() {
@@ -168,8 +167,8 @@ test(
       assert.equal(g.documentScrollable, false, "the page itself never scrolls");
     }
 
-    function populateComposer() {
-      evaluate(`() => {
+    async function populateComposer() {
+      await evaluate(`() => {
         document.getElementById("presenceBanner").hidden = false;
         document.getElementById("chatAttachments").innerHTML = ${JSON.stringify(
           Array.from(
@@ -181,7 +180,7 @@ test(
         document.getElementById("chatComposer").scrollTop = 0;
         return "ok";
       }`);
-      wait(300);
+      await wait(300);
     }
 
     function assertPopulatedComposerUsable(g) {
@@ -225,6 +224,7 @@ test(
     }
 
     try {
+      browser = await launchBrowser({ chromePath, profileDir: path.join(temp, "chrome") });
       const artifact = path.join(temp, "review.html");
       await writeFile(artifact, ARTIFACT);
       const output = run(process.execPath, ["bin/lavish-axi.js", artifact, "--no-open"], lavishEnv);
@@ -240,46 +240,46 @@ test(
       }
 
       // ---- Portrait phone ----
-      emulate("390x844x3,mobile,touch");
-      open(url);
-      let g = geometry();
+      await emulate("390x844x3,mobile,touch");
+      await open(url);
+      let g = await geometry();
       assertDocked(g);
       assert.equal(g.summary, "Agent not listening");
 
-      evaluate('() => { document.getElementById("panelHead").click(); return "ok"; }');
-      wait(500);
-      assertSheetUsable(geometry());
+      await evaluate('() => { document.getElementById("panelHead").click(); return "ok"; }');
+      await wait(500);
+      assertSheetUsable(await geometry());
 
       // The scrim lowers it again and the artifact is back to full height.
-      evaluate('() => { document.getElementById("panelScrim").click(); return "ok"; }');
-      wait(500);
-      assertDocked(geometry());
+      await evaluate('() => { document.getElementById("panelScrim").click(); return "ok"; }');
+      await wait(500);
+      assertDocked(await geometry());
 
       // ---- Short phone (small-height case) ----
-      emulate("375x548x2,mobile,touch");
-      open(url);
-      g = geometry();
+      await emulate("375x548x2,mobile,touch");
+      await open(url);
+      g = await geometry();
       assertDocked(g);
-      evaluate('() => { document.getElementById("panelToggle").click(); return "ok"; }');
-      wait(500);
-      assertSheetUsable(geometry());
+      await evaluate('() => { document.getElementById("panelToggle").click(); return "ok"; }');
+      await wait(500);
+      assertSheetUsable(await geometry());
 
       // The open sheet survives a chrome reload on the same tab.
-      open(url, 3000);
-      assertSheetUsable(geometry());
-      populateComposer();
-      g = geometry();
+      await open(url, 3000);
+      assertSheetUsable(await geometry());
+      await populateComposer();
+      g = await geometry();
       assertPopulatedComposerUsable(g);
       assert.ok(g.chat.visible >= 56, `normal visual viewport retains the chat minimum: ${JSON.stringify(g.chat)}`);
 
-      evaluate(`() => {
+      await evaluate(`() => {
         document.documentElement.style.setProperty("--vv-top", "0px");
         document.documentElement.style.setProperty("--vv-height", "240px");
         document.getElementById("chatComposer").scrollTop = 0;
         return "ok";
       }`);
-      wait(300);
-      g = geometry();
+      await wait(300);
+      g = await geometry();
       assert.equal(g.composer.scrollTop, 0);
       assert.equal(g.panel.bottom, 240);
       assert.equal(g.composer.bottom, 240);
@@ -288,29 +288,32 @@ test(
         ["send", g.send],
         ["sendAndEnd", g.sendAndEnd],
       ]) {
+        // LAVISH-HARDENED: `--composer-reserve` keeps 34px for this button, whose height follows the
+        // system font under `line-height: normal` (35px in Segoe UI on Windows, 33-34px in others),
+        // so only the font's extra height may run past the short viewport.
         assert.ok(
-          rect.top >= 0 && rect.bottom <= 240,
+          rect.top >= 0 && rect.bottom <= 240 + Math.max(0, rect.height - 34),
           `${name} stays inside the short visual viewport: ${JSON.stringify(rect)}`,
         );
       }
-      evaluate(`() => {
+      await evaluate(`() => {
         document.documentElement.style.removeProperty("--vv-top");
         document.documentElement.style.removeProperty("--vv-height");
         return "ok";
       }`);
-      wait(300);
+      await wait(300);
 
-      emulate("844x390x1,mobile,touch");
-      open(url, 3000);
-      populateComposer();
-      g = geometry();
+      await emulate("844x390x1,mobile,touch");
+      await open(url, 3000);
+      await populateComposer();
+      g = await geometry();
       assert.equal(g.panel.bottom, g.viewport.height);
       assertPopulatedComposerUsable(g);
 
       // ---- Desktop: a side panel, never a sheet ----
-      emulate("1440x1000x1");
-      open(url, 3000);
-      g = geometry();
+      await emulate("1440x1000x1");
+      await open(url, 3000);
+      g = await geometry();
       assert.equal(g.open, false);
       assert.notEqual(g.panelPosition, "fixed");
       assert.equal(g.panel.top, 56);
@@ -320,8 +323,8 @@ test(
       assert.equal(g.frame.right, g.panel.left, "artifact and panel sit side by side");
     } finally {
       run(process.execPath, ["bin/lavish-axi.js", "stop", "--port", String(port)], lavishEnv, 15_000);
-      run("chrome-devtools-axi", ["stop"], chromeEnv);
-      await rm(temp, { recursive: true, force: true });
+      await browser?.close();
+      await rm(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
     }
   },
 );

@@ -21,9 +21,9 @@ pnpm run typecheck      # tsc --noEmit (checkJs)
 ```
 
 One file: `node --test test/server.test.js`. One name: `node --test --test-name-pattern "createOpenOutput" test/cli-output.test.js`.
-Opt-in browser suites need `chrome-devtools-axi`: `LAVISH_AXI_BROWSER_E2E=1 node --test test/layout-audit-browser.test.js test/layout-warning-inbox.browser.test.js`.
-Seven-tab pool regression: `LAVISH_AXI_BROWSER_E2E=1 node --test test/event-transport.browser.test.js`.
-Vendored Mermaid in the opaque-origin artifact (headless Chrome via `CHROME_PATH`, no `chrome-devtools-axi`): `LAVISH_AXI_BROWSER_E2E=1 node --test test/mermaid-artifact.browser.test.js`.
+Opt-in browser suites drive headless Chrome over CDP (`test/cdp-browser.js`; `CHROME_PATH` or a standard install path): `LAVISH_AXI_BROWSER_E2E=1 node --test test/layout-audit-browser.test.js test/layout-warning-inbox.browser.test.js test/mobile-conversation-sheet.browser.test.js test/attachment-upload.browser.test.js`.
+The seven-tab pool regression (`test/event-transport.browser.test.js`) serves the stock 0.1.64 build and needs `chrome-devtools-axi`, so it always skips here.
+Vendored Mermaid in the opaque-origin artifact (headless Chrome via `CHROME_PATH`, `--dump-dom`): `LAVISH_AXI_BROWSER_E2E=1 node --test test/mermaid-artifact.browser.test.js`.
 The review chrome under its own policy, same setup: `LAVISH_AXI_BROWSER_E2E=1 node --test test/chrome-csp.browser.test.js`.
 `prepack` and `prepare` both run `build`. `pnpm run check` fails if `skills/lavish/SKILL.md` drifts from `createSkillMarkdown()`, or if root `plugin.json` drifts from `pnpm run build:plugin`.
 

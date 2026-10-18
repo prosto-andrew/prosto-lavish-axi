@@ -13,6 +13,10 @@ import { fetchHealth } from "../src/cli.js";
 const runBrowserE2e = process.env.LAVISH_AXI_BROWSER_E2E === "1";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const baseCommit = "5b871af347444feda1d3002952ec5fc179248629";
+// LAVISH-HARDENED: never run in this fork. The suite serves the stock 0.1.64 build (`baseCommit`),
+// unhardened code this fork does not run, and drives it with chrome-devtools-axi, which the other
+// browser suites replaced with `./cdp-browser.js`.
+const forkSkip = "serves the stock 0.1.64 build and needs chrome-devtools-axi; not run in this fork";
 
 function run(command, args, env, timeout = 20_000, cwd = repoRoot) {
   const result = spawnSync(command, args, {
@@ -96,7 +100,7 @@ function pageRows(output) {
 
 test(
   "six legacy tabs migrate before seven sessions exercise live transport",
-  { skip: !runBrowserE2e, timeout: 300_000 },
+  { skip: !runBrowserE2e || forkSkip, timeout: 300_000 },
   async () => {
     const temp = await mkdtemp(path.join(tmpdir(), "lavish-event-transport-"));
     const oldRoot = path.join(temp, "old-build");
