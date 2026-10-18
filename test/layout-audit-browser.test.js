@@ -87,9 +87,8 @@ test(
       await browser.open(url);
       await browser.wait(settleMs);
       // LAVISH-HARDENED: a busy browser can return from navigation before the refreshed chrome has
-      // painted its first diagnostic result, and an infinite CSS animation in the artifact (the
-      // clipping fixture's pulse) holds the SDK's first report back 2-4 s in headless Chrome. Wait
-      // up to 6 s more for it instead of re-opening once, then keep the final gate assertion strict.
+      // painted its first diagnostic result. Wait up to 6 s more for it instead of re-opening once,
+      // then keep the final gate assertion strict.
       const inbox = await waitForValue(
         readInbox,
         (value) => !value.gate && (expectedCount === 0 || Number(value.badge) === expectedCount),

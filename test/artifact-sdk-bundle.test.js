@@ -396,6 +396,18 @@ test("a requested layout diagnostic publishes even when the result is unchanged"
   assert.deepEqual(diagnostics[1].findings, diagnostics[0].findings);
 });
 
+// Chrome gives a cross-origin artifact frame that runs only an infinite CSS animation about one
+// animation frame a second for its first seconds, and the review gate waited on that. Here the frame
+// gets none at all: the audit still has to finish and report.
+test("a layout diagnostic still publishes when the frame gets no animation frames", async () => {
+  const sdk = bootSdk({ runAnimationFrames: false });
+
+  await sdk.runAllTimers();
+  const diagnostics = sdk.posted.filter((message) => message.type === "lavish:layoutDiagnostics");
+  assert.equal(diagnostics.length, 1);
+  assert.equal(diagnostics[0].complete, true);
+});
+
 test("the served SDK echoes the snapshot request id", () => {
   const sdk = bootSdk();
 

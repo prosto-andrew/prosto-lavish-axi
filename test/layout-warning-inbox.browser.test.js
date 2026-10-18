@@ -162,8 +162,8 @@ test(
         2,
       );
       const sessionKey = new URL(url).pathname.split("/").pop();
-      // LAVISH-HARDENED: the clipping fixture's infinite CSS animation holds the SDK's first report
-      // back 2-4 s in headless Chrome, so wait up to 8 s more for revision 2's pass.
+      // LAVISH-HARDENED: revision 2's pass lands a moment after the frame shows the new revision, so
+      // wait up to 8 s more for it.
       const warningState = await waitForValue(
         () =>
           evaluate(
