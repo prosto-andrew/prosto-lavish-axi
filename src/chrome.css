@@ -104,6 +104,34 @@
   --dur-slow: 320ms;
   --annotate-outline: 2px solid var(--accent);
   --annotate-offset: 2px;
+  /* LAVISH-FORK: named so the theme variants below can override them; these are today's colors. */
+  --warn-fg: var(--brass-400);
+  --warn-bg: rgba(37, 35, 15, 0.72);
+  --warn-bg-active: rgba(93, 77, 27, 0.5);
+  --warn-border: rgba(244, 201, 93, 0.35);
+  --warn-border-active: rgba(244, 201, 93, 0.6);
+  --accent-line: rgba(244, 201, 93, 0.4);
+  --danger-line: rgba(240, 100, 100, 0.4);
+  --danger-tint: rgba(240, 100, 100, 0.1);
+  --bg-hover: var(--steel-700);
+  --fg-code: var(--cream-200);
+  --excerpt-bg: rgba(244, 201, 93, 0.22);
+  --excerpt-line: rgba(244, 201, 93, 0.35);
+  --hint-bg: var(--amber-900);
+  --hint-border: var(--amber-700);
+  --pulse-from: rgba(244, 201, 93, 0.55);
+  --pulse-to: rgba(244, 201, 93, 0);
+  --foot-shadow: rgba(0, 0, 0, 0.55);
+  --ended-scrim: rgba(15, 17, 21, 0.86);
+  --panel-scrim: rgba(15, 17, 21, 0.72);
+  --whiteboard-scrim: rgba(15, 17, 21, 0.92);
+  --frame-surface: #fff;
+  --swatch-warm: #f7f3ea;
+  --swatch-neutral: #f4f4f5;
+  --swatch-cool: #eef2f8;
+  --swatch-black: #050505;
+  --swatch-ink: #0f1115;
+  --swatch-graphite: #25272b;
 }
 * {
   box-sizing: border-box;
@@ -244,10 +272,10 @@ body.lavish {
   gap: 6px;
   height: 34px;
   padding: 0 10px;
-  border: 1px solid rgba(244, 201, 93, 0.35);
+  border: 1px solid var(--warn-border);
   border-radius: 9px;
-  background: rgba(37, 35, 15, 0.72);
-  color: var(--brass-400);
+  background: var(--warn-bg);
+  color: var(--warn-fg);
   font-family: inherit;
   font-size: var(--text-sm);
   font-weight: var(--w-bold);
@@ -256,8 +284,8 @@ body.lavish {
 }
 .warnings-button:hover:not(:disabled),
 .warnings-button[aria-expanded="true"] {
-  border-color: rgba(244, 201, 93, 0.6);
-  background: rgba(93, 77, 27, 0.5);
+  border-color: var(--warn-border-active);
+  background: var(--warn-bg-active);
   color: var(--accent-hover);
 }
 .warnings-button:disabled {
@@ -363,7 +391,7 @@ body.lavish {
   border-color: var(--border-strong);
 }
 .warning-row.is-outstanding {
-  background: var(--ink-700);
+  background: var(--bg-bar);
 }
 .warning-select {
   width: 14px;
@@ -406,24 +434,24 @@ body.lavish {
   padding: 2px 6px;
   border-radius: var(--radius-pill);
   border: 1px solid var(--border-subtle);
-  background: var(--ink-800);
+  background: var(--bg-panel);
   color: var(--fg-faint);
   font-size: 10px;
   line-height: 1.4;
   white-space: nowrap;
 }
 .warning-chip.severity {
-  border-color: rgba(240, 100, 100, 0.4);
+  border-color: var(--danger-line);
   color: var(--danger);
 }
 .warning-chip.status-queued,
 .warning-chip.status-unverified {
-  border-color: rgba(244, 201, 93, 0.4);
+  border-color: var(--accent-line);
   color: var(--accent);
 }
 .warning-chip.status-recurring,
 .warning-chip.status-reopened {
-  border-color: rgba(240, 100, 100, 0.4);
+  border-color: var(--danger-line);
   color: var(--danger);
 }
 .warning-target {
@@ -466,7 +494,7 @@ body.lavish {
   border-top: var(--hairline-subtle);
   /* The list scrolls under this footer, so lift it with a soft shadow - otherwise a row clipped
      mid-content at the boundary reads as broken rather than scrollable. */
-  box-shadow: 0 -10px 14px -10px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 -10px 14px -10px var(--foot-shadow);
   padding: 10px var(--space-8) 12px;
   display: flex;
   flex-direction: column;
@@ -501,7 +529,7 @@ body.lavish {
 .more-button:hover:not(:disabled),
 .more-button[aria-expanded="true"] {
   border-color: var(--border-strong);
-  background: var(--steel-700);
+  background: var(--bg-hover);
   color: var(--fg);
 }
 .more-button:disabled {
@@ -553,7 +581,7 @@ body.lavish {
   color: var(--fg-muted);
 }
 .menu-file:hover {
-  background: var(--steel-700);
+  background: var(--bg-hover);
 }
 .menu-file > svg {
   opacity: 0.7;
@@ -625,7 +653,7 @@ body.lavish {
   color: var(--fg);
 }
 .menu-item:hover:not(:disabled) {
-  background: var(--steel-700);
+  background: var(--bg-hover);
 }
 .menu-item:disabled {
   cursor: not-allowed;
@@ -667,7 +695,7 @@ body.lavish {
   padding: 0 5px;
   border-radius: 9px;
   background: var(--accent);
-  color: var(--brass-ink);
+  color: var(--accent-ink);
   font: 700 11px/18px var(--font-sans);
   text-align: center;
 }
@@ -772,7 +800,7 @@ body.lavish {
 }
 
 .revision-reveal:hover {
-  background: var(--steel-700);
+  background: var(--bg-hover);
 }
 
 .revisions-foot {
@@ -794,7 +822,7 @@ body.lavish {
   opacity: 1;
 }
 .menu-item.danger:hover:not(:disabled) {
-  background: rgba(240, 100, 100, 0.1);
+  background: var(--danger-tint);
 }
 .button {
   border: 0;
@@ -831,7 +859,7 @@ body.lavish {
   color: var(--danger);
 }
 .button-danger:hover:not(:disabled) {
-  background: rgba(240, 100, 100, 0.1);
+  background: var(--danger-tint);
 }
 .button-danger > svg {
   flex-shrink: 0;
@@ -845,7 +873,7 @@ body.lavish {
 .frame {
   min-width: 0;
   min-height: 0;
-  background: #fff;
+  background: var(--frame-surface);
   overflow: hidden;
 }
 .panel {
@@ -1088,8 +1116,8 @@ body.lavish {
 }
 /* A selected range keeps the artifact's own highlight: brass means attention is here. */
 .anchor-excerpt.text {
-  background: rgba(244, 201, 93, 0.22);
-  box-shadow: 0 0 0 1px rgba(244, 201, 93, 0.35);
+  background: var(--excerpt-bg);
+  box-shadow: 0 0 0 1px var(--excerpt-line);
   color: var(--fg);
   border-radius: 3px;
   padding: 0 3px;
@@ -1205,7 +1233,7 @@ body.lavish {
   line-height: 1.45;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  color: var(--cream-200);
+  color: var(--fg-code);
 }
 .chat-md code {
   font-family: var(--font-mono);
@@ -1214,7 +1242,7 @@ body.lavish {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 0 5px;
-  color: var(--cream-200);
+  color: var(--fg-code);
 }
 .chat-md pre code {
   background: none;
@@ -1390,9 +1418,9 @@ body.lavish {
 }
 .send-hint.persistent {
   padding: var(--space-4);
-  border: 1px solid var(--amber-700);
+  border: 1px solid var(--hint-border);
   border-radius: var(--radius-sm);
-  background: var(--amber-900);
+  background: var(--hint-bg);
   color: var(--accent-hover);
 }
 .send-hint[hidden] {
@@ -1407,7 +1435,7 @@ body.lavish {
 .ended-overlay {
   position: fixed;
   inset: var(--bar-h) 0 0 0;
-  background: rgba(15, 17, 21, 0.86);
+  background: var(--ended-scrim);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1450,7 +1478,7 @@ iframe {
   width: 100%;
   height: 100%;
   border: 0;
-  background: white;
+  background: var(--frame-surface);
   opacity: 1;
   transition: opacity var(--dur-fast) var(--ease);
 }
@@ -1663,7 +1691,7 @@ body.layout-gate-active iframe#artifact {
     position: fixed;
     inset: var(--bar-h) 0 0 0;
     z-index: 29;
-    background: rgba(15, 17, 21, 0.72);
+    background: var(--panel-scrim);
     opacity: 0;
     pointer-events: none;
     transition: opacity var(--dur-slow) var(--ease);
@@ -1701,10 +1729,10 @@ body.layout-gate-active iframe#artifact {
 }
 @keyframes dock-pulse {
   0% {
-    box-shadow: 0 0 0 0 rgba(244, 201, 93, 0.55);
+    box-shadow: 0 0 0 0 var(--pulse-from);
   }
   100% {
-    box-shadow: 0 0 0 10px rgba(244, 201, 93, 0);
+    box-shadow: 0 0 0 10px var(--pulse-to);
   }
 }
 
@@ -1715,7 +1743,7 @@ body.layout-gate-active iframe#artifact {
 .whiteboard-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(15, 17, 21, 0.92);
+  background: var(--whiteboard-scrim);
   z-index: 80;
   display: flex;
 }
@@ -1773,4 +1801,323 @@ body.layout-gate-active iframe#artifact {
 }
 .whiteboard-error[hidden] {
   display: none;
+}
+
+/* LAVISH-FORK: theme variants (specs/2026-10-18-theme-switcher-design.md, 5.1-5.2). Ink is :root;
+   the boot script in src/server.js sets data-lavish-theme and data-lavish-scheme on <html>. */
+:root[data-lavish-theme="black"] {
+  --bg: #050505;
+  --bg-panel: #0b0b0b;
+  --bg-bar: #121212;
+  --bg-elevated: #191919;
+  --fg: #f4f2ee;
+  --fg-muted: #d9d6d0;
+  --fg-dim: #c2bfb8;
+  --fg-faint: #a9a59e;
+  --fg-label: #8f8b84;
+  --border: #2e2e2e;
+  --border-subtle: #1f1f1f;
+  --border-strong: #3d3d3d;
+  --accent: #f4c95d;
+  --accent-ink: #17130a;
+  --danger: #f06464;
+  --accent-hover: #ffd877;
+  --bg-hover: color-mix(in srgb, var(--fg) 8%, var(--bg-elevated));
+  --fg-code: var(--fg-muted);
+  --warn-fg: #ffd877;
+  --warn-bg: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated));
+  --warn-bg-active: color-mix(in srgb, var(--accent) 22%, var(--bg-elevated));
+  --warn-border: color-mix(in srgb, var(--accent) 35%, transparent);
+  --warn-border-active: color-mix(in srgb, var(--accent) 60%, transparent);
+  --accent-line: color-mix(in srgb, var(--accent) 40%, transparent);
+  --danger-line: color-mix(in srgb, var(--danger) 40%, transparent);
+  --danger-tint: color-mix(in srgb, var(--danger) 10%, transparent);
+  --excerpt-bg: color-mix(in srgb, var(--accent) 22%, transparent);
+  --excerpt-line: color-mix(in srgb, var(--accent) 35%, transparent);
+  --hint-bg: color-mix(in srgb, var(--accent) 14%, var(--bg-panel));
+  --hint-border: color-mix(in srgb, var(--accent) 45%, var(--bg-panel));
+  --pulse-from: color-mix(in srgb, var(--accent) 55%, transparent);
+  --pulse-to: color-mix(in srgb, var(--accent) 0%, transparent);
+  --foot-shadow: rgba(0, 0, 0, 0.55);
+  --ended-scrim: color-mix(in srgb, var(--bg) 86%, transparent);
+  --panel-scrim: color-mix(in srgb, var(--bg) 72%, transparent);
+  --whiteboard-scrim: color-mix(in srgb, var(--bg) 92%, transparent);
+  --shadow-tooltip: 0 16px 44px rgba(0, 0, 0, 0.35);
+  --shadow-floating: 0 20px 70px rgba(0, 0, 0, 0.35);
+}
+:root[data-lavish-theme="graphite"] {
+  --bg: #25272b;
+  --bg-panel: #2a2c31;
+  --bg-bar: #303237;
+  --bg-elevated: #373a40;
+  --fg: #f1f1f0;
+  --fg-muted: #dcdde0;
+  --fg-dim: #c8cace;
+  --fg-faint: #b6b9be;
+  --fg-label: #a3a7ae;
+  --border: #4a4d54;
+  --border-subtle: #3e4147;
+  --border-strong: #5a5e66;
+  --accent: #f4c95d;
+  --accent-ink: #17130a;
+  --danger: #f47878;
+  --accent-hover: #ffd877;
+  --bg-hover: color-mix(in srgb, var(--fg) 8%, var(--bg-elevated));
+  --fg-code: var(--fg-muted);
+  --warn-fg: #ffd877;
+  --warn-bg: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated));
+  --warn-bg-active: color-mix(in srgb, var(--accent) 22%, var(--bg-elevated));
+  --warn-border: color-mix(in srgb, var(--accent) 35%, transparent);
+  --warn-border-active: color-mix(in srgb, var(--accent) 60%, transparent);
+  --accent-line: color-mix(in srgb, var(--accent) 40%, transparent);
+  --danger-line: color-mix(in srgb, var(--danger) 40%, transparent);
+  --danger-tint: color-mix(in srgb, var(--danger) 10%, transparent);
+  --excerpt-bg: color-mix(in srgb, var(--accent) 22%, transparent);
+  --excerpt-line: color-mix(in srgb, var(--accent) 35%, transparent);
+  --hint-bg: color-mix(in srgb, var(--accent) 14%, var(--bg-panel));
+  --hint-border: color-mix(in srgb, var(--accent) 45%, var(--bg-panel));
+  --pulse-from: color-mix(in srgb, var(--accent) 55%, transparent);
+  --pulse-to: color-mix(in srgb, var(--accent) 0%, transparent);
+  --foot-shadow: rgba(0, 0, 0, 0.55);
+  --ended-scrim: color-mix(in srgb, var(--bg) 86%, transparent);
+  --panel-scrim: color-mix(in srgb, var(--bg) 72%, transparent);
+  --whiteboard-scrim: color-mix(in srgb, var(--bg) 92%, transparent);
+  --shadow-tooltip: 0 16px 44px rgba(0, 0, 0, 0.35);
+  --shadow-floating: 0 20px 70px rgba(0, 0, 0, 0.35);
+}
+:root[data-lavish-theme="warm"] {
+  --bg: #f7f3ea;
+  --bg-panel: #fbf8f2;
+  --bg-bar: #efe8da;
+  --bg-elevated: #fffdf8;
+  --fg: #25221f;
+  --fg-muted: #3b3631;
+  --fg-dim: #4c463f;
+  --fg-faint: #5e574e;
+  --fg-label: #6e665c;
+  --border: #d9cfbc;
+  --border-subtle: #e6dfd0;
+  --border-strong: #c4b89f;
+  --accent: #8a6611;
+  --accent-ink: #fffaf0;
+  --danger: #b42318;
+  --accent-hover: color-mix(in srgb, var(--accent) 85%, black);
+  --bg-hover: color-mix(in srgb, var(--fg) 6%, var(--bg-elevated));
+  --fg-code: var(--fg-dim);
+  --warn-fg: var(--accent-hover);
+  --warn-bg: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated));
+  --warn-bg-active: color-mix(in srgb, var(--accent) 22%, var(--bg-elevated));
+  --warn-border: color-mix(in srgb, var(--accent) 35%, transparent);
+  --warn-border-active: color-mix(in srgb, var(--accent) 60%, transparent);
+  --accent-line: color-mix(in srgb, var(--accent) 40%, transparent);
+  --danger-line: color-mix(in srgb, var(--danger) 40%, transparent);
+  --danger-tint: color-mix(in srgb, var(--danger) 10%, transparent);
+  --excerpt-bg: color-mix(in srgb, var(--accent) 22%, transparent);
+  --excerpt-line: color-mix(in srgb, var(--accent) 35%, transparent);
+  --hint-bg: color-mix(in srgb, var(--accent) 14%, var(--bg-panel));
+  --hint-border: color-mix(in srgb, var(--accent) 45%, var(--bg-panel));
+  --pulse-from: color-mix(in srgb, var(--accent) 55%, transparent);
+  --pulse-to: color-mix(in srgb, var(--accent) 0%, transparent);
+  --foot-shadow: color-mix(in srgb, var(--fg) 12%, transparent);
+  --ended-scrim: color-mix(in srgb, var(--bg) 86%, transparent);
+  --panel-scrim: color-mix(in srgb, var(--bg) 72%, transparent);
+  --whiteboard-scrim: color-mix(in srgb, var(--bg) 92%, transparent);
+  --shadow-tooltip: 0 16px 44px color-mix(in srgb, var(--fg) 14%, transparent);
+  --shadow-floating: 0 20px 70px color-mix(in srgb, var(--fg) 14%, transparent);
+}
+:root[data-lavish-theme="neutral"] {
+  --bg: #f4f4f5;
+  --bg-panel: #fafafa;
+  --bg-bar: #eaeaec;
+  --bg-elevated: #ffffff;
+  --fg: #1c1c1f;
+  --fg-muted: #323236;
+  --fg-dim: #45454a;
+  --fg-faint: #58585e;
+  --fg-label: #68686f;
+  --border: #d6d6da;
+  --border-subtle: #e4e4e7;
+  --border-strong: #bdbdc3;
+  --accent: #8a6511;
+  --accent-ink: #fffaf0;
+  --danger: #b42318;
+  --accent-hover: color-mix(in srgb, var(--accent) 85%, black);
+  --bg-hover: color-mix(in srgb, var(--fg) 6%, var(--bg-elevated));
+  --fg-code: var(--fg-dim);
+  --warn-fg: var(--accent-hover);
+  --warn-bg: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated));
+  --warn-bg-active: color-mix(in srgb, var(--accent) 22%, var(--bg-elevated));
+  --warn-border: color-mix(in srgb, var(--accent) 35%, transparent);
+  --warn-border-active: color-mix(in srgb, var(--accent) 60%, transparent);
+  --accent-line: color-mix(in srgb, var(--accent) 40%, transparent);
+  --danger-line: color-mix(in srgb, var(--danger) 40%, transparent);
+  --danger-tint: color-mix(in srgb, var(--danger) 10%, transparent);
+  --excerpt-bg: color-mix(in srgb, var(--accent) 22%, transparent);
+  --excerpt-line: color-mix(in srgb, var(--accent) 35%, transparent);
+  --hint-bg: color-mix(in srgb, var(--accent) 14%, var(--bg-panel));
+  --hint-border: color-mix(in srgb, var(--accent) 45%, var(--bg-panel));
+  --pulse-from: color-mix(in srgb, var(--accent) 55%, transparent);
+  --pulse-to: color-mix(in srgb, var(--accent) 0%, transparent);
+  --foot-shadow: color-mix(in srgb, var(--fg) 12%, transparent);
+  --ended-scrim: color-mix(in srgb, var(--bg) 86%, transparent);
+  --panel-scrim: color-mix(in srgb, var(--bg) 72%, transparent);
+  --whiteboard-scrim: color-mix(in srgb, var(--bg) 92%, transparent);
+  --shadow-tooltip: 0 16px 44px color-mix(in srgb, var(--fg) 14%, transparent);
+  --shadow-floating: 0 20px 70px color-mix(in srgb, var(--fg) 14%, transparent);
+}
+:root[data-lavish-theme="cool"] {
+  --bg: #eef2f8;
+  --bg-panel: #f6f8fc;
+  --bg-bar: #e2e8f2;
+  --bg-elevated: #ffffff;
+  --fg: #152033;
+  --fg-muted: #2a3549;
+  --fg-dim: #3b475c;
+  --fg-faint: #4d5a70;
+  --fg-label: #5b677d;
+  --border: #cfd7e4;
+  --border-subtle: #dde3ed;
+  --border-strong: #b5c0d2;
+  --accent: #86630f;
+  --accent-ink: #fffaf0;
+  --danger: #b42318;
+  --accent-hover: color-mix(in srgb, var(--accent) 85%, black);
+  --bg-hover: color-mix(in srgb, var(--fg) 6%, var(--bg-elevated));
+  --fg-code: var(--fg-dim);
+  --warn-fg: var(--accent-hover);
+  --warn-bg: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated));
+  --warn-bg-active: color-mix(in srgb, var(--accent) 22%, var(--bg-elevated));
+  --warn-border: color-mix(in srgb, var(--accent) 35%, transparent);
+  --warn-border-active: color-mix(in srgb, var(--accent) 60%, transparent);
+  --accent-line: color-mix(in srgb, var(--accent) 40%, transparent);
+  --danger-line: color-mix(in srgb, var(--danger) 40%, transparent);
+  --danger-tint: color-mix(in srgb, var(--danger) 10%, transparent);
+  --excerpt-bg: color-mix(in srgb, var(--accent) 22%, transparent);
+  --excerpt-line: color-mix(in srgb, var(--accent) 35%, transparent);
+  --hint-bg: color-mix(in srgb, var(--accent) 14%, var(--bg-panel));
+  --hint-border: color-mix(in srgb, var(--accent) 45%, var(--bg-panel));
+  --pulse-from: color-mix(in srgb, var(--accent) 55%, transparent);
+  --pulse-to: color-mix(in srgb, var(--accent) 0%, transparent);
+  --foot-shadow: color-mix(in srgb, var(--fg) 12%, transparent);
+  --ended-scrim: color-mix(in srgb, var(--bg) 86%, transparent);
+  --panel-scrim: color-mix(in srgb, var(--bg) 72%, transparent);
+  --whiteboard-scrim: color-mix(in srgb, var(--bg) 92%, transparent);
+  --shadow-tooltip: 0 16px 44px color-mix(in srgb, var(--fg) 14%, transparent);
+  --shadow-floating: 0 20px 70px color-mix(in srgb, var(--fg) 14%, transparent);
+}
+/* The artifact frame inherits this, so an artifact that follows prefers-color-scheme follows the editor. */
+:root[data-lavish-scheme="light"] body.lavish {
+  color-scheme: light;
+}
+/* LAVISH-FORK: theme switcher controls (specs/2026-10-18-theme-switcher-design.md 4). */
+.theme-toggle {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--fg-dim);
+  border-radius: 9px;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+}
+.theme-toggle:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.theme-toggle[hidden],
+.theme-menu[hidden] {
+  display: none;
+}
+/* A phone-narrow bar that already shows layout issues or revisions has no room for the toggle (it
+   pushed the ⋯ menu off screen); the menu's Theme section still switches sides. */
+@media (max-width: 359px) {
+  .bar:has(#warningsWrap:not([hidden])) .theme-toggle,
+  .bar:has(#revisionsWrap:not([hidden])) .theme-toggle {
+    display: none;
+  }
+}
+.theme-toggle > span {
+  display: grid;
+}
+.theme-toggle .icon-moon,
+:root[data-lavish-scheme="light"] .theme-toggle .icon-sun {
+  display: none;
+}
+:root[data-lavish-scheme="light"] .theme-toggle .icon-moon {
+  display: grid;
+}
+.theme-menu-head {
+  padding: 7px 10px 0;
+}
+.theme-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 10px var(--space-3);
+}
+.theme-row-label {
+  width: 40px;
+  font-size: var(--text-xs);
+  color: var(--fg-faint);
+}
+.theme-variant {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px 2px 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+.theme-variant:hover {
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.theme-variant[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  color: var(--fg);
+}
+.theme-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  flex-shrink: 0;
+}
+.theme-swatch-warm {
+  background: var(--swatch-warm);
+}
+.theme-swatch-neutral {
+  background: var(--swatch-neutral);
+}
+.theme-swatch-cool {
+  background: var(--swatch-cool);
+}
+.theme-swatch-black {
+  background: var(--swatch-black);
+}
+.theme-swatch-ink {
+  background: var(--swatch-ink);
+}
+.theme-swatch-graphite {
+  background: var(--swatch-graphite);
+}
+.theme-match .theme-check {
+  display: inline-flex;
+  margin-left: auto;
+  color: var(--accent);
+  visibility: hidden;
+}
+.theme-match[aria-pressed="true"] .theme-check {
+  visibility: visible;
 }

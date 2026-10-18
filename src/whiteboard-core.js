@@ -23,6 +23,11 @@ export function sanitizeWhiteboardAppState(appState) {
   return safeAppState;
 }
 
+// LAVISH-FORK: the side the chrome's theme switcher sends, in an init or a theme message (spec 6.6).
+export function normalizeWhiteboardTheme(value) {
+  return value === "dark" ? "dark" : "light";
+}
+
 export function sanitizeWhiteboardScene(scene) {
   if (!scene || typeof scene !== "object" || Array.isArray(scene)) return scene ?? null;
   if (!Object.hasOwn(scene, "appState")) return { ...scene };

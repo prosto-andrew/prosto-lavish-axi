@@ -292,6 +292,27 @@ export async function launchBrowser({ chromePath, profileDir }) {
       })()`);
       await clickAt(point);
     },
+    /** Clicks the element `selector` names in the review page itself, with real mouse input. */
+    async clickInPage(selector) {
+      const point = await evaluateIn(
+        page,
+        `(() => {
+        const element = document.querySelector(${JSON.stringify(selector)});
+        if (!element) throw new Error(${JSON.stringify(`no element matches ${selector}`)});
+        element.scrollIntoView({ block: "center" });
+        const box = element.getBoundingClientRect();
+        return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+      })()`,
+      );
+      await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y }, page);
+      for (const type of ["mousePressed", "mouseReleased"]) {
+        await cdp.send(
+          "Input.dispatchMouseEvent",
+          { type, x: point.x, y: point.y, button: "left", clickCount: 1 },
+          page,
+        );
+      }
+    },
     /** Types into whatever has focus, the way a keyboard would. */
     async type(text) {
       await cdp.send("Input.insertText", { text }, page);

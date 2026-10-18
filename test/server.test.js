@@ -212,7 +212,9 @@ function parseChromeElements(html) {
 // would in a browser.
 function bootChromeFailsafe(options = {}, session = {}) {
   const html = createChromeHtml({ key: "abc", file: "/tmp/artifact.html", ...session }, options);
-  const inline = html.match(/<script>([\s\S]*?)<\/script>\s*<script src="\/chrome-client\.js"/);
+  // LAVISH-FORK: the theme boot script is an earlier inline script in <head>, so the capture may
+  // not run across a closing tag.
+  const inline = html.match(/<script>((?:(?!<\/script>)[\s\S])*)<\/script>\s*<script src="\/chrome-client\.js"/);
   assert.ok(inline, "the chrome page must inline a boot failsafe before its client script");
 
   const elements = parseChromeElements(html);
@@ -6836,7 +6838,9 @@ test("ended session shows an overlay card over the dimmed chrome", async () => {
   assert.match(html, /class="ended-copy">\/tmp\/artifact\.html</);
   assert.doesNotMatch(html, /The agent polling loop can stop\./);
   assert.match(css, /\.ended-overlay\{[^}]*inset:var\(--bar-h\) 0 0 0/);
-  assert.match(css, /\.ended-overlay\{[^}]*background:rgba\(15,17,21,.86\)/);
+  // LAVISH-FORK: the dim is a theme token now; its Ink value (rgba(15, 17, 21, 0.86)) is pinned in
+  // test/chrome-theme-css.test.js "Ink keeps today's colors".
+  assert.match(css, /\.ended-overlay\{[^}]*background:var\(--ended-scrim\)/);
   assert.match(css, /\.ended-title\{[^}]*font-family:var\(--font-serif\)/);
   assert.match(js, /endedOverlay\.hidden = false/);
   assert.match(js, /annotationSwitch\.disabled = true/);
