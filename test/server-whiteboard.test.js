@@ -505,3 +505,33 @@ test("GET /api/whiteboard-libraries refuses other sites' pages", async () => {
     await ctx.close();
   }
 });
+
+// LAVISH-FORK: an open whiteboard follows the editor theme switcher (spec 6.6). The theme still reaches
+// Excalidraw only through its theme prop (docs/invariants.md, Whiteboard).
+test("whiteboard frame re-themes on the chrome's theme message", async () => {
+  const frame = await readFile(new URL("../src/whiteboard-frame.js", import.meta.url), "utf8");
+  // The theme message is handled only after the channel check, like every other command.
+  assert.match(
+    frame,
+    /msg\.channelId !== state\.channelId\) return;[\s\S]*msg\.type === "lavish-whiteboard:theme"\) setWhiteboardTheme\(normalizeWhiteboardTheme\(msg\.theme\)\)/,
+  );
+  assert.match(frame, /const \[currentTheme, setTheme\] = React\.useState\(theme\);\s*state\.setTheme = setTheme;/);
+  assert.match(frame, /React\.createElement\(Excalidraw, \{[\s\S]*?\n {6}theme: currentTheme,/);
+  assert.match(
+    frame,
+    /function setWhiteboardTheme\(theme\) \{\s*state\.theme = theme;\s*document\.body\.dataset\.lavishWhiteboardTheme = theme;\s*state\.setTheme\?\.\(theme\);/,
+  );
+  assert.doesNotMatch(frame, /=== "dark" \? "dark" : "light"/);
+});
+
+// LAVISH-FORK: a theme message can arrive while the frame still converts, loads fonts or waits on the
+// stale-edits choice, before Excalidraw mounts (final review #1). The frame keeps the latest side in
+// `state.theme` and mounts the editor with it, never with the side its init carried.
+test("a whiteboard that mounts after a theme message mounts on the new side", async () => {
+  const frame = await readFile(new URL("../src/whiteboard-frame.js", import.meta.url), "utf8");
+  assert.match(frame, /function buildShell\(theme, mode\) \{\s*state\.theme = theme;/);
+  const mounts = [...frame.matchAll(/(?<!function )mountEditor\(\{[\s\S]*?\}\);/g)].map((match) => match[0]);
+  assert.equal(mounts.length, 2, "both start paths mount the editor");
+  for (const mount of mounts) assert.match(mount, /theme: state\.theme/, mount);
+  assert.doesNotMatch(frame, /theme: init\.theme/);
+});

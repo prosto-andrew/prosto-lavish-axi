@@ -36,6 +36,7 @@ import {
   serializeLayoutWarnings,
 } from "./layout-warnings.js";
 import * as artifactRevisions from "./artifact-revisions.js";
+import * as chromeTheme from "./chrome-theme.js";
 import * as mermaidNode from "./mermaid-node.js";
 import * as tableCellHelpers from "./table-cell.js";
 import { extractMermaidSources, whiteboardSourceHash } from "./mermaid-source.js";
@@ -3049,7 +3050,30 @@ const chromeIcons = {
   ),
   // The mobile conversation sheet's only chevron: CSS rotates it when the sheet is open.
   chevronUp: chromeIcon('<polyline points="6 15 12 9 18 15"/>', 18, 2),
+  // LAVISH-FORK: the theme toggle shows the side a click switches to (CSS picks one by scheme).
+  sun: chromeIcon(
+    '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  ),
+  moon: chromeIcon('<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>'),
 };
+
+// LAVISH-FORK: the theme switcher's controls (specs/2026-10-18-theme-switcher-design.md 4 and 6.4).
+// chrome-client.js sets every label, aria-pressed state and the toggle's title from the boot
+// script's rules, and hides both controls when that script did not run.
+function chromeThemeControls() {
+  const { light, dark, labels } = chromeTheme.chromeThemeConfig();
+  const variantButtons = (names) =>
+    names
+      .map(
+        (name) =>
+          `<button class="theme-variant" id="themeVariant-${name}" type="button" data-theme-variant="${name}" aria-pressed="false"><span class="theme-swatch theme-swatch-${name}" aria-hidden="true"></span>${escapeHtml(labels[name])}</button>`,
+      )
+      .join("");
+  return {
+    toggle: `<button class="theme-toggle" id="themeToggle" type="button" aria-label="Switch theme" title="Switch theme"><span class="icon-sun">${chromeIcons.sun}</span><span class="icon-moon">${chromeIcons.moon}</span></button>`,
+    menu: `<div class="theme-menu" id="themeMenuSection"><div class="menu-rule"></div><div class="theme-menu-head"><div class="menu-label">Theme</div></div><div class="theme-row" role="group" aria-label="Light themes"><span class="theme-row-label">Light</span>${variantButtons(light)}</div><div class="theme-row" role="group" aria-label="Dark themes"><span class="theme-row-label">Dark</span>${variantButtons(dark)}</div><button class="menu-item theme-match" id="themeMatchSystem" type="button" aria-pressed="false"><span>Match system theme</span><span class="theme-check">${chromeIcons.check}</span></button></div>`,
+  };
+}
 
 // Display the path with the home directory shortened to "~", split so the directory part can
 // ellipsize in the menu while the file name itself always stays visible.
@@ -3206,6 +3230,35 @@ if(c)c.textContent=outcome==="no-answer"?"Lavish did not answer the check, so th
 // allows it by hash, so it is one constant shared by the markup and the hash.
 const CHROME_CLIENT_ONERROR = "window.__lavishChromeBootFailed()";
 
+// LAVISH-FORK: the boot script's helpers call each other by their export names. A bundler that
+// renamed one (esbuild does on a name clash) would leave the theme controls throwing on every
+// click, so building the script from such a module fails at startup instead.
+export function assertHelpersKeepTheirNames(module) {
+  const renamed = Object.entries(module).filter(([name, fn]) => typeof fn === "function" && fn.name !== name);
+  if (renamed.length > 0) {
+    const list = renamed.map(([name, fn]) => `${name} (named ${fn.name})`).join(", ");
+    throw new Error(`Cannot inline helpers whose function name differs from their export name: ${list}`);
+  }
+  return module;
+}
+
+// LAVISH-FORK: the editor theme (specs/2026-10-18-theme-switcher-design.md 6.2). It runs before
+// chrome.css so the first paint already wears the reviewer's theme, then hands the same rules to
+// chrome-client.js as window.__lavishChromeTheme. Blocked storage means the defaults; any other
+// failure leaves the attributes and the global unset, so CSS shows Ink and the client hides the
+// controls. Inline only by its hash, like the failsafe.
+export const CHROME_THEME_BOOT_JS = `(function(){try{
+${serializeModuleHelpers(assertHelpersKeepTheirNames(chromeTheme)).declarations}
+var stored=null;
+try{stored=localStorage.getItem(chromeThemeConfig().storageKey);}catch(e){}
+var systemDark=!!(window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches);
+var theme=resolveChromeTheme(parseChromeThemePreference(stored),systemDark);
+var root=document.documentElement;
+root.dataset.lavishTheme=theme.variant;
+root.dataset.lavishScheme=theme.scheme;
+window.__lavishChromeTheme=Object.freeze({chromeThemeConfig:chromeThemeConfig,parseChromeThemePreference:parseChromeThemePreference,resolveChromeTheme:resolveChromeTheme,toggleChromeTheme:toggleChromeTheme,chooseChromeThemeVariant:chooseChromeThemeVariant,setChromeThemeMatchSystem:setChromeThemeMatchSystem});
+}catch(e){}})();`;
+
 function cspHashSource(source) {
   return `'sha256-${crypto.createHash("sha256").update(source, "utf8").digest("base64")}'`;
 }
@@ -3215,10 +3268,11 @@ function cspHashSource(source) {
 // no source list it fetched an artifact's external icon on every open and let the artifact frame
 // walk to any host. 'self' names this server however it was reached (127.0.0.1, localhost, an
 // allowed proxy host) and, under CSP3, its live-event WebSocket. Inline code runs only by hash:
-// the boot failsafe and the chrome-client.js onerror, both constants of this file.
+// the boot failsafe, the chrome-client.js onerror and (LAVISH-FORK) the theme boot script, all
+// constants of this file.
 export const CHROME_CONTENT_SECURITY_POLICY = [
   "default-src 'none'",
-  `script-src 'self' 'unsafe-hashes' ${cspHashSource(CHROME_BOOT_FAILSAFE_JS)} ${cspHashSource(CHROME_CLIENT_ONERROR)}`,
+  `script-src 'self' 'unsafe-hashes' ${cspHashSource(CHROME_BOOT_FAILSAFE_JS)} ${cspHashSource(CHROME_CLIENT_ONERROR)} ${cspHashSource(CHROME_THEME_BOOT_JS)}`,
   "style-src 'self'",
   "img-src 'self' data: blob:",
   "connect-src 'self'",
@@ -3274,6 +3328,7 @@ export function createChromeHtml(
   });
   const { head: pathHead, tail: pathTail } = displayPathParts(session.file);
   const bodyClass = layoutGateEnabled ? "lavish layout-gate-active" : "lavish";
+  const themeControls = chromeThemeControls();
   const layoutGateHidden = layoutGateEnabled ? "" : " hidden";
   const modeHotkeyUpper = MODE_TOGGLE_HOTKEY_KEY.toUpperCase();
   const modeToggleHint = `Toggle annotate/explore mode (⌘${modeHotkeyUpper} / Ctrl+${modeHotkeyUpper})`;
@@ -3284,10 +3339,11 @@ export function createChromeHtml(
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <title>${escapeHtml(title)}</title>
 ${faviconTag}
+<script>${CHROME_THEME_BOOT_JS}</script>
 <link rel="stylesheet" href="/chrome.css">
 </head>
 <body class="${bodyClass}">
-<div class="bar"><div class="brand"><span class="brand-mark">Lavish</span><span class="brand-support">Editor</span></div><div class="spacer" aria-hidden="true"></div><div class="warnings-wrap" id="warningsWrap" hidden><button class="warnings-button" id="warningsButton" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="warningsDrawer">${chromeIcons.warning}<span class="warnings-count" id="warningsCount">0</span></button><div class="menu warnings-drawer" id="warningsDrawer" role="dialog" aria-labelledby="warningsTitle" aria-describedby="warningsSummary" hidden><div class="warnings-head"><h2 class="warnings-title" id="warningsTitle">Layout issues</h2><p class="warnings-summary" id="warningsSummary"></p></div><div class="warnings-toolbar"><label class="warnings-selectall"><input type="checkbox" id="warningsSelectAll"><span>Select all</span></label><span class="warnings-selected" id="warningsSelected" role="status" aria-live="polite"></span></div><div class="warnings-list" id="warningsList"></div><div class="warnings-foot"><p class="warnings-note">Queueing sends a repair request with your next feedback. An issue is marked resolved only after a newer artifact load and a complete check at the same viewport no longer finds it.</p><button class="button" id="warningsQueueButton" type="button" disabled>Queue selected fixes</button></div></div></div><div class="revisions-wrap" id="revisionsWrap" hidden><button class="revisions-button" id="revisionsButton" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="revisionsDrawer"><span class="revisions-button-text">Revisions</span><span class="revisions-count" id="revisionsCount">0</span></button><div class="menu revisions-drawer" id="revisionsDrawer" role="dialog" aria-labelledby="revisionsTitle" aria-describedby="revisionsSummary" hidden><div class="revisions-head"><h2 class="revisions-title" id="revisionsTitle">Revisions</h2><p class="revisions-summary" id="revisionsSummary"></p></div><div class="revisions-list" id="revisionsList"></div><div class="revisions-foot"><p class="revisions-note">The agent declares these in the artifact itself. Reveal flashes the next block it marked for that revision; nothing about the page is restyled, so the saved file still looks the way it does here.</p></div></div></div><button class="annotate-switch" id="annotation" type="button" aria-pressed="true" title="${escapeHtml(modeToggleHint)}"><span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span><span>Annotate</span></button><div class="more-wrap" id="moreWrap"><button class="more-button" id="moreButton" type="button" title="More" aria-haspopup="menu" aria-expanded="false">${chromeIcons.more}</button><div class="menu more-menu" id="moreMenu" hidden><div class="menu-head"><div class="menu-label">Editing</div><button class="menu-file" id="copyPath" type="button" title="Copy path · ${escapeHtml(session.file)}">${chromeIcons.file}<span class="menu-file-text"><span class="path-head">${escapeHtml(pathHead)}</span><span class="path-tail">${escapeHtml(pathTail)}</span></span><span class="copy-hint" id="copyHint"><span class="icon-copy">${chromeIcons.copy}</span><span class="icon-check">${chromeIcons.check}</span><span id="copyHintText">Copy</span></span></button></div><div class="menu-rule"></div><button class="menu-item" id="reloadArtifact" type="button">${chromeIcons.refresh}<span>Reload artifact</span></button><button class="menu-item" id="copySnapshot" type="button">${chromeIcons.camera}<span>Copy DOM snapshot</span></button><button class="menu-item" id="exportArtifact" type="button">${chromeIcons.download}<span>Export standalone HTML</span></button><div class="menu-rule"></div><button class="menu-item danger" id="end" type="button">${chromeIcons.exit}<span>End session</span></button></div></div></div>
+<div class="bar"><div class="brand"><span class="brand-mark">Lavish</span><span class="brand-support">Editor</span></div><div class="spacer" aria-hidden="true"></div><div class="warnings-wrap" id="warningsWrap" hidden><button class="warnings-button" id="warningsButton" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="warningsDrawer">${chromeIcons.warning}<span class="warnings-count" id="warningsCount">0</span></button><div class="menu warnings-drawer" id="warningsDrawer" role="dialog" aria-labelledby="warningsTitle" aria-describedby="warningsSummary" hidden><div class="warnings-head"><h2 class="warnings-title" id="warningsTitle">Layout issues</h2><p class="warnings-summary" id="warningsSummary"></p></div><div class="warnings-toolbar"><label class="warnings-selectall"><input type="checkbox" id="warningsSelectAll"><span>Select all</span></label><span class="warnings-selected" id="warningsSelected" role="status" aria-live="polite"></span></div><div class="warnings-list" id="warningsList"></div><div class="warnings-foot"><p class="warnings-note">Queueing sends a repair request with your next feedback. An issue is marked resolved only after a newer artifact load and a complete check at the same viewport no longer finds it.</p><button class="button" id="warningsQueueButton" type="button" disabled>Queue selected fixes</button></div></div></div><div class="revisions-wrap" id="revisionsWrap" hidden><button class="revisions-button" id="revisionsButton" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="revisionsDrawer"><span class="revisions-button-text">Revisions</span><span class="revisions-count" id="revisionsCount">0</span></button><div class="menu revisions-drawer" id="revisionsDrawer" role="dialog" aria-labelledby="revisionsTitle" aria-describedby="revisionsSummary" hidden><div class="revisions-head"><h2 class="revisions-title" id="revisionsTitle">Revisions</h2><p class="revisions-summary" id="revisionsSummary"></p></div><div class="revisions-list" id="revisionsList"></div><div class="revisions-foot"><p class="revisions-note">The agent declares these in the artifact itself. Reveal flashes the next block it marked for that revision; nothing about the page is restyled, so the saved file still looks the way it does here.</p></div></div></div>${themeControls.toggle}<button class="annotate-switch" id="annotation" type="button" aria-pressed="true" title="${escapeHtml(modeToggleHint)}"><span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span><span>Annotate</span></button><div class="more-wrap" id="moreWrap"><button class="more-button" id="moreButton" type="button" title="More" aria-haspopup="menu" aria-expanded="false">${chromeIcons.more}</button><div class="menu more-menu" id="moreMenu" hidden><div class="menu-head"><div class="menu-label">Editing</div><button class="menu-file" id="copyPath" type="button" title="Copy path · ${escapeHtml(session.file)}">${chromeIcons.file}<span class="menu-file-text"><span class="path-head">${escapeHtml(pathHead)}</span><span class="path-tail">${escapeHtml(pathTail)}</span></span><span class="copy-hint" id="copyHint"><span class="icon-copy">${chromeIcons.copy}</span><span class="icon-check">${chromeIcons.check}</span><span id="copyHintText">Copy</span></span></button></div><div class="menu-rule"></div><button class="menu-item" id="reloadArtifact" type="button">${chromeIcons.refresh}<span>Reload artifact</span></button><button class="menu-item" id="copySnapshot" type="button">${chromeIcons.camera}<span>Copy DOM snapshot</span></button><button class="menu-item" id="exportArtifact" type="button">${chromeIcons.download}<span>Export standalone HTML</span></button>${themeControls.menu}<div class="menu-rule"></div><button class="menu-item danger" id="end" type="button">${chromeIcons.exit}<span>End session</span></button></div></div></div>
 <div class="layout"><div class="frame"><iframe id="artifact" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads" data-artifact-src="/artifact/${session.key}/index.html"></iframe></div><div class="panel-scrim" id="panelScrim"></div><aside class="panel" id="panel"><div class="panel-head" id="panelHead"><span class="panel-handle" aria-hidden="true"></span><div class="panel-head-row"><h2>Conversation</h2><span class="panel-summary" id="panelSummary" role="status" aria-live="polite"></span><button class="panel-toggle" id="panelToggle" type="button" aria-expanded="false" aria-controls="panel" aria-label="Show conversation">${chromeIcons.chevronUp}</button></div></div><div class="panel-scroll" id="panelScroll"><div class="chat" id="chatLog"></div><div class="chat chat-queued" id="queuedLog"></div></div><div class="composer" id="chatComposer"><div class="presence-banner handoff-banner" id="handoffBanner" hidden><span>This review is open in another Lavish tab.</span><button class="handoff-takeover" id="handoffTakeover" type="button">Take over here</button></div><div class="presence-banner handoff-banner" id="outdatedBanner" hidden><span id="outdatedText">The Lavish server this page was connected to is no longer running. Reloading will work once it is running again.</span><span class="outdated-actions"><button class="handoff-takeover" id="outdatedReload" type="button">Check and reload</button><button class="handoff-takeover" id="outdatedDismiss" type="button">Dismiss</button></span></div><div class="presence-banner" id="presenceBanner" hidden>Your agent is not listening. If this persists, ask your agent to poll for updates from Lavish.</div><textarea id="chatInput" placeholder="Write a message for the agent..."></textarea><div class="chat-attachments" id="chatAttachments"></div><div class="chat-attachment-toolbar"><button class="chat-attach" id="chatAttach" type="button">Attach images</button><input id="chatAttachInput" type="file" accept="${escapeHtml(acceptedMime.join(","))}" multiple hidden><span class="chat-attachment-notice" id="chatAttachmentNotice" role="status"></span></div><div class="send-hint" id="sendHint" hidden>Write a message or annotate an element first.</div><div class="actions" id="sendActions"><button class="button button-danger" id="sendAndEnd" type="button">${chromeIcons.exit}<span>Send &amp; End</span></button><button class="button" id="send">Send to Agent</button></div></div></aside></div>
 <div class="ended-overlay layout-gate-overlay" id="layoutGateOverlay"${layoutGateHidden}><div class="ended-card"><div class="ended-title" id="layoutGateTitle">Checking layout.<br>One moment.</div><p class="ended-copy" id="layoutGateCopy">Lavish is waiting for fonts and final geometry before revealing this artifact.</p><button class="button ended-action" id="layoutGateAction" type="button">Show anyway</button><button class="button ended-action layout-gate-bypass" id="layoutGateBypass" type="button" hidden>Show anyway</button></div></div>
 <div class="ended-overlay" id="endedOverlay" hidden><div class="ended-card"><div class="ended-title">Session ended.<br>Return to your agent to continue.</div><p class="ended-copy">${escapeHtml(session.file)}</p></div></div>

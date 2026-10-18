@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Scheme probe</title>
+    <script>
+      // The side this document saw before anything else ran, and every change after it
+      // (test/chrome-theme.browser.test.js).
+      window.__schemeQuery = matchMedia("(prefers-color-scheme: dark)");
+      window.__firstDark = window.__schemeQuery.matches;
+      window.__changes = [];
+      window.__schemeQuery.addEventListener("change", (event) => window.__changes.push(event.matches));
+    </script>
+    <style>
+      html,
+      body {
+        margin: 0;
+        background: #ffffff;
+        color: #1f2329;
+        font:
+          16px/1.5 system-ui,
+          sans-serif;
+      }
+      @media (prefers-color-scheme: dark) {
+        html,
+        body {
+          background: #101114;
+          color: #f3f3f3;
+        }
+      }
+      main {
+        padding: 24px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Scheme probe</h1>
+      <p>This page is light or dark the way the Lavish editor theme says.</p>
+    </main>
+  </body>
+</html>

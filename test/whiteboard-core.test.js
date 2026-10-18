@@ -12,6 +12,7 @@ import {
   libraryIconMermaidConfig,
   libraryIconSize,
   normalizeExcalidrawSceneTarget,
+  normalizeWhiteboardTheme,
   placeLibraryIcons,
   prepareLibraryIconSkeletons,
   repairSavedSceneTextMetrics,
@@ -1192,4 +1193,12 @@ test("summarizeSceneEdits reports a uniformly scaled library item as resized onl
     { ...baseline[1], x: 30, y: 30, width: 60, height: 60 },
   ];
   assert.deepEqual(summarizeSceneEdits(baseline, scaled).lines, ["Resized library item sys/Server by (100, 100)"]);
+});
+
+// LAVISH-FORK: the chrome's theme reaches a whiteboard as "light" or "dark" (theme switcher, spec 6.6).
+test("normalizeWhiteboardTheme accepts only dark as dark", () => {
+  assert.equal(normalizeWhiteboardTheme("dark"), "dark");
+  for (const value of ["light", "DARK", undefined, null, 1, {}, ""]) {
+    assert.equal(normalizeWhiteboardTheme(value), "light", String(value));
+  }
 });

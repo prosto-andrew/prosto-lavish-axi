@@ -37,6 +37,7 @@ import {
   findDuplicateElementIds,
   installMermaidRenderIdPrefixShim,
   libraryIconMermaidConfig,
+  normalizeWhiteboardTheme,
   placeLibraryIcons,
   prepareLibraryIconSkeletons,
   repairSavedSceneTextMetrics,
@@ -87,6 +88,11 @@ const state = {
   // Inline frames boot locked (view mode) so a page full of embedded
   // whiteboards scrolls normally; the first click on the canvas unlocks it.
   setLocked: null,
+  // LAVISH-FORK: the chrome's latest side, kept from the shell on, so an editor that mounts after a
+  // theme message (conversion, font loads, the stale-edits choice) mounts on that side; setTheme is set
+  // by EditorApp and re-themes an editor that is already open.
+  theme: "light",
+  setTheme: null,
 };
 
 function post(message) {
@@ -119,7 +125,15 @@ function setBanner(id, text) {
   banner.hidden = !text;
 }
 
+// LAVISH-FORK: a theme message from the chrome (theme switcher, spec 6.6).
+function setWhiteboardTheme(theme) {
+  state.theme = theme;
+  document.body.dataset.lavishWhiteboardTheme = theme;
+  state.setTheme?.(theme);
+}
+
 function buildShell(theme, mode) {
+  state.theme = theme;
   document.body.dataset.lavishWhiteboardTheme = theme;
   document.body.dataset.lavishWhiteboardMode = mode;
   const shell = el("div", { id: "wbShell" });
@@ -343,6 +357,10 @@ function onLinkOpen(element, event) {
 function EditorApp({ elements, appState, files, theme, startLocked }) {
   const [locked, setLocked] = React.useState(startLocked);
   state.setLocked = setLocked;
+  // LAVISH-FORK: the chrome's theme switcher re-themes an open editor through this state; the theme
+  // still reaches Excalidraw only through its prop (see the note on themes further down).
+  const [currentTheme, setTheme] = React.useState(theme);
+  state.setTheme = setTheme;
   return React.createElement(
     "div",
     { style: { position: "relative", width: "100%", height: "100%" } },
@@ -354,7 +372,7 @@ function EditorApp({ elements, appState, files, theme, startLocked }) {
         libraryItems: toExcalidrawLibraryItems(state.libraries),
         scrollToContent: true,
       },
-      theme,
+      theme: currentTheme,
       viewModeEnabled: locked,
       onChange: scheduleSave,
       onLinkOpen,
@@ -540,7 +558,7 @@ async function startFromConversion(init) {
       "This diagram type is not natively editable, so it is shown as an image - draw, annotate, and add shapes on top.",
     );
   }
-  mountEditor({ elements, appState: defaultAppState(), files, theme: init.theme });
+  mountEditor({ elements, appState: defaultAppState(), files, theme: state.theme });
   if (converted.missingIcons.length > 0) {
     const refs = [...new Set(converted.missingIcons.map((icon) => icon.ref))].join(", ");
     const count = converted.missingIcons.length;
@@ -585,7 +603,7 @@ async function startFromSavedScene(init) {
     elements,
     appState: { ...defaultAppState(), ...savedAppState },
     files: state.files,
-    theme: init.theme,
+    theme: state.theme,
   });
   if (savedMetricsVersion < WHITEBOARD_TEXT_METRICS_VERSION) scheduleSave();
 }
@@ -675,24 +693,23 @@ async function handleInit(init) {
   state.currentSource = String(init.source || "");
   state.currentSourceHash = String(init.sourceHash || "");
   state.libraries = Array.isArray(init.libraries) ? init.libraries : [];
-  const theme = init.theme === "dark" ? "dark" : "light";
   document.getElementById("wbTitle").textContent = `Whiteboard · diagram ${state.diagramIndex + 1}`;
 
   const saved = init.saved && typeof init.saved === "object" && init.saved.scene ? init.saved : null;
   try {
     const action = resolveWhiteboardInitAction(saved ? normalizeSavedSceneForComparison(saved) : null, init.sourceHash);
     if (action === "restore" && saved) {
-      await startFromSavedScene({ ...init, saved, theme });
+      await startFromSavedScene({ ...init, saved });
       return;
     }
     if (action === "prompt" && saved) {
       const choice = await offerStaleChoice();
       if (choice === "keep") {
-        await startFromSavedScene({ ...init, saved, theme });
+        await startFromSavedScene({ ...init, saved });
         return;
       }
     }
-    await startFromConversion({ ...init, theme });
+    await startFromConversion(init);
   } catch (error) {
     showStatus(`Could not open this diagram as a whiteboard: ${describeError(error)}`, { transient: false });
   }
@@ -724,7 +741,7 @@ function main() {
     if (msg.type === "lavish-whiteboard:init" && !initialized && typeof msg.channelId === "string" && msg.channelId) {
       initialized = true;
       state.channelId = msg.channelId;
-      buildShell(msg.theme === "dark" ? "dark" : "light", msg.mode === "inline" ? "inline" : "overlay");
+      buildShell(normalizeWhiteboardTheme(msg.theme), msg.mode === "inline" ? "inline" : "overlay");
       handleInit(msg);
     }
     if (!initialized || msg.channelId !== state.channelId) return;
@@ -732,6 +749,7 @@ function main() {
     if (msg.type === "lavish-whiteboard:prepareTeardown") prepareTeardown(msg);
     if (msg.type === "lavish-whiteboard:flush") flushSaveNow(msg);
     if (msg.type === "lavish-whiteboard:saveResult") handleSaveResult(msg);
+    if (msg.type === "lavish-whiteboard:theme") setWhiteboardTheme(normalizeWhiteboardTheme(msg.theme));
     if (msg.type === "lavish-whiteboard:queueResult") {
       resetQueueButton();
       if (msg.ok) {

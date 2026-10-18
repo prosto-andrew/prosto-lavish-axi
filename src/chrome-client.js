@@ -156,6 +156,9 @@ const reloadArtifactButton = /** @type {HTMLButtonElement} */ (document.getEleme
 const copySnapshotButton = /** @type {HTMLButtonElement} */ (document.getElementById("copySnapshot"));
 const exportArtifactButton = /** @type {HTMLButtonElement} */ (document.getElementById("exportArtifact"));
 const endButton = /** @type {HTMLButtonElement} */ (document.getElementById("end"));
+const themeToggle = /** @type {HTMLButtonElement} */ (document.getElementById("themeToggle"));
+const themeMenuSection = /** @type {HTMLDivElement} */ (document.getElementById("themeMenuSection"));
+const themeMatchSystemButton = /** @type {HTMLButtonElement} */ (document.getElementById("themeMatchSystem"));
 const copyPathButton = /** @type {HTMLButtonElement} */ (document.getElementById("copyPath"));
 const copyHint = /** @type {HTMLSpanElement} */ (document.getElementById("copyHint"));
 const copyHintText = /** @type {HTMLSpanElement} */ (document.getElementById("copyHintText"));
@@ -3740,6 +3743,9 @@ const whiteboardSaveChains = new Map();
 const inlineWhiteboardChannels = new Map();
 
 function whiteboardTheme() {
+  // LAVISH-FORK: the editor theme's side, set on <html> by the theme boot script and applyTheme.
+  const scheme = document.documentElement?.dataset?.lavishScheme;
+  if (scheme === "light" || scheme === "dark") return scheme;
   return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
@@ -4757,6 +4763,98 @@ endButton.onclick = () => {
   closeMenus();
   endSession();
 };
+// LAVISH-FORK: the editor theme switcher (specs/2026-10-18-theme-switcher-design.md 4, 6.5, 6.6).
+// The boot script in the page head owns the rules and has already themed the page; without it the
+// page stays Ink and offers no theme controls.
+const chromeTheme = /** @type {Record<string, any>} */ (/** @type {unknown} */ (window)).__lavishChromeTheme || null;
+const themeSystemQuery =
+  chromeTheme && typeof window.matchMedia === "function" ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+let themePreference = null;
+let appliedThemeScheme = "";
+
+function systemPrefersDark() {
+  return Boolean(themeSystemQuery && themeSystemQuery.matches);
+}
+
+function readThemePreference() {
+  let stored = null;
+  try {
+    stored = localStorage.getItem(chromeTheme.chromeThemeConfig().storageKey);
+  } catch {
+    // Blocked site data: the defaults.
+  }
+  return chromeTheme.parseChromeThemePreference(stored);
+}
+
+function applyTheme() {
+  const { light, dark, labels } = chromeTheme.chromeThemeConfig();
+  const { variant, scheme } = chromeTheme.resolveChromeTheme(themePreference, systemPrefersDark());
+  document.documentElement.dataset.lavishTheme = variant;
+  document.documentElement.dataset.lavishScheme = scheme;
+  const next =
+    scheme === "dark"
+      ? `Switch to light theme (${labels[themePreference.light]})`
+      : `Switch to dark theme (${labels[themePreference.dark]})`;
+  themeToggle.setAttribute("aria-label", next);
+  themeToggle.title = next;
+  for (const name of [...light, ...dark]) {
+    const button = document.getElementById("themeVariant-" + name);
+    if (button) {
+      button.setAttribute("aria-pressed", String(name === themePreference.light || name === themePreference.dark));
+    }
+  }
+  themeMatchSystemButton.setAttribute("aria-pressed", String(themePreference.mode === "system"));
+  // Whiteboards draw only light or dark, so a variant change on the same side tells them nothing.
+  if (appliedThemeScheme && appliedThemeScheme !== scheme) {
+    const message = { type: "lavish-whiteboard:theme", theme: scheme };
+    postToWhiteboardOverlay(message);
+    for (const index of inlineWhiteboardChannels.keys()) postToInlineWhiteboard(index, message);
+  }
+  appliedThemeScheme = scheme;
+}
+
+function chooseTheme(preference) {
+  themePreference = preference;
+  try {
+    localStorage.setItem(chromeTheme.chromeThemeConfig().storageKey, JSON.stringify(preference));
+  } catch {
+    // The browser refuses site data: the choice still holds for this page.
+  }
+  applyTheme();
+}
+
+if (!chromeTheme) {
+  themeToggle.hidden = true;
+  themeMenuSection.hidden = true;
+} else {
+  themePreference = readThemePreference();
+  applyTheme();
+  themeToggle.onclick = () => chooseTheme(chromeTheme.toggleChromeTheme(themePreference, systemPrefersDark()));
+  const { light, dark } = chromeTheme.chromeThemeConfig();
+  for (const name of [...light, ...dark]) {
+    const button = document.getElementById("themeVariant-" + name);
+    // A pick leaves the menu open, so the variants can be compared one after another.
+    if (button) {
+      button.onclick = () =>
+        chooseTheme(chromeTheme.chooseChromeThemeVariant(themePreference, name, systemPrefersDark()));
+    }
+  }
+  themeMatchSystemButton.onclick = () =>
+    chooseTheme(
+      chromeTheme.setChromeThemeMatchSystem(themePreference, themePreference.mode !== "system", systemPrefersDark()),
+    );
+  themeSystemQuery?.addEventListener("change", () => {
+    if (themePreference.mode === "system") applyTheme();
+  });
+  // Another Lavish tab chose a theme, or the site's data was cleared (key null).
+  window.addEventListener("storage", (event) => {
+    const key = chromeTheme.chromeThemeConfig().storageKey;
+    if (event.key !== key && event.key !== null) return;
+    themePreference =
+      event.key === key ? chromeTheme.parseChromeThemePreference(event.newValue) : readThemePreference();
+    applyTheme();
+  });
+}
 handoffTakeoverButton.onclick = () => location.reload();
 if (outdatedReloadButton) outdatedReloadButton.onclick = () => reloadChromeForOutdatedBanner();
 if (outdatedDismissButton) {

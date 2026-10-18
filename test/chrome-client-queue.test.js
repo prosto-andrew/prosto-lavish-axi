@@ -4,7 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 
 import { chatEntryForPrompt } from "../src/chat-messages.js";
-import { createChromeHtml } from "../src/server.js";
+import { CHROME_THEME_BOOT_JS, createChromeHtml } from "../src/server.js";
 
 const sourceUrl = new URL("../src/chrome-client.js", import.meta.url);
 
@@ -99,6 +99,10 @@ async function createChromeHarness({
   // what happens while a navigation has not loaded yet. A test where the order of loads matters
   // takes "manual": in "auto" the automatic load arrives before the test's own dispatch("load").
   frameLoads = "auto",
+  // LAVISH-FORK: `{ systemDark }` runs the page's real theme boot script before the client, with a
+  // `window.matchMedia` that answers the OS color-scheme query (`setSystemDark` flips it). Left off,
+  // the boot script never ran, as when it failed in a browser.
+  theme = null,
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
   // Seed sessionStorage before the client boots, to model a tab whose queue was
@@ -459,6 +463,7 @@ async function createChromeHarness({
     },
     document: {
       body: element("body"),
+      documentElement: element("html"),
       get activeElement() {
         return activeElement;
       },
@@ -519,21 +524,24 @@ async function createChromeHarness({
     },
   };
   const mediaQueries = [];
-  if (mobile) {
+  const themeQueries = [];
+  if (mobile || theme) {
     context.window.matchMedia = (query) => {
+      const colorScheme = Boolean(theme) && query === "(prefers-color-scheme: dark)";
       const list = {
         media: query,
-        matches: true,
+        matches: colorScheme ? Boolean(theme.systemDark) : mobile,
         changeHandlers: [],
         addEventListener(type, handler) {
           if (type === "change") this.changeHandlers.push(handler);
         },
       };
-      mediaQueries.push(list);
+      (colorScheme ? themeQueries : mediaQueries).push(list);
       return list;
     };
   }
 
+  if (theme) vm.runInNewContext(CHROME_THEME_BOOT_JS, context, { filename: "chrome-theme-boot.js" });
   vm.runInNewContext(source, context, { filename: "chrome-client.js" });
   await flushPromises();
 
@@ -683,6 +691,18 @@ async function createChromeHarness({
     artifactBeginRequests,
     artifactLoadToken: frameLoadToken,
     mediaQueries,
+    html() {
+      return context.document.documentElement;
+    },
+    setSystemDark(matches) {
+      for (const list of themeQueries) {
+        list.matches = matches;
+        for (const handler of list.changeHandlers) handler({ matches });
+      }
+    },
+    dispatchWindowEvent(type, event = {}) {
+      for (const handler of windowListeners.get(type) || []) handler(event);
+    },
     setMobile(matches) {
       for (const list of mediaQueries) {
         list.matches = matches;
@@ -10096,4 +10116,202 @@ test("whiteboard init flags libraries that changed between the libraries and sou
   });
   assert.equal(failed.librariesUnavailable, true);
   assert.equal(JSON.stringify(failed.libraries), "[]");
+});
+
+// LAVISH-FORK: the editor theme switcher (specs/2026-10-18-theme-switcher-design.md 4, 6.5, 6.6).
+const THEME_KEY = "lavish-axi:theme";
+
+function themeOf(chrome) {
+  const { dataset } = chrome.html();
+  return `${dataset.lavishTheme}/${dataset.lavishScheme}`;
+}
+
+function storedTheme(chrome) {
+  return JSON.parse(chrome.localStore.get(THEME_KEY));
+}
+
+function pressedVariants(chrome) {
+  return ["warm", "neutral", "cool", "black", "ink", "graphite"].filter(
+    (name) => chrome.element(`themeVariant-${name}`)["aria-pressed"] === "true",
+  );
+}
+
+test("without the theme boot the chrome hides its theme controls", async () => {
+  const chrome = await createChromeHarness();
+  assert.equal(chrome.element("themeToggle").hidden, true);
+  assert.equal(chrome.element("themeMenuSection").hidden, true);
+});
+
+test("the theme toggle flips the side, saves the choice and relabels itself", async () => {
+  const chrome = await createChromeHarness({ theme: { systemDark: true } });
+  const toggle = chrome.element("themeToggle");
+  assert.equal(toggle.hidden, false);
+  assert.equal(themeOf(chrome), "ink/dark");
+  assert.equal(toggle["aria-label"], "Switch to light theme (Warm)");
+  assert.deepEqual(pressedVariants(chrome), ["warm", "ink"]);
+
+  toggle.onclick();
+  assert.equal(themeOf(chrome), "warm/light");
+  assert.deepEqual(storedTheme(chrome), { mode: "light", light: "warm", dark: "ink" });
+  assert.equal(toggle["aria-label"], "Switch to dark theme (Ink)");
+  assert.equal(toggle.title, "Switch to dark theme (Ink)");
+  assert.deepEqual(pressedVariants(chrome), ["warm", "ink"]);
+});
+
+test("a variant of the OS side keeps Match system, the other side leaves it", async () => {
+  const chrome = await createChromeHarness({ theme: { systemDark: true } });
+  chrome.element("moreButton").onclick();
+  assert.equal(chrome.element("moreMenu").hidden, false);
+  assert.equal(chrome.element("themeMatchSystem")["aria-pressed"], "true");
+
+  chrome.element("themeVariant-graphite").onclick();
+  assert.equal(themeOf(chrome), "graphite/dark");
+  assert.equal(chrome.element("themeMatchSystem")["aria-pressed"], "true");
+  assert.deepEqual(pressedVariants(chrome), ["warm", "graphite"]);
+
+  chrome.element("themeVariant-cool").onclick();
+  assert.equal(themeOf(chrome), "cool/light");
+  assert.equal(chrome.element("themeMatchSystem")["aria-pressed"], "false");
+  assert.deepEqual(storedTheme(chrome), { mode: "light", light: "cool", dark: "graphite" });
+  assert.equal(chrome.element("moreMenu").hidden, false, "picking a variant keeps the menu open");
+});
+
+test("Match system theme returns to the OS side and keeps the look when turned off", async () => {
+  const chrome = await createChromeHarness({ theme: { systemDark: true } });
+  chrome.element("themeToggle").onclick();
+  assert.equal(themeOf(chrome), "warm/light");
+
+  chrome.element("themeMatchSystem").onclick();
+  assert.equal(themeOf(chrome), "ink/dark");
+  assert.equal(chrome.element("themeMatchSystem")["aria-pressed"], "true");
+
+  chrome.element("themeMatchSystem").onclick();
+  assert.equal(themeOf(chrome), "ink/dark");
+  assert.equal(storedTheme(chrome).mode, "dark");
+  assert.equal(chrome.element("themeMatchSystem")["aria-pressed"], "false");
+});
+
+test("an OS theme change is followed only in system mode", async () => {
+  const chrome = await createChromeHarness({ theme: { systemDark: true } });
+  chrome.setSystemDark(false);
+  assert.equal(themeOf(chrome), "warm/light");
+
+  chrome.element("themeToggle").onclick();
+  assert.equal(themeOf(chrome), "ink/dark");
+  chrome.setSystemDark(true);
+  chrome.setSystemDark(false);
+  assert.equal(themeOf(chrome), "ink/dark");
+});
+
+test("a theme chosen in another tab applies at once", async () => {
+  const chrome = await createChromeHarness({ theme: { systemDark: true } });
+  chrome.dispatchWindowEvent("storage", {
+    key: THEME_KEY,
+    newValue: '{"mode":"light","light":"neutral","dark":"ink"}',
+  });
+  assert.equal(themeOf(chrome), "neutral/light");
+
+  chrome.dispatchWindowEvent("storage", { key: "lavish-axi:something-else", newValue: '{"mode":"dark"}' });
+  assert.equal(themeOf(chrome), "neutral/light");
+});
+
+test("clearing site data in another tab returns to the defaults", async () => {
+  const chrome = await createChromeHarness({ theme: { systemDark: true } });
+  chrome.element("themeToggle").onclick();
+  assert.equal(themeOf(chrome), "warm/light");
+
+  chrome.localStore.clear();
+  chrome.dispatchWindowEvent("storage", { key: null, newValue: null });
+  assert.equal(themeOf(chrome), "ink/dark");
+  assert.equal(chrome.element("themeMatchSystem")["aria-pressed"], "true");
+});
+
+test("blocked storage keeps the choice for the page", async () => {
+  class RefusingStore extends Map {
+    /** @returns {this} */
+    set() {
+      throw new Error("QuotaExceededError: the browser refuses site data");
+    }
+  }
+  const chrome = await createChromeHarness({ theme: { systemDark: true }, localStore: new RefusingStore() });
+  chrome.element("themeToggle").onclick();
+  assert.equal(themeOf(chrome), "warm/light");
+  chrome.element("themeToggle").onclick();
+  assert.equal(themeOf(chrome), "ink/dark");
+});
+
+test("the theme toggle still works after the session ended", async () => {
+  const chrome = await createChromeHarness({
+    theme: { systemDark: true },
+    sessionData: { ...defaultSessionData, initialEnded: true },
+  });
+  assert.equal(chrome.element("moreButton").disabled, true);
+  chrome.element("themeToggle").onclick();
+  assert.equal(themeOf(chrome), "warm/light");
+});
+
+test("a side change re-themes open whiteboards, a same-side variant does not", async () => {
+  const chrome = await createChromeHarness({
+    theme: { systemDark: true },
+    fetchImpl: async (url) => whiteboardFetch(String(url)),
+  });
+  const whiteboard = await initializeInlineWhiteboard(chrome);
+  const before = whiteboard.posted.length;
+
+  chrome.element("themeToggle").onclick();
+  assert.equal(whiteboard.posted.length, before + 1);
+  // A copy: the message was built in the client's realm.
+  assert.deepEqual(
+    { ...whiteboard.posted.at(-1) },
+    {
+      type: "lavish-whiteboard:theme",
+      theme: "light",
+      channelId: "inline-channel",
+    },
+  );
+
+  chrome.element("themeVariant-cool").onclick();
+  assert.equal(whiteboard.posted.length, before + 1, "a variant on the same side posts nothing");
+});
+
+test("a whiteboard opened after a toggle starts on the new side", async () => {
+  const chrome = await createChromeHarness({
+    theme: { systemDark: true },
+    fetchImpl: async (url) => whiteboardFetch(String(url)),
+  });
+  chrome.element("themeToggle").onclick();
+  const whiteboard = await initializeInlineWhiteboard(chrome);
+  const init = whiteboard.posted.find((message) => message.type === "lavish-whiteboard:init");
+  assert.equal(init.theme, "light");
+});
+
+test("a side change re-themes the fullscreen whiteboard too", async () => {
+  const chrome = await createChromeHarness({
+    theme: { systemDark: true },
+    fetchImpl: async (url) => whiteboardFetch(String(url)),
+  });
+  const inline = await initializeInlineWhiteboard(chrome);
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:maximize",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+  });
+  chrome.sendInlineWhiteboardMessage(inline, {
+    type: "lavish-whiteboard:teardownReady",
+    diagramIndex: 0,
+    channelId: "inline-channel",
+    flushId: inline.posted.at(-1).flushId,
+  });
+  chrome.sendWhiteboardMessage({ type: "lavish-whiteboard:ready", diagramIndex: 0, channelToken: "overlay-channel" });
+  await flushPromises();
+  await flushPromises();
+  const init = chrome.postedToWhiteboard.find((message) => message.type === "lavish-whiteboard:init");
+  assert.equal(init.theme, "dark");
+
+  chrome.element("themeToggle").onclick();
+  // A copy: the message was built in the client's realm.
+  assert.deepEqual(
+    { ...chrome.postedToWhiteboard.at(-1) },
+    { type: "lavish-whiteboard:theme", theme: "light", channelId: "overlay-channel" },
+  );
 });
