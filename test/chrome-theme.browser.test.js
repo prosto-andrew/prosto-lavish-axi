@@ -1,17 +1,18 @@
 // LAVISH-FORK: the editor theme switcher in a real browser (specs/2026-10-18-theme-switcher-design.md
-// 7 and 9). Only a browser shows whether the artifact frame, in its own process, learns the editor's
-// side through the inherited color-scheme - and whether it ever sees the other side first. Opt-in
-// like the other real-browser suites:
+// 7, 8 and 9). Only a browser shows whether the artifact frame, in its own process, learns the editor's
+// side through the inherited color-scheme - and whether it ever sees the other side first - and
+// whether the design guidance's theme pair follows it. Opt-in like the other real-browser suites:
 //   LAVISH_AXI_BROWSER_E2E=1 node --test test/chrome-theme.browser.test.js
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFile, mkdtemp, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { DESIGN_CDN_SNIPPET, THEME_SWITCH_SNIPPET } from "../src/design-reference.js";
 import { findChrome, launchBrowser } from "./cdp-browser.js";
 
 const runBrowserE2e = process.env.LAVISH_AXI_BROWSER_E2E === "1";
@@ -179,6 +180,78 @@ test(
         if (width < 360) assert.equal(state.toggle, "none", `${width}px: the toggle gives way`);
         else assert.notEqual(state.toggle, "none", `${width}px: the toggle stays`);
       }
+    } finally {
+      run(process.execPath, ["bin/lavish-axi.js", "stop", "--port", String(port)], lavishEnv, 15_000);
+      await browser?.close();
+      await rm(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    }
+  },
+);
+
+// Spec 8 and 14: an artifact built from `lavish-safe design` follows the editor's side - luxury when
+// dark, the tuned caramellatte when light - and the tweak wins over the real themes.css even though
+// the snippet sits before the design links here, on the root and on a nested caramellatte section.
+test(
+  "the design guidance's theme pair follows the editor side in a real browser",
+  { skip: browserSkip, timeout: 300_000 },
+  async () => {
+    const temp = await mkdtemp(path.join(tmpdir(), "lavish-theme-"));
+    const port = await freePort();
+    const lavishEnv = {
+      LAVISH_AXI_PORT: String(port),
+      LAVISH_AXI_STATE_DIR: path.join(temp, "state"),
+      LAVISH_AXI_LINK_HOST: "127.0.0.1",
+    };
+    let browser;
+    try {
+      const artifact = path.join(temp, "pair.html");
+      await writeFile(
+        artifact,
+        `<!doctype html><html lang="en" data-theme="luxury"><head><meta charset="utf-8"><title>Theme pair</title>${THEME_SWITCH_SNIPPET}\n${DESIGN_CDN_SNIPPET}</head><body class="bg-base-100 text-base-content"><main class="p-6"><div role="alert" class="alert alert-error">Error</div><section id="nested" data-theme="caramellatte" class="bg-base-100 p-4">Nested</section></main></body></html>`,
+      );
+      const output = run(process.execPath, ["bin/lavish-axi.js", artifact, "--no-open"], lavishEnv);
+      const url = output.match(/url:\s*"([^"]+)"/)?.[1];
+      assert.ok(url, output);
+      browser = await launchBrowser({ chromePath, profileDir: path.join(temp, "chrome") });
+      await browser.emulate("1440x1000x1");
+
+      const look = async () =>
+        JSON.parse(
+          await browser.evaluateInArtifact(
+            'JSON.stringify({ theme: document.documentElement.dataset.theme, error: getComputedStyle(document.documentElement).getPropertyValue("--color-error").trim(), nestedError: getComputedStyle(document.getElementById("nested")).getPropertyValue("--color-error").trim(), background: getComputedStyle(document.body).backgroundColor })',
+          ),
+        );
+
+      await browser.open(url);
+      await browser.evaluate(
+        `localStorage.setItem("lavish-axi:theme", '{"mode":"light","light":"warm","dark":"ink"}')`,
+      );
+      await browser.open(url);
+      await browser.wait(4500);
+      const light = await look();
+      assert.equal(light.theme, "caramellatte");
+      assert.equal(light.error, "#9f1c1c", "the tweak outranks themes.css on the root");
+      assert.equal(light.nestedError, "#9f1c1c");
+
+      await browser.evaluate(
+        '() => { window.__artifactLoads = 0; document.getElementById("artifact").addEventListener("load", () => { window.__artifactLoads += 1; }); }',
+      );
+      await browser.clickInPage("#themeToggle");
+      await browser.wait(1000);
+      const dark = await look();
+      assert.equal(dark.theme, "luxury");
+      assert.ok(dark.error && dark.error !== "#9f1c1c", `luxury keeps its own error color: ${dark.error}`);
+      assert.equal(dark.nestedError, "#9f1c1c", "a nested caramellatte section keeps the readable error pair");
+      assert.notEqual(dark.background, light.background, "the page paints the other theme");
+      assert.equal(
+        await browser.evaluate("window.__artifactLoads"),
+        0,
+        "switching the theme never reloads the artifact",
+      );
+
+      await browser.clickInPage("#themeToggle");
+      await browser.wait(1000);
+      assert.equal((await look()).theme, "caramellatte", "and back");
     } finally {
       run(process.execPath, ["bin/lavish-axi.js", "stop", "--port", String(port)], lavishEnv, 15_000);
       await browser?.close();

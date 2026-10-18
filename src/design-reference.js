@@ -138,6 +138,34 @@ export const MERMAID_CDN_SNIPPET = `<script type="module">
   darkQuery.addEventListener("change", queueRender);
 </script>`;
 
+// LAVISH-FORK: the default artifact theme follows the reviewer's light/dark side, which the Lavish
+// editor theme hands the artifact frame as its prefers-color-scheme (specs/2026-10-18-theme-switcher-
+// design.md 8 and 14): luxury when dark, caramellatte when light. The <html data-theme="luxury"> in the
+// artifact's markup stays the no-JavaScript look. The html-qualified selectors outrank themes.css's
+// own [data-theme=caramellatte] in any <head> order and reach nested caramellatte sections too.
+export const THEME_SWITCH_SNIPPET = `<style>
+  /* caramellatte on the Lavish light side: a near-black neutral and a readable error pair. */
+  html[data-theme="caramellatte"],
+  html [data-theme="caramellatte"] {
+    --color-neutral: oklch(20% 0 0);
+    --color-neutral-content: oklch(80% 0.0081 61.42);
+    --color-error: #9f1c1c;
+    --color-error-content: #fff7ed;
+  }
+</style>
+<script>
+  // Follow the reviewer's light/dark side: luxury when dark, caramellatte when light.
+  (() => {
+    const root = document.documentElement;
+    const dark = matchMedia("(prefers-color-scheme: dark)");
+    const apply = () => {
+      root.dataset.theme = dark.matches ? "luxury" : "caramellatte";
+    };
+    apply();
+    dark.addEventListener("change", apply);
+  })();
+</script>`;
+
 export const LAYOUT_SAFETY_CSS_SNIPPET = `<style>
   *, *::before, *::after { box-sizing: border-box; }
   :where(.grid, .flex, .layout-grid, .layout-flex) > *,
@@ -223,6 +251,9 @@ export function createDesignOutput() {
         DESIGN_PRIORITY_RULE +
         " Paste the local design snippet below into your `<head>`. It loads from this machine's Lavish server, so the artifact makes no outbound request; `export` inlines these files into the standalone copy, while the source file opened directly from disk is unstyled.",
       cdn_snippet: DESIGN_CDN_SNIPPET,
+      theme_switch_snippet: THEME_SWITCH_SNIPPET,
+      theme_switch_note:
+        "Paste it into your `<head>` together with `cdn_snippet`, so the artifact follows the reviewer's light/dark side; `theme_usage` below says when to leave it out.",
       cdn_urls: DESIGN_CDN_URLS,
       versions: { tailwind: TAILWIND_BROWSER_VERSION, daisyui: DAISYUI_VERSION },
       docs_note:
@@ -256,7 +287,10 @@ export function createDesignOutput() {
       how: 'Append one entry per round to the `data-lavish-revisions` JSON (oldest first, stable `id`s), and put `data-lavish-revision="<id>"` on each block you actually edited or added. Lavish reads them and never restyles the page, so the saved file looks the same opened directly.',
     },
     theme_usage: [
-      'Default to `<html data-theme="luxury">` - it matches the Lavish look. Pick a different theme from the list below only when the user asked for one or the content clearly calls for it.',
+      // LAVISH-FORK: upstream defaulted to a fixed luxury; these two items make both sides the default
+      // (specs/2026-10-18-theme-switcher-design.md 8 and 14).
+      "By default the artifact follows the reviewer's light/dark side: write (or keep) `<html data-theme=\"luxury\">` (the dark side, and the look without JavaScript) and paste `theme_switch_snippet` into your `<head>` - it switches to a tuned `caramellatte` on the light side and back. When the user, the subject project's design system, or the product being mocked fixes one theme, or the content clearly calls for one, use that theme from the list below without the snippet's `<script>`; keep its `<style>` if that theme is `caramellatte`, so the error and neutral colors stay readable.",
+      "An artifact that does not use DaisyUI still styles both sides: set its light and dark colors through `@media (prefers-color-scheme: dark)` rather than one fixed scheme - unless the user, the subject project's design system, or the product being mocked has only one scheme; then match that one.",
       'Set a nested section theme with `<section data-theme="night">`.',
       "Prefer semantic colors such as `bg-base-100`, `bg-base-200`, `text-base-content`, `bg-primary`, `text-primary-content`, `alert-warning`, and `btn-primary` so themes remain readable.",
       "Avoid hardcoded Tailwind color names for text and surfaces unless the user asked for exact colors.",
