@@ -2619,24 +2619,31 @@ test("an oversized agent reply preserves evicted prompt acks without exceeding t
 // Reads state.json from a second process while this one writes it, as a CLI listing sessions does
 // beside a running server. It waits between reads by spinning, never on a timer: timers tick
 // together, so a timed reader would line every read up against every retried rename and starve it,
-// which no real reader does.
+// which no real reader does. Windows can, rarely, report the name missing to an open that races
+// the rename replacing it; the very next open must find it again, so one such miss is counted and
+// read once more. A file that stays gone for a second open - removed, then replaced - still fails.
 const STATE_READER = `
 const { readFileSync } = require("node:fs");
 let reads = 0;
 let torn = 0;
+let missing = 0;
 let stop = false;
 process.stdin.on("data", () => { stop = true; });
+function read() {
+  try { JSON.parse(readFileSync(process.argv[1], "utf8")); }
+  catch (error) { if (error instanceof SyntaxError) torn += 1; else throw error; }
+}
 (async () => {
   console.log("ready");
   while (!stop) {
-    try { JSON.parse(readFileSync(process.argv[1], "utf8")); }
-    catch (error) { if (error instanceof SyntaxError) torn += 1; else throw error; }
+    try { read(); }
+    catch (error) { if (error.code !== "ENOENT") throw error; missing += 1; read(); }
     reads += 1;
     const until = performance.now() + 1 + Math.random() * 3;
     while (performance.now() < until) {}
     await new Promise((resolve) => setImmediate(resolve));
   }
-  console.log(JSON.stringify({ reads, torn }));
+  console.log(JSON.stringify({ reads, torn, missing }));
 })();
 `;
 
@@ -2674,7 +2681,11 @@ test("a reader in another process never sees state.json half-written", async () 
       result = await reader.stop();
     }
     assert.ok(result.reads >= 10, `the reader only got ${result.reads} reads in`);
-    assert.equal(result.torn, 0, `${result.torn} of ${result.reads} reads saw a partially written state.json`);
+    assert.equal(
+      result.torn,
+      0,
+      `${result.torn} of ${result.reads} reads saw a partially written state.json (${result.missing} found it missing once)`,
+    );
   });
 });
 
