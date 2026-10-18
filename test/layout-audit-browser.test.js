@@ -7,7 +7,12 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { findChrome, launchBrowser, waitForValue } from "./cdp-browser.js";
+
+// LAVISH-HARDENED: headless Chrome over CDP (`./cdp-browser.js`) instead of chrome-devtools-axi.
 const runBrowserE2e = process.env.LAVISH_AXI_BROWSER_E2E === "1";
+const chromePath = runBrowserE2e ? await findChrome() : "";
+const browserSkip = !runBrowserE2e || (!chromePath && "Chrome or Chromium is required (set CHROME_PATH)");
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixtures = path.join(repoRoot, "test/fixtures/layout-audit");
 
@@ -37,7 +42,7 @@ async function freePort() {
 
 test(
   "real browser layout audit stays silent on acceptable pages and reports one severe root per broken case",
-  { skip: !runBrowserE2e, timeout: 480_000 },
+  { skip: browserSkip, timeout: 480_000 },
   async () => {
     const temp = await mkdtemp(path.join(tmpdir(), "lavish-layout-browser-"));
     const port = await freePort();
@@ -49,10 +54,7 @@ test(
       LAVISH_AXI_HOST: "127.0.0.1",
       LAVISH_AXI_LINK_HOST: "127.0.0.1",
     };
-    const chromeEnv = {
-      CHROME_DEVTOOLS_AXI_SESSION: `lavish-layout-${process.pid}`,
-      CHROME_DEVTOOLS_AXI_USER_DATA_DIR: path.join(temp, "chrome"),
-    };
+    let browser;
 
     function openArtifact(file) {
       const output = run(process.execPath, ["bin/lavish-axi.js", file, "--no-open"], lavishEnv);
@@ -71,25 +73,9 @@ test(
     }
 
     function readInbox() {
-      const output = run(
-        "chrome-devtools-axi",
-        [
-          "eval",
-          'JSON.stringify({ gate: document.body.classList.contains("layout-gate-active"), wrapHidden: document.getElementById("warningsWrap").hidden, badge: document.getElementById("warningsCount").textContent })',
-        ],
-        chromeEnv,
+      return browser.evaluate(
+        '({ gate: document.body.classList.contains("layout-gate-active"), wrapHidden: document.getElementById("warningsWrap").hidden, badge: document.getElementById("warningsCount").textContent })',
       );
-      const raw = output.match(/result:\s*("(?:[^"\\]|\\.)*")/s)?.[1];
-      assert.ok(raw, output);
-      let value = JSON.parse(raw);
-      while (typeof value === "string") {
-        try {
-          value = JSON.parse(value);
-        } catch {
-          break;
-        }
-      }
-      return value;
     }
 
     // The audit's detection calibration is unchanged; what changed is where findings land. A
@@ -97,18 +83,18 @@ test(
     // the poll return - only the user queueing a fix does that.
     async function audit(name, viewport, settleMs, expectedCount) {
       const { file, url } = await openFixture(name);
-      run("chrome-devtools-axi", ["emulate", "--viewport", viewport], chromeEnv);
-      run("chrome-devtools-axi", ["open", url], chromeEnv);
-      run("chrome-devtools-axi", ["wait", String(settleMs)], chromeEnv, settleMs + 45_000);
-      let inbox = readInbox();
-      // A busy browser can return from navigation before the refreshed chrome has painted its
-      // first diagnostic result. Re-open once when the gate is still checking (or a warning-count
-      // assertion is otherwise not ready), then keep the final gate assertion strict.
-      if (inbox.gate || (expectedCount > 0 && Number(inbox.badge) !== expectedCount)) {
-        run("chrome-devtools-axi", ["open", url], chromeEnv);
-        run("chrome-devtools-axi", ["wait", String(settleMs)], chromeEnv, settleMs + 45_000);
-        inbox = readInbox();
-      }
+      await browser.emulate(viewport);
+      await browser.open(url);
+      await browser.wait(settleMs);
+      // LAVISH-HARDENED: a busy browser can return from navigation before the refreshed chrome has
+      // painted its first diagnostic result, and an infinite CSS animation in the artifact (the
+      // clipping fixture's pulse) holds the SDK's first report back 2-4 s in headless Chrome. Wait
+      // up to 6 s more for it instead of re-opening once, then keep the final gate assertion strict.
+      const inbox = await waitForValue(
+        readInbox,
+        (value) => !value.gate && (expectedCount === 0 || Number(value.badge) === expectedCount),
+        { timeoutMs: 6000 },
+      );
       const poll = run(process.execPath, ["bin/lavish-axi.js", "poll", file, "--timeout-ms", "600"], lavishEnv);
 
       assert.equal(inbox.gate, false, `${name}: the artifact is always revealed after a completed pass`);
@@ -120,6 +106,7 @@ test(
     }
 
     try {
+      browser = await launchBrowser({ chromePath, profileDir: path.join(temp, "chrome") });
       await audit("control-broken-occlusion", "1440x1000x1", 3200, 1);
 
       const acceptable = [
@@ -155,10 +142,13 @@ test(
       const revalidationFile = path.join(temp, "root-lock-revalidation.html");
       await copyFile(path.join(fixtures, "control-broken-reachability.html"), revalidationFile);
       const revalidation = openArtifact(revalidationFile);
-      run("chrome-devtools-axi", ["emulate", "--viewport", "390x844x1,mobile,touch"], chromeEnv);
-      run("chrome-devtools-axi", ["open", revalidation.url], chromeEnv);
-      run("chrome-devtools-axi", ["wait", "3200"], chromeEnv);
-      const detected = readInbox();
+      await browser.emulate("390x844x1,mobile,touch");
+      await browser.open(revalidation.url);
+      await browser.wait(3200);
+      // LAVISH-HARDENED: up to 6 s more for the first report, as in audit().
+      const detected = await waitForValue(readInbox, (value) => !value.gate && Number(value.badge) === 3, {
+        timeoutMs: 6000,
+      });
       assert.equal(Number(detected.badge), 3);
       assert.equal(detected.gate, false);
       assert.match(
@@ -170,15 +160,15 @@ test(
         revalidationFile,
         '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Repaired controls</title></head><body><button>Continue</button></body></html>',
       );
-      run("chrome-devtools-axi", ["wait", "4500"], chromeEnv);
-      const repaired = readInbox();
+      await browser.wait(4500);
+      const repaired = await waitForValue(readInbox, (value) => Number(value.badge) === 0, { timeoutMs: 6000 });
       assert.equal(Number(repaired.badge), 0);
       assert.equal(repaired.wrapHidden, true);
       assert.equal(repaired.gate, false);
     } finally {
       run(process.execPath, ["bin/lavish-axi.js", "stop", "--port", String(port)], lavishEnv, 15_000);
-      run("chrome-devtools-axi", ["stop"], chromeEnv);
-      await rm(temp, { recursive: true, force: true });
+      await browser?.close();
+      await rm(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
     }
   },
 );
