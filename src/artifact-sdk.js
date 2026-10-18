@@ -1278,6 +1278,8 @@ export function createArtifactSdk(
   const layoutAuditMaxWaitMs = 2000;
   const layoutAuditAnimationMaxWaitMs = 4000;
   const layoutAuditStableSampleMs = 120;
+  // LAVISH-HARDENED: the longest the audit waits for any one animation frame (waitForAnimationFrames).
+  const layoutAuditFrameFallbackMs = 100;
   let layoutAuditTimer = 0;
   let layoutAuditRun = 0;
   let lastLayoutAuditSignature = null;
@@ -1858,22 +1860,22 @@ export function createArtifactSdk(
     return Promise.resolve();
   }
 
-  function waitForAnimationFrames(count) {
-    return new Promise((resolve) => {
-      function step(remaining) {
-        if (remaining <= 0) {
-          resolve();
-          return;
-        }
-        const next = () => step(remaining - 1);
+  // LAVISH-HARDENED: each frame is the animation frame or layoutAuditFrameFallbackMs, whichever
+  // comes first. Chrome apparently gives a cross-origin artifact frame that runs only an infinite CSS
+  // animation about one animation frame a second for its first seconds, and two of these waits held
+  // the first report - and the review gate with it - back 2-4.5 s. The audit reads geometry
+  // synchronously, so it needs no painted frame to sample.
+  async function waitForAnimationFrames(count) {
+    for (let remaining = count; remaining > 0; remaining -= 1) {
+      await new Promise((resolve) => {
         if (window.requestAnimationFrame) {
-          window.requestAnimationFrame(next);
+          window.requestAnimationFrame(resolve);
+          window.setTimeout(resolve, layoutAuditFrameFallbackMs);
         } else {
-          window.setTimeout(next, 16);
+          window.setTimeout(resolve, 16);
         }
-      }
-      step(count);
-    });
+      });
+    }
   }
 
   function waitForResizeObserverSettle() {
