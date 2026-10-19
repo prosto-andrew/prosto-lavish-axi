@@ -5420,7 +5420,8 @@ test("LAVISH_AXI_DISCONNECT_GRACE_MS sets the reconnect grace a served poll wait
     const browser = await startPresenceStream(base, opened.key);
     assert.equal(await browser.next(), "waiting");
     // A poll that outlives the 20ms grace but not the 10s default proves the env value was used.
-    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=1000`).then((response) =>
+    // This build's /api/poll refuses a request without the CLI client header (PR #28).
+    const poll = pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=1000`).then((response) =>
       response.json(),
     );
     assert.equal(await browser.next(), "listening");
@@ -5451,13 +5452,14 @@ test("LAVISH_AXI_DISCONNECT_GRACE_MS=off keeps an active poll waiting after the 
     }).then((response) => response.json());
     const browser = await startPresenceStream(base, opened.key);
     assert.equal(await browser.next(), "waiting");
-    const poll = fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=150`).then((response) =>
+    // This build's /api/poll refuses a request without the CLI client header (PR #28).
+    const poll = pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=150`).then((response) =>
       response.json(),
     );
     assert.equal(await browser.next(), "listening");
     await browser.close();
     assert.deepEqual(await poll, { status: "waiting" }, "with the grace off only the poll's own timeout ends it");
-    const next = await fetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((response) =>
+    const next = await pollFetch(`${base}/api/poll?file=${encodeURIComponent(artifact)}&timeoutMs=0`).then((response) =>
       response.json(),
     );
     assert.deepEqual(next, { status: "waiting" }, "no stale browser_disconnected may be left for a later poll");

@@ -1,6 +1,6 @@
 > ## Hardened fork - not upstream lavish-axi
 >
-> This fork is upstream **v0.1.89** with five capabilities removed **at source level**,
+> This fork is upstream **v0.1.90** with five capabilities removed **at source level**,
 > for private use on trusted machines. It is not a drop-in replacement for the published
 > package and is not meant to be published to npm.
 >
@@ -284,19 +284,6 @@ For flows, architecture, state, or sequence diagrams, open the diagram playbook 
 | `lavish-safe reply`       | `--agent-reply-file <path>` | Read the reply from a file (`-` for stdin) so newlines survive quoting. Cannot be combined with `--agent-reply`. Same Markdown guidance as `poll --agent-reply-file`.                                                                                                                                                                                                        |
 | `lavish-safe stop`        | `--port <port>`             | Shut down a server running on a non-default port.                                                                                                                                                                                                                                                                                                                            |
 | `lavish-safe server`      | `--verbose`                 | Log session and watcher events to stderr; can also be enabled with `LAVISH_AXI_DEBUG=1`. Detached server output is appended with UTC timestamps to `~/.lavish-axi/server.log` (or `LAVISH_AXI_STATE_DIR/server.log`) for startup, shutdown-cause, and crash diagnostics. Once it passes 1 MiB, the next server start moves it to `server.log.1`, replacing the previous one. |
-
-## Telemetry
-
-The npm release sends anonymous usage telemetry to an [Umami](https://umami.is) server at `https://a.kunchenguid.com`. The host and website ID are baked into the published bundle at build time, so telemetry is on by default for `npx -y lavish-axi`.
-
-Each `lavish-axi` run sends two requests, except `lavish-axi --version` (also `-v` and `-V`), which sends none: a page view when the command starts, and a `command` event when it finishes. Both carry:
-
-- the command name (for example `open`, `poll`, or `home` when you run it with no command), but not its arguments, file paths, artifact content, or prompts
-- the Lavish version, `process.platform`, and `process.arch`
-
-The `command` event also carries a `status` field: `success`, or `error` only when the CLI itself throws. A command that fails and sets a nonzero exit code is handled by the CLI framework, so it still reports `success`. No user identifier is sent. Requests time out after 1 second, and failures are ignored, so telemetry never changes what a command does.
-
-Set `LAVISH_AXI_TELEMETRY=0` (or `false` or `off`) to turn it off. A build from source sends nothing unless `LAVISH_AXI_UMAMI_WEBSITE_ID` is set, and `LAVISH_AXI_UMAMI_HOST` overrides the host.
 
 ## Development
 
