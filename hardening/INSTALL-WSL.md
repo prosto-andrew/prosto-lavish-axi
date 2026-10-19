@@ -128,30 +128,39 @@ lavish-safe --version    # => 0.1.90
 `npx -y lavish-axi` — то есть скачать нехардненный пакет.
 
 ```bash
-grep -rl "npx -y lavish-axi" ~/.claude/skills ~/.claude/plugins 2>/dev/null
+grep -RlZ "npx -y lavish-axi" ~/.claude/skills ~/.claude/plugins 2>/dev/null |
+  xargs -0 -r grep -L "lavish-safe"
 ```
 
 Команда должна вывести **пусто**. Если что-то нашлось — удалите или отключите этот
-скилл/плагин.
+скилл/плагин. Установленный на шаге 4 hardened-скилл тоже содержит эту строку — в
+запрете, — поэтому файлы, где упомянут `lavish-safe`, команда пропускает. `-R` заходит и
+в папки-симлинки: в рекомендуемом режиме так ставит скиллы `npx skills add`.
 
 ## Шаг 7. Запретить npx на уровне агента
 
 В `~/.claude/settings.json`. Если файл уже есть — дописать строки в существующий массив
-`deny`, не перезаписывая его целиком.
+`deny`, не перезаписывая его целиком. Правила этого шага из прежней версии инструкции
+(с `:*` на конце) замените новыми.
 
 ```json
 {
   "permissions": {
     "deny": [
-      "Bash(npx lavish-axi:*)",
-      "Bash(npx -y lavish-axi:*)",
-      "Bash(npx --yes lavish-axi:*)",
-      "Bash(lavish-axi:*)",
-      "Bash(npm install -g lavish-axi:*)"
+      "Bash(npx lavish-axi*)",
+      "Bash(npx -y lavish-axi*)",
+      "Bash(npx --yes lavish-axi*)",
+      "Bash(lavish-axi*)",
+      "Bash(npm install -g lavish-axi*)"
     ]
   }
 }
 ```
+
+Перед `*` нет пробела намеренно: правило `Bash(npx -y lavish-axi *)` — и равное ему
+`Bash(npx -y lavish-axi:*)` — требует пробел после имени пакета и пропускает
+`npx -y lavish-axi@latest`. Инструмент PowerShell в WSL выключен, пока его не включат
+вручную; если вы его включили, добавьте те же пять правил с `PowerShell(` вместо `Bash(`.
 
 Это политика, а не песочница: она отсекает очевидные вызовы, но главная защита — правило
 в SKILL.md и то, что сам локальный бинарник обезврежен.
@@ -178,8 +187,11 @@ Windows-браузере; если нет — скопируйте URL вруч�
   ```bash
   git pull
   npx --yes pnpm@11.1.1 install --frozen-lockfile
-  node verify-hardening.mjs
+  node verify-hardening.mjs && cp skills/lavish/SKILL.md ~/.claude/skills/lavish/SKILL.md
   ```
+
+  `cp` обновляет скилл из шага 4: без него агент так и работает по скиллу прежней версии.
+  Через `&&` скилл копируется, только если проверка прошла.
 
   Между `git pull` и пересборкой `lavish-safe` откажется запускаться — это намеренно: иначе
   работала бы прежняя сборка, хотя в папке уже новый код.
