@@ -46,9 +46,9 @@ pnpm links `node_modules/` with symlinks or junctions native to the platform tha
 node verify-hardening.mjs
 ```
 
-Twenty-seven checks, covering both the sources and the compiled `dist/`. Exit code 0
-means the build is hardened; any failure prints what is wrong. Re-run this after every
-install or `git pull`.
+The checks cover both the sources and the compiled `dist/`. Exit code 0 means the build
+is hardened; any failure prints what is wrong. Re-run this after every install or
+`git pull`, and copy the skill again (step 4) only once it passes.
 
 ## 3. Put the launcher on PATH
 
@@ -66,9 +66,10 @@ ln -sf "$(pwd)/lavish-safe" ~/.local/bin/lavish-safe
 
 Before every start the launcher runs `node verify-hardening.mjs --quiet` and refuses to start
 when any check fails: a missing, stale or unhardened `dist/`, a `node_modules` that npm
-rewrote, a version that was never audited. After a `git pull`, rebuild (step 1) before the
-next use; the refusal names the command. The checks add about 0.3 s to each invocation. The
-CLI it starts spawns its server from the same `dist/` (`dist/server.mjs`), never from `src/`.
+rewrote, a version that was never audited. After a `git pull`, rebuild (step 1), verify
+(step 2) and copy the skill again (step 4) before the next use; the refusal names the
+rebuild command. The checks add about 0.3 s to each invocation. The CLI it starts spawns
+its server from the same `dist/` (`dist/server.mjs`), never from `src/`.
 
 ## 4. Install the skill
 
@@ -78,7 +79,8 @@ Copy `skills/lavish/SKILL.md` to your agent's skills directory:
 - Windows: `%USERPROFILE%\.claude\skills\lavish\SKILL.md`
 
 That file tells the agent to use `lavish-safe` only, and never `npx lavish-axi`
-(which would download the unhardened upstream package).
+(which would download the unhardened upstream package). Copy it again after every update:
+nothing else replaces it, and an older copy keeps the previous version's guidance.
 
 ## 5. Optional: block the upstream package at the agent level
 
@@ -88,15 +90,26 @@ In `~/.claude/settings.json` (and the Windows equivalent):
 {
   "permissions": {
     "deny": [
-      "Bash(npx lavish-axi:*)",
-      "Bash(npx -y lavish-axi:*)",
-      "Bash(npx --yes lavish-axi:*)",
-      "Bash(lavish-axi:*)",
-      "Bash(npm install -g lavish-axi:*)"
+      "Bash(npx lavish-axi*)",
+      "Bash(npx -y lavish-axi*)",
+      "Bash(npx --yes lavish-axi*)",
+      "Bash(lavish-axi*)",
+      "Bash(npm install -g lavish-axi*)"
     ]
   }
 }
 ```
+
+No space comes before the `*`: `Bash(npx -y lavish-axi *)`, like the equivalent
+`Bash(npx -y lavish-axi:*)`, needs a space after the package name and lets
+`npx -y lavish-axi@latest` through. Replace the rules from earlier versions of this file,
+which end in `:*`.
+
+On Windows, add the same five patterns as `PowerShell(...)` rules too, such as
+`PowerShell(npx -y lavish-axi*)`. A `Bash(...)` rule covers only the Bash tool: with Git Bash
+installed, Bash deny rules alone silently turn Claude Code's PowerShell tool off for the
+session, and without Git Bash, PowerShell is the only shell and Bash rules never apply. Both
+sets together cover both tools and keep PowerShell available.
 
 ## Moving to a newer upstream
 

@@ -107,14 +107,26 @@ Copy-Item skills\lavish\SKILL.md "$env:USERPROFILE\.claude\skills\lavish\SKILL.m
 Из папки форка:
 
 ```powershell
-[Environment]::SetEnvironmentVariable(
-  "Path",
-  [Environment]::GetEnvironmentVariable("Path", "User") + ";" + (Get-Location).Path,
-  "User"
-)
+$dir = (Get-Location).Path
+$key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey("Environment", $true)
+$raw = $key.GetValue("Path", "", [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+if (($raw -split ";") -notcontains $dir) {
+  $new = if ([string]::IsNullOrEmpty($raw)) { $dir } else { $raw.TrimEnd(";") + ";" + $dir }
+  $key.SetValue("Path", $new, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+}
+$key.Close()
+# Удаление несуществующей переменной ничего не меняет, но сообщает Windows,
+# что переменные среды изменились (WM_SETTINGCHANGE)
+[Environment]::SetEnvironmentVariable("LAVISH_PATH_REFRESH", $null, "User")
 ```
 
-Закрыть терминал, открыть заново, проверить:
+Команда читает и пишет значение `Path` в реестре как есть: ссылки вида `%USERPROFILE%`
+остаются ссылками, а тип значения — `REG_EXPAND_SZ`. Повторный запуск не добавит папку
+второй раз. Привычная пара `GetEnvironmentVariable` / `SetEnvironmentVariable` для этого
+не годится: первая раскрывает ссылки, вторая записывает результат с типом `REG_SZ`.
+
+Закрыть все терминалы и перезапустить Claude Desktop: приложение со старым `PATH` не
+найдёт `lavish-safe`. В новом терминале проверить:
 
 ```powershell
 lavish-safe --version    # => 0.1.90
@@ -133,30 +145,49 @@ lavish-safe --version    # => 0.1.90
 ```powershell
 Get-ChildItem "$env:USERPROFILE\.claude\skills", "$env:USERPROFILE\.claude\plugins" `
   -Recurse -File -ErrorAction SilentlyContinue |
-  Select-String -SimpleMatch "npx -y lavish-axi" -List | Select-Object Path
+  Select-String -SimpleMatch "npx -y lavish-axi" -List |
+  Where-Object { -not (Select-String -LiteralPath $_.Path -SimpleMatch "lavish-safe" -Quiet) } |
+  Select-Object Path
 ```
 
 Команда должна вывести **пусто**. Если что-то нашлось — удалите или отключите этот
-скилл/плагин.
+скилл/плагин. Установленный на шаге 4 hardened-скилл тоже содержит эту строку — в
+запрете, — поэтому файлы, где упомянут `lavish-safe`, команда пропускает.
 
 ## Шаг 7. Запретить npx на уровне агента
 
 В `%USERPROFILE%\.claude\settings.json`. Если файл уже есть — дописать строки в
-существующий массив `deny`, не перезаписывая его целиком.
+существующий массив `deny`, не перезаписывая его целиком. Правила этого шага из прежней
+версии инструкции (с `:*` на конце) замените новыми.
 
 ```json
 {
   "permissions": {
     "deny": [
-      "Bash(npx lavish-axi:*)",
-      "Bash(npx -y lavish-axi:*)",
-      "Bash(npx --yes lavish-axi:*)",
-      "Bash(lavish-axi:*)",
-      "Bash(npm install -g lavish-axi:*)"
+      "Bash(npx lavish-axi*)",
+      "Bash(npx -y lavish-axi*)",
+      "Bash(npx --yes lavish-axi*)",
+      "Bash(lavish-axi*)",
+      "Bash(npm install -g lavish-axi*)",
+      "PowerShell(npx lavish-axi*)",
+      "PowerShell(npx -y lavish-axi*)",
+      "PowerShell(npx --yes lavish-axi*)",
+      "PowerShell(lavish-axi*)",
+      "PowerShell(npm install -g lavish-axi*)"
     ]
   }
 }
 ```
+
+Перед `*` нет пробела намеренно: правило `Bash(npx -y lavish-axi *)` — и равное ему
+`Bash(npx -y lavish-axi:*)` — требует пробел после имени пакета и пропускает
+`npx -y lavish-axi@latest`.
+
+Правила `PowerShell(...)` нужны, потому что на Windows у Claude Code два инструмента для
+команд, а правило `Bash(...)` действует только на Bash. Если установлен Git Bash, одни
+Bash-правила молча выключают инструмент PowerShell на всю сессию; если Git Bash нет,
+PowerShell — единственная оболочка, и Bash-правила его не касаются. С обоими наборами
+запрет действует в обоих инструментах, а PowerShell остаётся доступен.
 
 Это политика, а не песочница: она отсекает очевидные вызовы, но главная защита — правило
 в SKILL.md и то, что сам локальный бинарник обезврежен.
@@ -181,7 +212,14 @@ lavish-safe setup hooks        # => `setup` is removed in this hardened build...
   git pull
   npx --yes pnpm@11.1.1 install --frozen-lockfile
   node verify-hardening.mjs
+  if ($LASTEXITCODE -eq 0) {
+    Copy-Item skills\lavish\SKILL.md "$env:USERPROFILE\.claude\skills\lavish\SKILL.md" -Force
+  }
   ```
+
+  Последняя команда обновляет скилл из шага 4: без неё агент так и работает по скиллу
+  прежней версии. Скилл копируется, только если проверка прошла, — PowerShell не
+  останавливает вставленный блок на упавшей команде, поэтому условие записано явно.
 
   Между `git pull` и пересборкой `lavish-safe` откажется запускаться — это намеренно: иначе
   работала бы прежняя сборка, хотя в папке уже новый код.
