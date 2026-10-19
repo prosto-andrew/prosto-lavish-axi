@@ -57,6 +57,10 @@ async function startOutside() {
 // Dumps the chrome page's DOM once Chrome considers it settled, keeping Chrome's own log, which
 // carries every "Refused to ... Content Security Policy" console message from the page.
 function dumpChromeDom(chrome, profileDir, url, timeoutMs) {
+  // Chrome keeps its temp folders (the component download it still makes at startup, crx unpacking)
+  // in the profile's parent, the test's own folder, which the test removes. Windows Chrome reads
+  // TEMP and TMP.
+  const chromeTemp = path.dirname(profileDir);
   return new Promise((resolve, reject) => {
     const child = spawn(
       chrome,
@@ -68,6 +72,9 @@ function dumpChromeDom(chrome, profileDir, url, timeoutMs) {
         // An extension registered on the machine otherwise installs into this fresh profile, and a
         // Chrome killed mid-unpack leaves %TEMP%\scoped_dir* behind.
         "--disable-extensions",
+        // Component updates otherwise download through Windows BITS, which can outlive Chrome and
+        // leave %TEMP%\chrome_chrome_BITS_* behind.
+        "--disable-component-update",
         "--no-first-run",
         `--user-data-dir=${profileDir}`,
         "--enable-logging=stderr",
@@ -76,7 +83,7 @@ function dumpChromeDom(chrome, profileDir, url, timeoutMs) {
         "--dump-dom",
         url,
       ],
-      { detached: true, stdio: ["ignore", "pipe", "pipe"] },
+      { detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, TEMP: chromeTemp, TMP: chromeTemp } },
     );
     let stdout = "";
     let stderr = "";

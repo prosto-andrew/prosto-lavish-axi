@@ -55,11 +55,22 @@ function chromeArgs(profileDir, url, extra = []) {
     // An extension registered on the machine otherwise installs into this fresh profile, and a
     // Chrome killed mid-unpack leaves %TEMP%\scoped_dir* behind.
     "--disable-extensions",
+    // Component updates otherwise download through Windows BITS, which can outlive Chrome and leave
+    // %TEMP%\chrome_chrome_BITS_* behind.
+    "--disable-component-update",
     "--no-first-run",
     `--user-data-dir=${profileDir}`,
     ...extra,
     url,
   ];
+}
+
+// Chrome keeps its temp folders (the component download it still makes at startup, crx unpacking)
+// in the profile's parent, the test's own folder, which the test removes. Windows Chrome reads TEMP
+// and TMP.
+function chromeEnv(profileDir) {
+  const chromeTemp = path.dirname(profileDir);
+  return { ...process.env, TEMP: chromeTemp, TMP: chromeTemp };
 }
 
 // Chrome leaves helper processes behind a killed browser process on Windows, so take the tree.
@@ -86,7 +97,7 @@ function dumpChromeDom(chrome, profileDir, url, timeoutMs) {
         "--virtual-time-budget=10000",
         "--dump-dom",
       ]),
-      { detached: true, stdio: ["ignore", "pipe", "pipe"] },
+      { detached: true, stdio: ["ignore", "pipe", "pipe"], env: chromeEnv(profileDir) },
     );
     let stdout = "";
     let stderr = "";
@@ -323,9 +334,11 @@ addEventListener("load", () => {
     // The second open renders with the load the first one left active and begins a newer one before
     // it navigates the frame, which must end up on that newer load, whose files still answer.
     for (const run of ["first-open", "reopen"]) {
-      const child = spawn(chrome, chromeArgs(path.join(parent, `profile-${run}`), `${base}/session/${key}`), {
+      const profileDir = path.join(parent, `profile-${run}`);
+      const child = spawn(chrome, chromeArgs(profileDir, `${base}/session/${key}`), {
         detached: true,
         stdio: "ignore",
+        env: chromeEnv(profileDir),
       });
       const exited = once(child, "exit");
       try {
