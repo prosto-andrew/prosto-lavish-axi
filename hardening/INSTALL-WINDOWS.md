@@ -143,8 +143,11 @@ lavish-safe --version    # => 0.1.90
 тому же пути, но проверьте остальные скиллы и плагины:
 
 ```powershell
-Get-ChildItem "$env:USERPROFILE\.claude\skills", "$env:USERPROFILE\.claude\plugins" `
-  -Recurse -File -ErrorAction SilentlyContinue |
+$roots = @("$env:USERPROFILE\.claude\skills", "$env:USERPROFILE\.claude\plugins")
+# Папки-ссылки (junction, симлинк) — отдельными корнями: -Recurse в них не заходит
+$roots += Get-ChildItem -LiteralPath $roots -Recurse -Directory -Attributes ReparsePoint `
+  -ErrorAction SilentlyContinue | ForEach-Object FullName
+Get-ChildItem -LiteralPath $roots -Recurse -File -ErrorAction SilentlyContinue |
   Select-String -SimpleMatch "npx -y lavish-axi" -List |
   Where-Object { -not (Select-String -LiteralPath $_.Path -SimpleMatch "lavish-safe" -Quiet) } |
   Select-Object Path
@@ -153,6 +156,12 @@ Get-ChildItem "$env:USERPROFILE\.claude\skills", "$env:USERPROFILE\.claude\plugi
 Команда должна вывести **пусто**. Если что-то нашлось — удалите или отключите этот
 скилл/плагин. Установленный на шаге 4 hardened-скилл тоже содержит эту строку — в
 запрете, — поэтому файлы, где упомянут `lavish-safe`, команда пропускает.
+
+Windows PowerShell 5.1 с `-Recurse` не заходит в папки-ссылки, поэтому команда сначала
+находит их и проверяет каждую как отдельную папку. В рекомендуемом режиме так ставит
+скиллы `npx skills add`: в `skills` появляется junction на папку в
+`%USERPROFILE%\.agents\skills`. Ссылку внутри папки, в которую уже ведёт ссылка, команда
+не проверяет.
 
 ## Шаг 7. Запретить npx на уровне агента
 
