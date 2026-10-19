@@ -125,6 +125,10 @@ function killChrome(child) {
  * @param {{ chromePath: string, profileDir: string }} options
  */
 export async function launchBrowser({ chromePath, profileDir }) {
+  // Chrome keeps its temp folders (the component download it still makes at startup, crx unpacking)
+  // in the suite's own folder, the profile's parent, which the suite removes. Windows Chrome reads
+  // TEMP and TMP.
+  const chromeTemp = path.dirname(profileDir);
   const child = spawn(
     chromePath,
     [
@@ -135,6 +139,9 @@ export async function launchBrowser({ chromePath, profileDir }) {
       // An extension registered on the machine otherwise installs into this fresh profile, and a
       // Chrome killed mid-unpack leaves %TEMP%\scoped_dir* behind.
       "--disable-extensions",
+      // Component updates otherwise download through Windows BITS, which can outlive Chrome and
+      // leave %TEMP%\chrome_chrome_BITS_* behind.
+      "--disable-component-update",
       "--no-first-run",
       "--no-default-browser-check",
       `--user-data-dir=${profileDir}`,
@@ -143,7 +150,7 @@ export async function launchBrowser({ chromePath, profileDir }) {
       "--window-size=1440,1000",
       "about:blank",
     ],
-    { detached: true, stdio: "ignore" },
+    { detached: true, stdio: "ignore", env: { ...process.env, TEMP: chromeTemp, TMP: chromeTemp } },
   );
   const exited = new Promise((resolve) => child.once("exit", resolve));
   let spawnError = null;

@@ -56,11 +56,16 @@ async function headlessChromeState(chrome) {
         // LAVISH-HARDENED: an extension registered on the machine otherwise installs into this fresh
         // profile, and a Chrome killed mid-unpack leaves %TEMP%\scoped_dir* behind.
         "--disable-extensions",
+        // LAVISH-HARDENED: component updates otherwise download through Windows BITS, which can
+        // outlive Chrome and leave %TEMP%\chrome_chrome_BITS_* behind.
+        "--disable-component-update",
         `--user-data-dir=${path.join(root, "chrome-profile")}`,
         "--dump-dom",
         "about:blank",
       ],
-      { stdio: "ignore", timeout: 15_000 },
+      // LAVISH-HARDENED: Chrome keeps its temp folders (the component download it still makes at
+      // startup, crx unpacking) in `root`, which is removed below. Windows Chrome reads TEMP and TMP.
+      { stdio: "ignore", timeout: 15_000, env: { ...process.env, TEMP: root, TMP: root } },
     );
     chromeLaunchState =
       result.status === 0
@@ -153,9 +158,14 @@ function probeScript(scenario, { clicks = 1 } = {}) {
   </script>`;
 }
 
-function dumpChromeDom(chrome, args, timeoutMs) {
+// LAVISH-HARDENED: `tempDir` takes Chrome's temp folders, as in the launch probe above.
+function dumpChromeDom(chrome, args, timeoutMs, tempDir) {
   return new Promise((resolve, reject) => {
-    const child = spawn(chrome, args, { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawn(chrome, args, {
+      detached: true,
+      stdio: ["ignore", "pipe", "ignore"],
+      env: { ...process.env, TEMP: tempDir, TMP: tempDir },
+    });
     let stdout = "";
     let settled = false;
     // Windows has no process groups (process.kill(-pid) throws there), so take Chrome's tree.
@@ -247,6 +257,7 @@ async function runBrowserScenario(t, scenario, fixture, options = {}) {
         "--no-sandbox",
         // LAVISH-HARDENED: as in the launch probe above.
         "--disable-extensions",
+        "--disable-component-update",
         `--user-data-dir=${path.join(root, "chrome-profile")}`,
         "--run-all-compositor-stages-before-draw",
         "--virtual-time-budget=5000",
@@ -254,6 +265,7 @@ async function runBrowserScenario(t, scenario, fixture, options = {}) {
         `http://127.0.0.1:${address.port}/`,
       ],
       30_000,
+      root,
     );
     const result = resultFromDump(stdout);
     assert.ok(result, "browser fixture did not report a result");

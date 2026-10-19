@@ -40,9 +40,16 @@ function contentType(file) {
   return "application/octet-stream";
 }
 
-function dumpChromeDom(chrome, args, timeoutMs) {
+// LAVISH-HARDENED: Chrome keeps its temp folders (the component download it still makes at startup,
+// crx unpacking) in `tempDir`, the test's own folder, which the test removes. Windows Chrome reads
+// TEMP and TMP.
+function dumpChromeDom(chrome, args, timeoutMs, tempDir) {
   return new Promise((resolve, reject) => {
-    const child = spawn(chrome, args, { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawn(chrome, args, {
+      detached: true,
+      stdio: ["ignore", "pipe", "ignore"],
+      env: { ...process.env, TEMP: tempDir, TMP: tempDir },
+    });
     let stdout = "";
     let settled = false;
     // Windows has no process groups (process.kill(-pid) throws there), so take Chrome's tree.
@@ -167,6 +174,9 @@ async function runBrowserFixture(t, fixtureName) {
           // LAVISH-HARDENED: an extension registered on the machine otherwise installs into this fresh
           // profile, and a Chrome killed mid-unpack leaves %TEMP%\scoped_dir* behind.
           "--disable-extensions",
+          // LAVISH-HARDENED: component updates otherwise download through Windows BITS, which can
+          // outlive Chrome and leave %TEMP%\chrome_chrome_BITS_* behind.
+          "--disable-component-update",
           `--user-data-dir=${profile}`,
           "--run-all-compositor-stages-before-draw",
           "--virtual-time-budget=20000",
@@ -174,6 +184,7 @@ async function runBrowserFixture(t, fixtureName) {
           `http://127.0.0.1:${address.port}/`,
         ],
         75_000,
+        root,
       );
       const result = resultFromDump(stdout);
       assert.ok(result, "browser fixture did not report a result");
