@@ -408,14 +408,30 @@ test("design output defaults to the luxury/caramellatte pair and warns against @
   // design system or the mocked product fixes is kept (final review, spec 14.5).
   const fixedBy = /the user, the subject project's design system, or the product being mocked/i;
   assert.match(defaultTheme, fixedBy);
-  // The script would overwrite that theme, so it goes; the style still tunes a fixed caramellatte.
+  // The script would overwrite that theme, so it goes. The theme may be the project's own, and a
+  // light/dark pair of its own takes the default names' places in the markup and the script - not in
+  // the style, which tunes caramellatte only and stays wherever caramellatte is used.
   assert.match(defaultTheme, /without the snippet's `<script>`/);
-  assert.match(defaultTheme, /keep its `<style>` if that theme is `caramellatte`/);
+  assert.match(defaultTheme, /fixes one theme \(from the list below or a custom one\)/);
+  assert.match(defaultTheme, /when they fix their own light\/dark pair/);
+  assert.match(
+    defaultTheme,
+    /its dark theme in place of `luxury` and its light theme in place of `caramellatte`, in your markup and in the `<script>`/,
+  );
+  assert.match(
+    defaultTheme,
+    /`<style>` tunes only `caramellatte`: keep it whenever `caramellatte` is one of your themes/,
+  );
   const noDaisyUi = output.theme_usage.find(
     (item) => /prefers-color-scheme/.test(item) && /without DaisyUI|not use DaisyUI/i.test(item),
   );
   assert.ok(noDaisyUi, "an item tells artifacts without DaisyUI to style both sides");
   assert.match(noDaisyUi, fixedBy, "and keeps a single scheme the project or product has");
+  // The content can call for one scheme too, as it can for one DaisyUI theme.
+  assert.match(
+    noDaisyUi,
+    /fixes a single scheme, or the content clearly calls for one \(a terminal mock-up, a page meant for print\)/,
+  );
   assert.ok(output.themes.includes("caramellatte"));
   assert.ok(output.theme_usage.some((item) => item.includes("@apply") && /daisyui/i.test(item)));
   assert.ok(output.theme_usage.some((item) => /aborts the entire|no Tailwind styles/i.test(item)));
