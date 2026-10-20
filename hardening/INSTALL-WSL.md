@@ -128,7 +128,18 @@ lavish-safe --version    # => 0.1.90
 `npx -y lavish-axi` — то есть скачать нехардненный пакет.
 
 ```bash
-grep -RlZ "npx -y lavish-axi" ~/.claude/skills ~/.claude/plugins 2>/dev/null |
+known=~/.claude/plugins/known_marketplaces.json
+{ printf '%s\0' ~/.claude/skills ~/.claude/plugins
+  # Маркетплейсы из локальной папки: Claude Code читает их плагины прямо оттуда
+  [ -f "$known" ] && node -e '
+    const p = require("path");
+    for (const m of Object.values(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")))) {
+      const s = m.source || {};
+      if (s.source === "directory") process.stdout.write(s.path + "\0");
+      else if (s.source === "file" && p.basename(p.dirname(s.path)) === ".claude-plugin")
+        process.stdout.write(p.dirname(p.dirname(s.path)) + "\0");
+    }' "$known"
+} | xargs -0 grep -RlZ "npx -y lavish-axi" 2>/dev/null |
   xargs -0 -r grep -L "lavish-safe"
 ```
 
@@ -136,6 +147,11 @@ grep -RlZ "npx -y lavish-axi" ~/.claude/skills ~/.claude/plugins 2>/dev/null |
 скилл/плагин. Установленный на шаге 4 hardened-скилл тоже содержит эту строку — в
 запрете, — поэтому файлы, где упомянут `lavish-safe`, команда пропускает. `-R` заходит и
 в папки-симлинки: в рекомендуемом режиме так ставит скиллы `npx skills add`.
+
+Кроме `skills` и `plugins` команда проверяет маркетплейсы, добавленные из локальной папки
+(`/plugin marketplace add <папка>` или путь к `marketplace.json` в её `.claude-plugin`):
+плагины из такого маркетплейса Claude Code читает прямо из этой папки, а не из копии в
+`plugins`. Список таких папок `node` берёт из `~/.claude/plugins/known_marketplaces.json`.
 
 ## Шаг 7. Запретить npx на уровне агента
 
