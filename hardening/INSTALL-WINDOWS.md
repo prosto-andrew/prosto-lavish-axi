@@ -143,7 +143,20 @@ lavish-safe --version    # => 0.1.90
 тому же пути, но проверьте остальные скиллы и плагины:
 
 ```powershell
-$roots = @("$env:USERPROFILE\.claude\skills", "$env:USERPROFILE\.claude\plugins")
+$plugins = "$env:USERPROFILE\.claude\plugins"
+$roots = @("$env:USERPROFILE\.claude\skills", $plugins)
+# Маркетплейсы из локальной папки: Claude Code читает их плагины прямо оттуда
+$known = "$plugins\known_marketplaces.json"
+if (Test-Path -LiteralPath $known) {
+  $json = Get-Content -LiteralPath $known -Raw -Encoding UTF8 | ConvertFrom-Json
+  foreach ($s in $json.PSObject.Properties.Value.source) {
+    if ($s.source -eq "directory") { $roots += $s.path }
+    elseif ($s.source -eq "file") {
+      $dir = [IO.Path]::GetDirectoryName($s.path)
+      if ([IO.Path]::GetFileName($dir) -eq ".claude-plugin") { $roots += [IO.Path]::GetDirectoryName($dir) }
+    }
+  }
+}
 # Папки-ссылки (junction, симлинк) — отдельными корнями: -Recurse в них не заходит
 $roots += Get-ChildItem -LiteralPath $roots -Recurse -Directory -Attributes ReparsePoint `
   -ErrorAction SilentlyContinue | ForEach-Object FullName
@@ -156,6 +169,11 @@ Get-ChildItem -LiteralPath $roots -Recurse -File -ErrorAction SilentlyContinue |
 Команда должна вывести **пусто**. Если что-то нашлось — удалите или отключите этот
 скилл/плагин. Установленный на шаге 4 hardened-скилл тоже содержит эту строку — в
 запрете, — поэтому файлы, где упомянут `lavish-safe`, команда пропускает.
+
+Кроме `skills` и `plugins` команда проверяет маркетплейсы, добавленные из локальной папки
+(`/plugin marketplace add <папка>` или путь к `marketplace.json` в её `.claude-plugin`):
+плагины из такого маркетплейса Claude Code читает прямо из этой папки, а не из копии в
+`plugins`. Список таких папок команда берёт из `plugins\known_marketplaces.json`.
 
 Windows PowerShell 5.1 с `-Recurse` не заходит в папки-ссылки, поэтому команда сначала
 находит их и проверяет каждую как отдельную папку. В рекомендуемом режиме так ставит
