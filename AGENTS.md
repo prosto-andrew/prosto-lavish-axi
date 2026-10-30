@@ -21,7 +21,7 @@ pnpm run typecheck      # tsc --noEmit (checkJs)
 ```
 
 One file: `node --test test/server.test.js`. One name: `node --test --test-name-pattern "createOpenOutput" test/cli-output.test.js`.
-Opt-in browser suites drive headless Chrome over CDP (`test/cdp-browser.js`; `CHROME_PATH` or a standard install path): `LAVISH_AXI_BROWSER_E2E=1 node --test test/layout-audit-browser.test.js test/layout-warning-inbox.browser.test.js test/mobile-conversation-sheet.browser.test.js test/attachment-upload.browser.test.js test/chrome-theme.browser.test.js`.
+Opt-in browser suites drive headless Chrome over CDP (`test/cdp-browser.js`; `CHROME_PATH` or a standard install path): `LAVISH_AXI_BROWSER_E2E=1 node --test test/layout-audit-browser.test.js test/layout-warning-inbox.browser.test.js test/mobile-conversation-sheet.browser.test.js test/attachment-upload.browser.test.js test/chrome-theme.browser.test.js test/desktop-conversation-toggle.browser.test.js`.
 The seven-tab pool regression (`test/event-transport.browser.test.js`) serves the stock 0.1.64 build and needs `chrome-devtools-axi`, so it always skips here.
 Vendored Mermaid in the opaque-origin artifact (headless Chrome via `CHROME_PATH`, `--dump-dom`): `LAVISH_AXI_BROWSER_E2E=1 node --test test/mermaid-artifact.browser.test.js`.
 The review chrome under its own policy, same setup: `LAVISH_AXI_BROWSER_E2E=1 node --test test/chrome-csp.browser.test.js`.
@@ -140,7 +140,7 @@ Each line is the rule. [docs/invariants.md](docs/invariants.md) has the failure 
 - `resetRevisionLegend()` runs only when `replaceArtifactFrame` navigates the frame. Reject over-long revision ids and selectors. Lookups use `Map`/`Set`. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
 - The revision legend's per-row cap derives from `revisionPalette()` length, never a second number. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
 - A keyboard shortcut that must work in both chrome and the artifact needs a capture-phase listener in both `src/chrome-client.js` and `src/artifact-sdk.js`, and it requires a modifier. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
-- `MOBILE_SHEET_MEDIA` matches the CSS phone breakpoint, and the collapsed sheet is a `translateY`, never a height change. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
+- `MOBILE_SHEET_MEDIA` matches the CSS phone breakpoint, and the collapsed sheet is a `translateY`, never a height change. The desktop panel toggle only hides the panel (`body.panel-hidden`, `inert`), never clearing what it holds. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
 - `CHROME_BOOT_FAILSAFE_JS` stays inlined before the `<script src="/chrome-client.js">` tag so the gate escape works when the client script hangs. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
 - A recoverable first artifact load retries through `ARTIFACT_LOAD_RECOVERY_DELAYS_MS` and then surfaces `setLayoutGateFailure`. `superseded` and `out-of-order` never retry. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).
 - Self-paint stays a warning. Never block open and never auto-repair. [Things to know when editing](docs/invariants.md#things-to-know-when-editing).

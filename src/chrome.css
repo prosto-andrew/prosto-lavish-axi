@@ -2050,6 +2050,94 @@ body.layout-gate-active iframe#artifact {
 :root[data-lavish-scheme="light"] .theme-toggle .icon-moon {
   display: grid;
 }
+/* LAVISH-FORK: F2 desktop conversation toggle (specs/2026-10-30-desktop-conversation-toggle-design.md 4.1-4.2, 5.3).
+   The bar button hides the panel from 861px; hiding is only this CSS plus `inert`, so the panel
+   keeps whatever it holds. Below that the phone dock and sheet own the panel instead. */
+.panel-button {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border-subtle);
+  background: transparent;
+  color: var(--fg-dim);
+  border-radius: 9px;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+}
+.panel-button:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.panel-button[aria-expanded="true"] {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+  color: var(--fg);
+}
+.panel-button > svg {
+  display: block;
+}
+.panel-button-fill {
+  fill: currentColor;
+  opacity: 0;
+}
+.panel-button[aria-expanded="true"] .panel-button-fill {
+  opacity: 0.45;
+}
+.panel-button-count {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font: 700 10.5px/17px var(--font-sans);
+  text-align: center;
+  box-shadow: 0 0 0 2px var(--bg-bar);
+}
+.panel-button-dot {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 9px;
+  height: 9px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  box-shadow: 0 0 0 2px var(--bg-bar);
+}
+.panel-button-count[hidden],
+.panel-button-dot[hidden] {
+  display: none;
+}
+.panel-button.is-fresh {
+  animation: dock-pulse 700ms var(--ease);
+}
+@media (prefers-reduced-motion: reduce) {
+  .panel-button.is-fresh {
+    animation: none;
+  }
+}
+/* Exactly where the phone query below does not match, as the client decides: a fractional width
+   between 860 and 861px matches neither (max-width: 860px) nor (min-width: 861px). */
+@media not all and (max-width: 860px) {
+  body.panel-hidden .layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  body.panel-hidden .panel {
+    display: none;
+  }
+}
+@media (max-width: 860px) {
+  .panel-button {
+    display: none;
+  }
+}
 .theme-menu-head {
   padding: 7px 10px 0;
 }

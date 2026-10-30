@@ -103,6 +103,9 @@ async function createChromeHarness({
   // `window.matchMedia` that answers the OS color-scheme query (`setSystemDark` flips it). Left off,
   // the boot script never ran, as when it failed in a browser.
   theme = null,
+  // LAVISH-FORK: opt-in: install the phone-breakpoint `matchMedia` on a desktop viewport, so
+  // `setMobile(true)` can narrow it.
+  breakpointQuery = false,
 } = {}) {
   const source = await readFile(sourceUrl, "utf8");
   // Seed sessionStorage before the client boots, to model a tab whose queue was
@@ -525,7 +528,7 @@ async function createChromeHarness({
   };
   const mediaQueries = [];
   const themeQueries = [];
-  if (mobile || theme) {
+  if (mobile || theme || breakpointQuery) {
     context.window.matchMedia = (query) => {
       const colorScheme = Boolean(theme) && query === "(prefers-color-scheme: dark)";
       const list = {
@@ -7879,6 +7882,449 @@ test("crossing the breakpoint in either direction leaves no sheet state behind",
   assert.equal(state.scrollInert, true);
   assert.equal(chrome.focusLog.at(-1), "panelToggle");
   assert.equal(chrome.storage.has("lavish-axi:sheet-open:abc"), false);
+});
+
+// ---- LAVISH-FORK: desktop conversation toggle (F2) ----
+// From 861px the bar's panel button hides the conversation panel so the artifact takes the full
+// width (specs/2026-10-30-desktop-conversation-toggle-design.md). Hiding is CSS plus `inert`, so
+// these tests read the body class, the panel's `inert` and the button's attributes.
+
+function panelState(chrome) {
+  const button = chrome.element("panelButton");
+  return {
+    hidden: chrome.element("body").classList.contains("panel-hidden"),
+    inert: Boolean(chrome.element("panel").inert),
+    expanded: button["aria-expanded"],
+    label: button["aria-label"],
+    title: button.title,
+    count: chrome.element("panelButtonCount").hidden ? null : chrome.element("panelButtonCount").textContent,
+    dot: !chrome.element("panelButtonDot").hidden,
+    stored: chrome.storage.get("lavish-axi:panel-hidden:abc") ?? null,
+  };
+}
+
+test("desktop panel: the bar button hides and shows the conversation", async () => {
+  const chrome = await createChromeHarness();
+  assert.deepEqual(panelState(chrome), {
+    hidden: false,
+    inert: false,
+    expanded: "true",
+    label: "Hide conversation",
+    title: "Hide conversation",
+    count: null,
+    dot: false,
+    stored: null,
+  });
+
+  const focusCount = chrome.focusLog.length;
+  chrome.element("panelButton").dispatch("click", {});
+  const hidden = panelState(chrome);
+  assert.equal(hidden.hidden, true);
+  assert.equal(hidden.inert, true);
+  assert.equal(hidden.expanded, "false");
+  assert.equal(hidden.label, "Show conversation, Agent not listening");
+  assert.equal(hidden.title, "Show conversation · Agent not listening");
+  assert.equal(hidden.stored, "1");
+  assert.equal(chrome.focusLog.length, focusCount, "the client moves no focus when the button itself hides the panel");
+
+  chrome.element("panelScroll").scrollHeight = 900;
+  chrome.element("panelButton").dispatch("click", {});
+  const shown = panelState(chrome);
+  assert.equal(shown.hidden, false);
+  assert.equal(shown.inert, false);
+  assert.equal(shown.expanded, "true");
+  assert.equal(shown.label, "Hide conversation");
+  assert.equal(shown.title, "Hide conversation");
+  assert.equal(shown.stored, null);
+  assert.equal(chrome.element("panelScroll").scrollTop, 900, "the conversation comes back scrolled to its end");
+});
+
+test("desktop panel: showing the panel scrolls the conversation to its end once it has a box", async () => {
+  const chrome = await createChromeHarness();
+  const scroll = chrome.element("panelScroll");
+  const body = chrome.element("body");
+  // A `display: none` scroller has no box: its scrollHeight reads 0 and scrollTop writes are ignored.
+  let offset = 0;
+  Object.defineProperty(scroll, "scrollHeight", {
+    configurable: true,
+    get: () => (body.classList.contains("panel-hidden") ? 0 : 900),
+  });
+  Object.defineProperty(scroll, "scrollTop", {
+    configurable: true,
+    get: () => offset,
+    set: (value) => {
+      if (!body.classList.contains("panel-hidden")) offset = Number(value);
+    },
+  });
+  chrome.element("panelButton").dispatch("click", {});
+  offset = 300;
+  chrome.element("panelButton").dispatch("click", {});
+  assert.equal(scroll.scrollTop, 900, "the end of the conversation is on screen");
+});
+
+test("desktop panel: hiding keeps what the reviewer wrote, queued and attached", async () => {
+  const chrome = await createChromeHarness();
+  chrome.element("chatInput").value = "Unsent words";
+  queueHeadingNote(chrome, "Queued while shown");
+  const snapshot = () => ({
+    input: chrome.element("chatInput").value,
+    queued: chrome.queued().map((prompt) => prompt.prompt),
+    attachments: chrome.element("chatAttachments").innerHTML,
+    stash: [...chrome.localStore.entries()]
+      .filter(([storageKey]) => storageKey.startsWith("lavish-axi:stash:abc:"))
+      .map(([storageKey, value]) => {
+        const entry = JSON.parse(value);
+        delete entry.at;
+        return [storageKey, entry];
+      }),
+  });
+  const before = snapshot();
+
+  chrome.element("panelButton").dispatch("click", {});
+  chrome.element("panelButton").dispatch("click", {});
+  assert.deepEqual(snapshot(), before);
+
+  chrome.element("panelButton").dispatch("click", {});
+  queueHeadingNote(chrome, "Queued while hidden");
+  chrome.element("panelButton").dispatch("click", {});
+  assert.deepEqual(
+    chrome.queued().map((prompt) => prompt.prompt),
+    ["Queued while shown", "Queued while hidden"],
+  );
+  assert.equal(chrome.element("chatInput").value, "Unsent words");
+});
+
+test("desktop panel: a reload of the tab restores a hidden panel", async () => {
+  const chrome = await createChromeHarness({ storage: new Map([["lavish-axi:panel-hidden:abc", "1"]]) });
+  const state = panelState(chrome);
+  assert.equal(state.hidden, true);
+  assert.equal(state.inert, true);
+  assert.equal(state.expanded, "false");
+});
+
+test('desktop panel: only "1" restores a hidden panel', async () => {
+  for (const stored of ["true", "0", ""]) {
+    const chrome = await createChromeHarness({ storage: new Map([["lavish-axi:panel-hidden:abc", stored]]) });
+    assert.equal(panelState(chrome).hidden, false, `a stored ${JSON.stringify(stored)} leaves the panel shown`);
+  }
+});
+
+test("desktop panel: refused storage still hides and shows", async () => {
+  const refuses = (storageKey) => String(storageKey).startsWith("lavish-axi:panel-hidden:");
+  class RefusingStorage extends Map {
+    has(storageKey) {
+      if (refuses(storageKey)) throw new Error("SecurityError");
+      return super.has(storageKey);
+    }
+    get(storageKey) {
+      if (refuses(storageKey)) throw new Error("SecurityError");
+      return super.get(storageKey);
+    }
+    /** @returns {this} */
+    set(storageKey, value) {
+      if (refuses(storageKey)) throw new Error("SecurityError");
+      return super.set(storageKey, value);
+    }
+    delete(storageKey) {
+      if (refuses(storageKey)) throw new Error("SecurityError");
+      return super.delete(storageKey);
+    }
+  }
+  const chrome = await createChromeHarness({ storage: new RefusingStorage() });
+  const hiddenNow = () => chrome.element("body").classList.contains("panel-hidden");
+  assert.equal(hiddenNow(), false);
+  chrome.element("panelButton").dispatch("click", {});
+  assert.equal(hiddenNow(), true);
+  chrome.element("panelButton").dispatch("click", {});
+  assert.equal(hiddenNow(), false);
+});
+
+test("desktop panel: the state outlives crossing the phone breakpoint", async () => {
+  const chrome = await createChromeHarness({ breakpointQuery: true });
+  chrome.element("panelButton").dispatch("click", {});
+  assert.equal(panelState(chrome).hidden, true);
+
+  // Narrowed to a phone: the dock and sheet apply exactly as before, and the choice is kept.
+  chrome.setMobile(true);
+  let state = panelState(chrome);
+  assert.equal(state.hidden, false);
+  assert.equal(state.inert, false);
+  assert.equal(state.stored, "1");
+  assert.equal(sheetState(chrome).open, false);
+  assert.equal(sheetState(chrome).scrollInert, true);
+
+  chrome.setMobile(false);
+  state = panelState(chrome);
+  assert.equal(state.hidden, true);
+  assert.equal(state.inert, true);
+
+  // Widening from a raised sheet with focus in the composer moves focus out of the hidden panel.
+  const phone = await createChromeHarness({ mobile: true, storage: new Map([["lavish-axi:panel-hidden:abc", "1"]]) });
+  assert.equal(panelState(phone).hidden, false);
+  phone.element("panelHead").dispatch("click", {});
+  phone.element("chatInput").focus();
+  phone.setMobile(false);
+  assert.equal(panelState(phone).hidden, true);
+  assert.equal(phone.focusLog.at(-1), "panelButton");
+});
+
+function sendAgentReply(chrome, text) {
+  chrome.eventSource().listeners.get("agent-reply")({ data: JSON.stringify({ text }) });
+}
+
+test("desktop panel: a hidden panel badges queued notes and pulses", async () => {
+  const shown = await createChromeHarness();
+  queueHeadingNote(shown);
+  assert.equal(panelState(shown).count, null, "a shown panel needs no badge");
+  assert.equal(shown.element("panelButton").classList.contains("is-fresh"), false);
+
+  const chrome = await createChromeHarness();
+  chrome.element("panelButton").dispatch("click", {});
+  queueHeadingNote(chrome);
+  let state = panelState(chrome);
+  assert.equal(state.count, "1");
+  assert.equal(state.dot, false);
+  assert.equal(state.label, "Show conversation, 1 queued");
+  assert.equal(state.title, "Show conversation · 1 queued");
+  assert.equal(chrome.element("panelButton").classList.contains("is-fresh"), true);
+
+  queueHeadingNote(chrome, "A second note");
+  state = panelState(chrome);
+  assert.equal(state.count, "2");
+  assert.equal(state.label, "Show conversation, 2 queued");
+});
+
+test("desktop panel: a reply behind a hidden panel shows a dot until the panel opens", async () => {
+  const chrome = await createChromeHarness();
+  chrome.element("panelButton").dispatch("click", {});
+  sendAgentReply(chrome, "Updated the totals.");
+  let state = panelState(chrome);
+  assert.equal(state.dot, true);
+  assert.equal(state.count, null);
+  assert.equal(state.title, "Show conversation · Updated the totals.");
+  assert.equal(state.label, "Show conversation, unread reply");
+  assert.equal(chrome.element("panelButton").classList.contains("is-fresh"), true);
+
+  // Showing the panel shows the reply, so hiding it again owes no dot.
+  chrome.element("panelButton").dispatch("click", {});
+  assert.equal(panelState(chrome).dot, false);
+  chrome.element("panelButton").dispatch("click", {});
+  assert.equal(panelState(chrome).dot, false);
+
+  // A reply that lands while the panel is shown was seen.
+  const seen = await createChromeHarness();
+  sendAgentReply(seen, "Read as it arrived.");
+  seen.element("panelButton").dispatch("click", {});
+  assert.equal(panelState(seen).dot, false);
+});
+
+test("desktop panel: a phone reply read on the widened layout owes no dot", async () => {
+  // Docked on a phone, the reply is unread; widening onto a shown panel puts it on screen.
+  const chrome = await createChromeHarness({ mobile: true });
+  sendAgentReply(chrome, "Updated the totals.");
+  assert.equal(chrome.element("panelSummary").classList.contains("is-unread"), true);
+  chrome.setMobile(false);
+  assert.equal(panelState(chrome).hidden, false);
+  chrome.element("panelButton").dispatch("click", {});
+  let state = panelState(chrome);
+  assert.equal(state.hidden, true);
+  assert.equal(state.dot, false, "the reply was on screen before the panel was hidden");
+  assert.equal(state.label, "Show conversation, Agent not listening");
+
+  // Widening onto a panel the reviewer had hidden leaves the reply unread.
+  const hidden = await createChromeHarness({ mobile: true, storage: new Map([["lavish-axi:panel-hidden:abc", "1"]]) });
+  sendAgentReply(hidden, "Updated the totals.");
+  hidden.setMobile(false);
+  state = panelState(hidden);
+  assert.equal(state.hidden, true);
+  assert.equal(state.dot, true);
+});
+
+test("desktop panel: the queue count outranks the unread dot and hands back to it", async () => {
+  const chrome = await createChromeHarness();
+  chrome.element("panelButton").dispatch("click", {});
+  sendAgentReply(chrome, "Updated the totals.");
+  assert.equal(panelState(chrome).dot, true);
+
+  queueHeadingNote(chrome);
+  let state = panelState(chrome);
+  assert.equal(state.count, "1");
+  assert.equal(state.dot, false);
+
+  // Once the server acknowledges the note, the reply is still unread.
+  const promptId = chrome.queued()[0].prompt_id;
+  chrome.eventSource().listeners.get("chat-sync")({
+    data: JSON.stringify({ chat: [{ role: "agent", text: "Updated the totals." }], ack_ids: [promptId] }),
+  });
+  assert.deepEqual(chrome.queued(), []);
+  state = panelState(chrome);
+  assert.equal(state.count, null);
+  assert.equal(state.dot, true);
+});
+
+test("desktop panel: editing a queued note from the artifact shows the panel", async () => {
+  const chrome = await createChromeHarness();
+  queueHeadingNote(chrome);
+  chrome.element("panelButton").dispatch("click", {});
+  chrome.sendFrameMessage({ type: "lavish:editQueuedAnchor", selector: "main > h2" });
+  assert.equal(panelState(chrome).hidden, false);
+  assert.match(chrome.element("queuedLog").innerHTML, /class="queued-edit-input"[^>]*>Make this heading bigger</);
+});
+
+test("desktop panel: an empty send from the artifact shows the panel before focusing the composer", async () => {
+  const chrome = await createChromeHarness();
+  chrome.element("panelButton").dispatch("click", {});
+  const input = chrome.element("chatInput");
+  const focus = input.focus;
+  let hiddenAtFocus = null;
+  input.focus = function () {
+    hiddenAtFocus = panelState(chrome).hidden;
+    return focus.call(this);
+  };
+  chrome.sendFrameMessage({ type: "lavish:sendQueuedPrompts" });
+  assert.equal(chrome.element("sendHint").hidden, false);
+  assert.equal(chrome.focusLog.at(-1), "chatInput");
+  assert.equal(hiddenAtFocus, false, "the panel was shown before the composer took focus");
+  assert.equal(panelState(chrome).hidden, false);
+});
+
+test("desktop panel: a stalled send shows the panel with its warning", async () => {
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/prompts")) return new Promise(() => {});
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  chrome.element("chatInput").value = "Do not lose this";
+  chrome.element("send").click();
+  chrome.sendSnapshot("uid=1 body");
+  await flushPromises();
+  chrome.element("panelButton").dispatch("click", {});
+  assert.equal(panelState(chrome).hidden, true);
+
+  chrome.runTimers(10_000);
+  assert.equal(chrome.element("sendHint").classList.contains("persistent"), true);
+  assert.equal(panelState(chrome).hidden, false);
+});
+
+test("desktop panel: the handoff and outdated banners show the panel", async () => {
+  let answerBegin = (_response) => {};
+  const beginAnswer = new Promise((resolve) => {
+    answerBegin = resolve;
+  });
+  const superseded = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    storage: new Map([["lavish-axi:panel-hidden:abc", "1"]]),
+    beginLoadResponses: [beginAnswer],
+  });
+  // The served markup starts the banner `hidden`; harness elements do not read markup attributes.
+  superseded.element("handoffBanner").hidden = true;
+  assert.equal(panelState(superseded).hidden, true);
+  answerBegin({ ok: false, status: 409, json: async () => ({ status: "superseded" }) });
+  await flushPromises();
+  await flushPromises();
+  assert.equal(superseded.element("handoffBanner").hidden, false);
+  assert.equal(panelState(superseded).hidden, false);
+
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  chrome.element("panelButton").dispatch("click", {});
+  // The agent going quiet is on the button's tooltip; it does not need the panel.
+  chrome.eventSource().listeners.get("agent-presence")({ data: JSON.stringify({ state: "waiting" }) });
+  assert.equal(chrome.element("presenceBanner").hidden, false);
+  assert.equal(panelState(chrome).hidden, true);
+
+  sendChromeOutdated(chrome, "upgrade");
+  await flushPromises();
+  assert.equal(chrome.element("outdatedBanner").hidden, false);
+  assert.equal(panelState(chrome).hidden, false);
+});
+
+test("desktop panel: a banner that is already up does not reopen a panel the reviewer hid again", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  chrome.element("panelButton").dispatch("click", {});
+  sendChromeOutdated(chrome, "upgrade");
+  await flushPromises();
+  assert.equal(panelState(chrome).hidden, false);
+
+  chrome.element("panelButton").dispatch("click", {});
+  sendChromeOutdated(chrome, "upgrade");
+  await flushPromises();
+  assert.equal(chrome.element("outdatedBanner").hidden, false);
+  assert.equal(panelState(chrome).hidden, true);
+});
+
+test("desktop panel: a superseded load that repeats does not reopen a panel hidden again", async () => {
+  let answerBegin = (_response) => {};
+  /** @type {any[]} */
+  const beginResponses = [
+    new Promise((resolve) => {
+      answerBegin = resolve;
+    }),
+  ];
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    storage: new Map([["lavish-axi:panel-hidden:abc", "1"]]),
+    beginLoadResponses: beginResponses,
+  });
+  // The served markup starts the banner `hidden`; harness elements do not read markup attributes.
+  chrome.element("handoffBanner").hidden = true;
+  answerBegin({ ok: false, status: 409, json: async () => ({ status: "superseded" }) });
+  await flushPromises();
+  await flushPromises();
+  assert.equal(panelState(chrome).hidden, false);
+  chrome.element("panelButton").dispatch("click", {});
+  assert.equal(panelState(chrome).hidden, true);
+
+  // The agent edits the artifact: the live reload begins another load, and it is superseded again.
+  beginResponses.push({ ok: false, status: 409, json: async () => ({ status: "superseded" }) });
+  chrome.eventSource().listeners.get("reload")();
+  for (let i = 0; i < 6; i += 1) await flushPromises();
+  assert.equal(beginResponses.length, 0, "the reload began another load");
+  assert.equal(chrome.element("handoffBanner").hidden, false);
+  assert.equal(panelState(chrome).hidden, true);
+});
+
+test("desktop panel: an ended session neither badges nor reopens the panel", async () => {
+  let rejectPost = () => {};
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/prompts")) {
+        return new Promise((_, reject) => {
+          rejectPost = () => reject(new Error("response lost"));
+        });
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  chrome.element("panelButton").dispatch("click", {});
+  queueHeadingNote(chrome);
+  assert.equal(panelState(chrome).count, "1");
+  // Sent from the artifact while the panel is hidden; the POST never answers.
+  chrome.sendFrameMessage({ type: "lavish:sendQueuedPrompts" });
+  chrome.sendSnapshot("uid=1 body");
+  await flushPromises();
+
+  chrome.eventSource().listeners.get("ended")();
+  let state = panelState(chrome);
+  assert.equal(state.hidden, true);
+  assert.equal(state.count, null);
+  assert.equal(state.dot, false);
+  assert.equal(chrome.element("panelButton").disabled, false);
+
+  // The send fails and a server restart arrives after the end: the ended overlay covers the
+  // panel anyway, so nothing reopens it.
+  rejectPost();
+  await flushPromises();
+  await flushPromises();
+  chrome.runTimers(10_000);
+  sendChromeOutdated(chrome, "upgrade");
+  await flushPromises();
+  assert.equal(chrome.element("sendHint").hidden, false, "the failure still reaches the composer");
+  assert.equal(panelState(chrome).hidden, true);
+
+  chrome.element("panelButton").dispatch("click", {});
+  state = panelState(chrome);
+  assert.equal(state.hidden, false);
 });
 
 // ---- Queued and sent notes are one conversation ----
