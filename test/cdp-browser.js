@@ -3,7 +3,8 @@
 // fetches `chrome-devtools-mcp@latest` from npm at run time (past the lockfile and the release-age
 // policy), and on Windows `spawnSync` cannot start its npm `.cmd` shim without a shell. This module
 // covers exactly what those suites asked of it: open, emulate, evaluate, wait, and a real click and
-// typing inside the sandboxed artifact frame.
+// typing inside the sandboxed artifact frame. LAVISH-FORK: plus a real Enter key press and a fresh
+// second tab, for the desktop conversation toggle suite.
 //
 // `node --test` runs every `.js` file under test/, so this file also runs as an empty test file.
 import { spawn, spawnSync } from "node:child_process";
@@ -323,6 +324,37 @@ export async function launchBrowser({ chromePath, profileDir }) {
     /** Types into whatever has focus, the way a keyboard would. */
     async type(text) {
       await cdp.send("Input.insertText", { text }, page);
+    },
+    /** Presses a key on whatever has focus, the way a keyboard would. Only Enter so far. */
+    async press(key) {
+      if (key !== "Enter") throw new Error(`press supports Enter only, not ${key}`);
+      const enter = { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
+      await cdp.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...enter }, page);
+      await cdp.send("Input.dispatchKeyEvent", { type: "char", text: "\r", ...enter }, page);
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...enter }, page);
+    },
+    /**
+     * Opens `url` in a fresh tab of the same browser. Unlike `window.open`, which copies the
+     * opener's sessionStorage, a tab created this way starts with none, like one the user opens.
+     */
+    async openTab(url) {
+      const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" });
+      const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
+      await cdp.send("Page.enable", {}, sessionId);
+      await cdp.send("Runtime.enable", {}, sessionId);
+      const loaded = cdp.waitForEvent(
+        (message) => message.sessionId === sessionId && message.method === "Page.loadEventFired",
+        30_000,
+        "the new tab to load",
+      );
+      await cdp.send("Page.navigate", { url }, sessionId);
+      await loaded;
+      return {
+        evaluate: (expression) => evaluateIn(sessionId, expression),
+        async close() {
+          await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
+        },
+      };
     },
     async close() {
       await Promise.race([cdp.send("Browser.close").catch(() => {}), delay(3000)]);

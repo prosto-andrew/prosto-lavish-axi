@@ -145,6 +145,10 @@ const panel = /** @type {HTMLElement} */ (document.getElementById("panel"));
 const panelHead = /** @type {HTMLDivElement} */ (document.getElementById("panelHead"));
 const panelSummary = /** @type {HTMLSpanElement} */ (document.getElementById("panelSummary"));
 const panelToggle = /** @type {HTMLButtonElement} */ (document.getElementById("panelToggle"));
+// LAVISH-FORK: F2 desktop conversation toggle in the bar.
+const panelButton = /** @type {HTMLButtonElement} */ (document.getElementById("panelButton"));
+const panelButtonCount = /** @type {HTMLSpanElement} */ (document.getElementById("panelButtonCount"));
+const panelButtonDot = /** @type {HTMLSpanElement} */ (document.getElementById("panelButtonDot"));
 const panelScrim = /** @type {HTMLDivElement} */ (document.getElementById("panelScrim"));
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
 const sendAndEndButton = /** @type {HTMLButtonElement} */ (document.getElementById("sendAndEnd"));
@@ -1120,6 +1124,8 @@ chatLog.addEventListener("error", replaceExpiredThumbnail, true);
 const DEFAULT_SEND_HINT = "Write a message or annotate an element first.";
 
 function showSendHint(message = DEFAULT_SEND_HINT, holdMs = 2600, focusInput = true) {
+  // LAVISH-FORK: the hint lives in the composer, which must be on screen to show it or take focus.
+  showPanelIfHidden();
   sendHint.textContent = message;
   sendHint.hidden = false;
   clearTimeout(sendHintTimer);
@@ -1482,7 +1488,11 @@ function setAgentPresence(state) {
 }
 
 function setHandoffSuperseded(visible) {
-  if (handoffBanner) handoffBanner.hidden = ended || !visible;
+  if (!handoffBanner) return;
+  const wasHidden = handoffBanner.hidden;
+  handoffBanner.hidden = ended || !visible;
+  // LAVISH-FORK: only as the banner appears, so a reviewer who hides the panel again keeps it hidden.
+  if (wasHidden && !handoffBanner.hidden) showPanelIfHidden();
 }
 
 // The server this page was connected to went away. What is true beyond that depends on why, so
@@ -1506,7 +1516,11 @@ function setChromeOutdated(visible, reason = chromeOutdatedReason) {
   if (outdatedText) outdatedText.textContent = chromeOutdatedCopy(chromeOutdatedReason);
   outdatedReloadInFlight = false;
   if (outdatedReloadButton) outdatedReloadButton.disabled = false;
-  if (outdatedBanner) outdatedBanner.hidden = ended || !visible;
+  if (!outdatedBanner) return;
+  const wasHidden = outdatedBanner.hidden;
+  outdatedBanner.hidden = ended || !visible;
+  // LAVISH-FORK: only as the banner appears, so a reviewer who hides the panel again keeps it hidden.
+  if (wasHidden && !outdatedBanner.hidden) showPanelIfHidden();
 }
 
 function setReviewState(state) {
@@ -1697,20 +1711,25 @@ function renderSheetSummary() {
   panelSummary.textContent = summary.text;
   panelSummary.classList.toggle("is-accent", summary.accent);
   panelSummary.classList.toggle("is-unread", summary.unread);
+  // LAVISH-FORK: the desktop panel button reports the same summary while the panel is hidden.
+  applyPanelState();
 }
 
 // A brief pulse on the dock when something the user should notice lands while the sheet is
-// closed: a prompt they queued from the artifact, or an agent reply.
+// closed: a prompt they queued from the artifact, or an agent reply. LAVISH-FORK: on the wide
+// layout the same pulse goes to the bar's panel button while the panel is hidden.
 function pulseSheetDock() {
-  if (!isMobileSheet() || sheetOpen) return;
-  panelHead.classList.remove("is-fresh");
+  if (conversationShown()) return;
+  const target = isMobileSheet() ? panelHead : panelButton;
+  target.classList.remove("is-fresh");
   // Restart the animation even when the previous pulse is still running.
-  void panelHead.offsetWidth;
-  panelHead.classList.add("is-fresh");
+  void target.offsetWidth;
+  target.classList.add("is-fresh");
 }
 
 function noteAgentReply(text) {
-  if (!isMobileSheet() || sheetOpen) return;
+  // LAVISH-FORK: a reply behind the hidden desktop panel is unread too, not only one behind the dock.
+  if (conversationShown()) return;
   unreadAgentReply = String(text || "");
   renderSheetSummary();
   pulseSheetDock();
@@ -1804,6 +1823,84 @@ if (window.visualViewport && typeof window.visualViewport.addEventListener === "
 window.addEventListener("resize", syncVisualViewport);
 syncVisualViewport();
 
+// ---- LAVISH-FORK: desktop conversation toggle (F2, specs/2026-10-30-desktop-conversation-toggle-design.md 4-5) ----
+// From 861px the bar's panel button hides the conversation panel so the artifact takes the full
+// width. Hiding is CSS (`body.panel-hidden`, scoped to the wide layout) plus `inert`: the panel
+// keeps its composer, queue, attachments, and stash. The choice is per tab and per artifact,
+// survives a reload and crossing the phone breakpoint, and applies only while the sheet does not.
+const panelHiddenStorageKey = "lavish-axi:panel-hidden:" + key;
+let panelHidden = readPanelHidden();
+
+function readPanelHidden() {
+  try {
+    return sessionStorage.getItem(panelHiddenStorageKey) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function setPanelHidden(hidden) {
+  const next = Boolean(hidden);
+  const shown = panelHidden && !next;
+  panelHidden = next;
+  try {
+    if (panelHidden) sessionStorage.setItem(panelHiddenStorageKey, "1");
+    else sessionStorage.removeItem(panelHiddenStorageKey);
+  } catch {
+    // Storage refused is not worth a stuck panel: the choice just stops surviving a reload.
+  }
+  if (shown) unreadAgentReply = "";
+  applyPanelState();
+  // After the class is gone: a `display: none` panel has no scroll box to move.
+  if (shown) scrollPanelToBottom();
+}
+
+function isDesktopPanelHidden() {
+  return !isMobileSheet() && panelHidden;
+}
+
+// Whether the reviewer can see the conversation right now: the raised sheet on a phone, the
+// panel not hidden on the wide layout. The unread-reply preview and the pulse key off this.
+function conversationShown() {
+  return isMobileSheet() ? sheetOpen : !panelHidden;
+}
+
+// The hidden panel comes back by itself only for what needs the reviewer there: editing a queued
+// note, a send hint, and the handoff and outdated banners as they appear. Once the session has
+// ended its overlay covers the panel, so nothing reopens it.
+function showPanelIfHidden() {
+  if (ended || !isDesktopPanelHidden()) return;
+  setPanelHidden(false);
+}
+
+// The one writer of the hidden state's class, inertness, button attributes, and badges, so a
+// breakpoint crossing, a summary change, or the session ending cannot leave them disagreeing.
+function applyPanelState() {
+  // A reply that landed behind the phone dock is on screen once the layout widens onto a shown panel.
+  if (!isMobileSheet() && !panelHidden) unreadAgentReply = "";
+  const hidden = isDesktopPanelHidden();
+  document.body.classList.toggle("panel-hidden", hidden);
+  panel.inert = hidden;
+  panelButton.setAttribute("aria-expanded", hidden ? "false" : "true");
+  // The same summary as the phone dock: queued notes outrank an unread reply, and an ended
+  // session reports neither.
+  const summary = hidden ? sheetSummary() : null;
+  if (summary) {
+    panelButton.setAttribute("aria-label", "Show conversation, " + (summary.unread ? "unread reply" : summary.text));
+    panelButton.setAttribute("title", "Show conversation · " + summary.text);
+  } else {
+    panelButton.setAttribute("aria-label", "Hide conversation");
+    panelButton.setAttribute("title", "Hide conversation");
+  }
+  panelButtonCount.hidden = !summary?.accent;
+  if (summary?.accent) panelButtonCount.textContent = String(queued.length);
+  panelButtonDot.hidden = !summary?.unread;
+  const activeElement = document.activeElement;
+  if (hidden && activeElement && panel.contains(activeElement)) panelButton.focus();
+}
+
+panelButton.addEventListener("click", () => setPanelHidden(!panelHidden));
+
 function scrollElementIntoView(el) {
   el.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
@@ -1823,6 +1920,8 @@ function editQueuedPrompt(index, { reveal = true } = {}) {
   editingDraft = String(prompt.prompt || "");
   editFocusPending = true;
   if (isMobileSheet()) setSheetOpen(true);
+  // LAVISH-FORK: the hidden desktop panel comes back for the edit, as the sheet rises on a phone.
+  showPanelIfHidden();
   render();
   if (reveal && prompt.selector) postToFrame({ type: "lavish:revealElement", selector: String(prompt.selector) });
 }
