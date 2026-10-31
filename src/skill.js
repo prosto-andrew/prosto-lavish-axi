@@ -55,7 +55,7 @@ metadata:
 Lavish Editor opens agent-generated HTML in the browser so a human can annotate it and send feedback back to the agent.
 Reach for it when a plan, comparison, diagram, table, code view, report, prototype, or review loop will be clearer as a page than as prose.
 
-This machine runs a **locally built, hardened copy** of lavish-axi 0.1.93. Publishing to any third-party host, telemetry, network binding beyond loopback, persistent hook installation, and CDN asset loading have been removed from its source. Everything below depends on running that copy and no other.
+This machine runs a **locally built, hardened copy** of lavish-axi 0.1.94. Publishing to any third-party host, telemetry, network binding beyond loopback, persistent hook installation, and CDN asset loading have been removed from its source. Everything below depends on running that copy and no other.
 
 ## Hard rules
 

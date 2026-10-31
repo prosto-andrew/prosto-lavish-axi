@@ -97,3 +97,33 @@ test("panel hiding applies only on the wide layout and the button only there", a
   );
   assert.ok(phone, "the phone layout never shows the panel button");
 });
+
+// LAVISH-FORK: upstream 0.1.94 shipped its own desktop collapse (#462). This build keeps its panel
+// button instead (specs/2026-10-13-upstream-sync-0.1.87-design.md 13.2, 14.4), so no part of #462
+// may come back with a later merge, not even as dead CSS or a stray call.
+test("upstream's own desktop sidebar collapse (#462) is not in this build", async () => {
+  const sources = {
+    "src/chrome-client.js": await readFile(new URL("../src/chrome-client.js", import.meta.url), "utf8"),
+    "src/chrome.css": await readFile(chromeCssUrl, "utf8"),
+  };
+  const names = [
+    "sidebarToggle",
+    "sidebar-toggle",
+    "panel-collapsed",
+    "panelCollapsed",
+    "isConversationHidden",
+    "revealConversation",
+    "applyPanelCollapsed",
+    "renderSidebarToggle",
+  ];
+  for (const [file, text] of Object.entries(sources)) {
+    for (const name of names) assert.ok(!text.includes(name), `${file} carries #462's ${name}`);
+  }
+
+  const html = createChromeHtml({ key: "abc", file: "/tmp/a.html" });
+  assert.ok(!html.includes("sidebarToggle"), "the page has no #462 toggle");
+  const bar = html.slice(html.indexOf('<div class="bar">'), html.indexOf('<div class="layout">'));
+  const controls = [...bar.matchAll(/<button\b[^>]*\baria-controls="panel"[^>]*>/g)].map((match) => match[0]);
+  assert.equal(controls.length, 1, "one button in the bar controls the panel");
+  assert.match(controls[0], /\bid="panelButton"/);
+});

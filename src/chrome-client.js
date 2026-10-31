@@ -150,8 +150,6 @@ const panelButton = /** @type {HTMLButtonElement} */ (document.getElementById("p
 const panelButtonCount = /** @type {HTMLSpanElement} */ (document.getElementById("panelButtonCount"));
 const panelButtonDot = /** @type {HTMLSpanElement} */ (document.getElementById("panelButtonDot"));
 const panelScrim = /** @type {HTMLDivElement} */ (document.getElementById("panelScrim"));
-const sidebarToggle = /** @type {HTMLButtonElement} */ (document.getElementById("sidebarToggle"));
-const sidebarToggleCount = /** @type {HTMLSpanElement} */ (document.getElementById("sidebarToggleCount"));
 const sendButton = /** @type {HTMLButtonElement} */ (document.getElementById("send"));
 const sendAndEndButton = /** @type {HTMLButtonElement} */ (document.getElementById("sendAndEnd"));
 const annotationSwitch = /** @type {HTMLButtonElement} */ (document.getElementById("annotation"));
@@ -1816,11 +1814,7 @@ if (sheetMedia && typeof sheetMedia.addEventListener === "function") {
         // Storage refusal only prevents persistence; the in-memory state is already reset.
       }
     }
-    // A reply previewed while one layout hid the conversation is no longer owed once the other
-    // layout shows it.
-    if (!isConversationHidden()) unreadAgentReply = "";
     applySheetState();
-    applyPanelCollapsed();
   });
 }
 if (window.visualViewport && typeof window.visualViewport.addEventListener === "function") {
@@ -1920,16 +1914,7 @@ function editQueuedPrompt(index, { reveal = true } = {}) {
   const prompt = queued[index];
   if (ended || !isPromptEditable(prompt)) return;
   const id = promptIdentity(prompt);
-  if (!id) return;
-  if (id === editingPromptId) {
-    // Collapsing keeps the open edit, so asking for it again brings it back into view.
-    if (isConversationHidden()) {
-      editFocusPending = true;
-      revealConversation();
-      render();
-    }
-    return;
-  }
+  if (!id || id === editingPromptId) return;
   // Moving to another note keeps what was typed into the first, the way leaving a field does.
   commitQueuedEdit();
   editingPromptId = id;

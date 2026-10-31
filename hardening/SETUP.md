@@ -1,6 +1,6 @@
 # Hardened lavish-axi — setup
 
-This checkout is lavish-axi **0.1.93** with five capabilities removed **at source level**
+This checkout is lavish-axi **0.1.94** with five capabilities removed **at source level**
 (not merely switched off by an environment variable):
 
 | Removed                          | How                                                                                                                                                                          |
@@ -129,6 +129,8 @@ every check passes. Until then the launchers refuse to start, so a half-merged t
 The 0.1.87 merge left out upstream's adoption of a running server newer than the CLI (#416): this
 build keeps a running server only when `/health` shows it is this very build (its version and the
 build id `scripts/build.js` mints), so it still replaces a server of any other version or build.
+The 0.1.94 merge left out upstream's own collapsible conversation sidebar (#462): this build keeps its
+own desktop Conversation button.
 The original 0.1.62 patch script (`harden_lavish.py`) is gone from the tree; it refused every
 other version, and git history keeps it.
 
