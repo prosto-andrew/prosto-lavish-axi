@@ -72,6 +72,9 @@ function identicalProjectionNote(offset) {
   };
 }
 
+const UNSENT_OWNERSHIP_COPY =
+  "Unsent answers stay in the tab or window where you entered them; taking over in another window does not bring them along.";
+
 async function createChromeHarness({
   fetchImpl = /** @type {(url?: any, init?: any) => Promise<any>} */ (
     async () => ({ ok: true, json: async () => ({}) })
@@ -4186,6 +4189,50 @@ test("a load that asks for the artifact again gets the whole recovery backoff ag
   assert.match(String(chrome.element("layoutGateTitle").innerHTML), /Checking layout/);
 });
 
+test("empty Send names this tab's queue without importing another window's answers", async () => {
+  const firstStorage = new Map();
+  const secondStorage = new Map();
+  const postedBodies = [];
+  const fetchImpl = async (url, init) => {
+    if (String(url).endsWith("/prompts")) postedBodies.push(JSON.parse(init.body));
+    return { ok: true, json: async () => ({}) };
+  };
+  const first = await createChromeHarness({ storage: firstStorage, fetchImpl });
+  first.sendFrameMessage({
+    type: "lavish:queuePrompt",
+    prompt: { prompt: "Keep my answer", selector: "#answer", tag: "input", text: "Answer" },
+  });
+  const savedQueue = firstStorage.get("lavish-axi:queued:abc");
+  const second = await createChromeHarness({
+    storage: secondStorage,
+    fetchImpl,
+    artifactSrc: "/artifact/abc/index.html",
+    sessionData: { ...defaultSessionData, chromeLoadToken: "old-handoff" },
+    beginLoadResponses: [{ ok: false, status: 409, json: async () => ({ status: "superseded" }) }],
+  });
+
+  second.element("send").click();
+  await flushPromises();
+  assert.equal(second.element("sendHint").hidden, false);
+  assert.equal(second.element("sendHint").textContent, `Nothing queued in this tab. ${UNSENT_OWNERSHIP_COPY}`);
+  assert.equal(second.element("layoutGateCopy").textContent, UNSENT_OWNERSHIP_COPY);
+  assert.equal(second.queued().length, 0);
+  assert.equal(first.queued().length, 1);
+  assert.equal(firstStorage.get("lavish-axi:queued:abc"), savedQueue);
+  assert.equal(second.reloadCount(), 0, "empty Send never takes over");
+
+  second.element("handoffTakeover").click();
+  assert.equal(second.reloadCount(), 1);
+  // Model the explicit reload in B with B's storage, not A's. The warning is mitigation,
+  // not draft migration; only reloading A with its own storage recovers its queued answer.
+  const takenOver = await createChromeHarness({ storage: secondStorage, fetchImpl });
+  const originalReloaded = await createChromeHarness({ storage: firstStorage, fetchImpl });
+  assert.equal(takenOver.queued().length, 0);
+  assert.equal(originalReloaded.queued()[0].prompt, "Keep my answer");
+  assert.equal(firstStorage.get("lavish-axi:queued:abc"), savedQueue);
+  assert.equal(postedBodies.length, 0, "neither empty Send nor takeover submits another window's answers");
+});
+
 test("a superseded reviewer is not retried in the background", async () => {
   const chrome = await createChromeHarness({
     artifactSrc: "/artifact/abc/index.html",
@@ -4216,7 +4263,9 @@ test("a superseded first load names itself on the layout gate instead of holding
   assert.equal(chrome.element("artifact").src, "");
   assert.equal(chrome.element("layoutGateOverlay").hidden, false);
   assert.match(chrome.element("layoutGateTitle").textContent, /already open in another tab/);
+  assert.equal(chrome.element("layoutGateCopy").textContent, UNSENT_OWNERSHIP_COPY);
   assert.equal(chrome.element("layoutGateAction").textContent, "Take over here");
+  assert.equal(chrome.reloadCount(), 0, "the warning appears before any takeover");
   chrome.element("layoutGateAction").click();
   assert.equal(chrome.reloadCount(), 1);
   // Taking over is the user's action; nothing may retry in the background against the tab that
@@ -6407,10 +6456,14 @@ test("chrome send with an empty composer shows a visible hint", async () => {
   chrome.element("send").click();
 
   assert.equal(chrome.element("sendHint").hidden, false);
-  assert.equal(chrome.element("sendHint").textContent, "Write a message or annotate an element first.");
+  assert.equal(chrome.element("sendHint").textContent, `Nothing queued in this tab. ${UNSENT_OWNERSHIP_COPY}`);
   assert.doesNotMatch(chrome.element("sendHint").textContent, /End session/);
   assert.equal(chrome.element("chatInput").focused, true);
   assert.equal(chrome.postedToFrame.length, 0);
+  chrome.runTimers(2600);
+  assert.equal(chrome.element("sendHint").hidden, false, "the ownership message outlasts the short hint hold");
+  chrome.runTimers(9000);
+  assert.equal(chrome.element("sendHint").hidden, true);
 });
 
 test("chrome send and end during an in-flight submit still ends after the submit drains the queue", async () => {
