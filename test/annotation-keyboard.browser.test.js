@@ -7,7 +7,15 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { findChrome, launchBrowser, waitForValue } from "./cdp-browser.js";
+
+// LAVISH-FORK: upstream drives this suite through chrome-devtools-axi, which this fork does not
+// install; it runs on the CDP helper the other opt-in suites use (test/cdp-browser.js). The text goes
+// in one key at a time, as upstream's tool typed it: Input.insertText fires no keydown, so with it
+// the spaces the deck pages on - the bug this test is about - would never reach a key handler.
 const runBrowserE2e = process.env.LAVISH_AXI_BROWSER_E2E === "1";
+const chromePath = runBrowserE2e ? await findChrome() : "";
+const browserSkip = !runBrowserE2e || (!chromePath && "Chrome or Chromium is required (set CHROME_PATH)");
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 function run(command, args, env, timeout = 45_000) {
@@ -55,9 +63,21 @@ document.addEventListener("keydown", function (event) {
 </html>
 `;
 
+// The annotation card lives in the SDK's open shadow root.
+const CARD = `(() => {
+  const root = document.querySelector(".lavish-annotation-root")?.shadowRoot;
+  const area = root?.querySelector(".lavish-annotation-card textarea");
+  return JSON.stringify({
+    open: Boolean(area),
+    focused: Boolean(area) && root.activeElement === area,
+    value: area ? area.value : "",
+    slide: document.getElementById("slide")?.textContent || "",
+  });
+})()`;
+
 test(
   "typing in the annotation card does not reach the artifact's own key handlers",
-  { skip: !runBrowserE2e, timeout: 180_000 },
+  { skip: browserSkip, timeout: 180_000 },
   async () => {
     const temp = await mkdtemp(path.join(tmpdir(), "lavish-keyboard-e2e-"));
     const port = await freePort();
@@ -69,42 +89,46 @@ test(
       LAVISH_AXI_HOST: "127.0.0.1",
       LAVISH_AXI_LINK_HOST: "127.0.0.1",
     };
-    const chromeEnv = {
-      CHROME_DEVTOOLS_AXI_SESSION: `lavish-keyboard-e2e-${process.pid}`,
-      CHROME_DEVTOOLS_AXI_USER_DATA_DIR: path.join(temp, "chrome"),
-    };
-    const browser = (...args) => run("chrome-devtools-axi", args, chromeEnv);
-    function uidOf(snapshot, pattern) {
-      const line = snapshot.split("\n").find((entry) => pattern.test(entry));
-      assert.ok(line, `${pattern} missing from snapshot:\n${snapshot}`);
-      return line.trim().split(/\s+/)[0].replace(/^uid=/, "");
-    }
+    let browser;
+    const card = async () => JSON.parse(await browser.evaluateInArtifact(CARD));
 
     try {
+      browser = await launchBrowser({ chromePath, profileDir: path.join(temp, "chrome") });
       const artifact = path.join(temp, "deck.html");
       await writeFile(artifact, ARTIFACT_HTML);
       const output = run(process.execPath, ["bin/lavish-axi.js", artifact, "--no-open"], lavishEnv);
       const url = output.match(/url:\s*"([^"]+)"/)?.[1];
       assert.ok(url, output);
 
-      browser("open", url);
-      browser("wait", "Annotate this paragraph.");
-      browser("click", `@${uidOf(browser("snapshot"), /"Annotate this paragraph\."/)}`);
-      browser("wait", "Enter to queue");
+      await browser.open(url);
+      const gate = await waitForValue(
+        () => browser.evaluate(`document.body.classList.contains("layout-gate-active")`),
+        (active) => active === false,
+        { timeoutMs: 20_000 },
+      );
+      assert.equal(gate, false, "the layout gate lifts");
+      await browser.clickInArtifact("#annotate-me");
+      const opened = await waitForValue(card, (state) => state.open && state.focused);
+      assert.ok(opened.open && opened.focused, `the card opens with its field focused: ${JSON.stringify(opened)}`);
 
-      const typed = browser("type", "fix this text");
-      assert.match(typed, /textbox "Tell the agent[^"]*"[^\n]*value="fix this text"/, typed);
-      assert.match(typed, /"Slide 1"/, typed);
-      const paged = browser("press", "ArrowRight");
-      assert.match(paged, /"Slide 1"/, paged);
+      await browser.typeKeys("fix this text");
+      let state = await card();
+      assert.equal(state.value, "fix this text");
+      assert.equal(state.slide, "Slide 1");
+      await browser.press("ArrowRight");
+      state = await card();
+      assert.equal(state.slide, "Slide 1");
 
-      browser("click", `@${uidOf(browser("snapshot"), /button "Cancel"/)}`);
-      const outside = browser("press", "ArrowRight");
-      assert.match(outside, /"Slide 2"/, outside);
+      await browser.clickInArtifact(".lavish-annotation-card .lavish-cancel", { host: ".lavish-annotation-root" });
+      state = await waitForValue(card, (value) => !value.open);
+      assert.equal(state.open, false, "Cancel closes the card");
+      await browser.press("ArrowRight");
+      state = await waitForValue(card, (value) => value.slide !== "Slide 1");
+      assert.equal(state.slide, "Slide 2", "the deck still pages once the card is closed");
     } finally {
       run(process.execPath, ["bin/lavish-axi.js", "stop", "--port", String(port)], lavishEnv, 15_000);
-      run("chrome-devtools-axi", ["stop"], chromeEnv);
-      await rm(temp, { recursive: true, force: true });
+      await browser?.close();
+      await rm(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
     }
   },
 );

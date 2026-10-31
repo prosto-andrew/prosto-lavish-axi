@@ -115,7 +115,10 @@ test("home help names LAVISH_AXI_ALLOWED_HOSTS for the 403 forbidden host case",
   assert.match(hostHelp, /reverse-proxy/);
   assert.match(hostHelp, /README's Allowed hosts section/);
   assert.doesNotMatch(hostHelp, /whitespace-separated/);
-  assert.match(hostHelp, /`lavish-axi stop`/);
+  // LAVISH-HARDENED: the help names the launcher, and it suggests no LAN address to allow: this
+  // server listens on loopback only, so a request by LAN IP never reaches it.
+  assert.match(hostHelp, /`lavish-safe stop`/);
+  assert.doesNotMatch(hostHelp, /LAN IP/);
 });
 
 test("CLI version tracks package.json so release-please bumps reach the published binary", async () => {

@@ -53,7 +53,7 @@ function mustNotExist(rel) {
 
 // The upstream release this tree was last merged from and audited against. The launchers
 // defer to this pin through --quiet. Bump it only after re-running every check.
-const AUDITED_VERSION = "0.1.90";
+const AUDITED_VERSION = "0.1.93";
 
 check(`checkout is the audited version ${AUDITED_VERSION}`, () => {
   const pkg = JSON.parse(read("package.json"));

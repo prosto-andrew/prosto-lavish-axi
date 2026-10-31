@@ -3683,9 +3683,6 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
       previousToken &&
       artifactSpokeToken !== previousToken
     ) {
-      // A first load that gets no fresh token falls back to the one embedded in the page, so a
-      // superseded chrome still shows the artifact behind its takeover banner.
-      if (!frame.src) frame.src = artifactFrameSrcForLoad({ revision: artifactLoadRevision, token: previousToken });
       armArtifactAvailabilityProbe(previousToken);
     }
     return false;

@@ -3864,7 +3864,7 @@ test("a superseded first load still shows the embedded artifact", async () => {
     artifactSrc: "/artifact/abc/index.html",
     sessionData: {
       ...defaultSessionData,
-      chromeLoadToken: "old-handoff",
+      // LAVISH-HARDENED: no chromeLoadToken - this build's page never embeds the handoff token (PR #16).
       initialArtifactRevision: 4,
       initialArtifactLoadToken: "live-load",
     },
