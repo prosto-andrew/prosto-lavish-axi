@@ -2488,12 +2488,27 @@ export function createArtifactSdk(
     return (dataTransfer.types || []).includes?.("Files");
   }
 
+  // Asks the chrome to mirror the page's live title and/or icon onto the outer browser tab. The
+  // chrome owns the validation (length cap, SVG data: icons only); a string sets the field, `null`
+  // restores what the tab loaded with, and a field left out stays as it is.
+  /** @param {{ title?: string | null, icon?: string | null }} [meta] */
+  function setDocumentMeta(meta) {
+    /** @type {{ title?: string | null, icon?: string | null }} */
+    const payload = {};
+    for (const field of /** @type {const} */ (["title", "icon"])) {
+      const value = meta?.[field];
+      if (typeof value === "string" || value === null) payload[field] = value;
+    }
+    postArtifactMessage("lavish:documentMeta", payload);
+  }
+
   /** @type {Window & { lavish?: unknown }} */ (window).lavish = {
     queuePrompt,
     sendQueuedPrompts,
     endSession,
     getQueuedPrompts: () => [],
     setStatus: (message) => postArtifactMessage("lavish:status", { message: String(message) }),
+    setDocumentMeta,
     snapshot,
   };
 

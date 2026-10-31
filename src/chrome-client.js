@@ -4515,6 +4515,50 @@ async function reloadChromeForOutdatedBanner() {
   }
 }
 
+// ---- Tab title and icon from the artifact ----
+// The server stamps the tab from the artifact's <head> once, when the chrome is served. A page that
+// changes after that (a live dashboard) can ask the chrome to follow it with
+// window.lavish.setDocumentMeta. The page is untrusted, so the chrome clamps the title and takes
+// only a bounded SVG data: icon, which cannot run script or fetch anything as a tab icon.
+const DOCUMENT_TITLE_MAX_CHARS = 120;
+const DOCUMENT_ICON_MAX_CHARS = 8192;
+const DOCUMENT_ICON_RE = /^data:image\/svg\+xml[;,]/i;
+const loadTimeTitle = document.title;
+const loadTimeIconLink = document.querySelector?.('link[rel~="icon"]');
+const loadTimeIconHref = loadTimeIconLink ? loadTimeIconLink.getAttribute("href") : null;
+
+function applyDocumentMeta(msg) {
+  if (msg.title === null) document.title = loadTimeTitle;
+  else if (typeof msg.title === "string") {
+    const title = msg.title
+      .replace(/\p{Cc}+/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, DOCUMENT_TITLE_MAX_CHARS)
+      .trim();
+    document.title = title ? title + " · Lavish" : loadTimeTitle;
+  }
+  if (msg.icon === null) setDocumentIcon(loadTimeIconHref);
+  else if (
+    typeof msg.icon === "string" &&
+    msg.icon.length <= DOCUMENT_ICON_MAX_CHARS &&
+    DOCUMENT_ICON_RE.test(msg.icon)
+  ) {
+    setDocumentIcon(msg.icon);
+  }
+}
+
+function setDocumentIcon(href) {
+  // Replace the element rather than edit its href: some browsers keep showing the old icon
+  // otherwise.
+  const old = document.querySelector('link[rel~="icon"]');
+  const link = document.createElement("link");
+  link.setAttribute("rel", "icon");
+  if (href) link.setAttribute("href", href);
+  if (old) old.replaceWith(link);
+  else document.head.appendChild(link);
+}
+
 window.addEventListener("message", (event) => {
   if (event.source !== frame.contentWindow) return;
 
@@ -4583,6 +4627,7 @@ window.addEventListener("message", (event) => {
   if (msg.type === "lavish:snapshot") {
     completeSnapshotRequest(msg.snapshot_request_id, msg.snapshot || "");
   }
+  if (msg.type === "lavish:documentMeta") applyDocumentMeta(msg);
   if (msg.type === "lavish:scroll") {
     lastScroll = { x: Number(msg.x) || 0, y: Number(msg.y) || 0 };
   }

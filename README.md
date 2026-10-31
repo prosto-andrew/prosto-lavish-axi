@@ -1,6 +1,6 @@
 > ## Hardened fork - not upstream lavish-axi
 >
-> This fork is upstream **v0.1.93** with five capabilities removed **at source level**,
+> This fork is upstream **v0.1.94** with five capabilities removed **at source level**,
 > for private use on trusted machines. It is not a drop-in replacement for the published
 > package and is not meant to be published to npm.
 >
@@ -22,6 +22,10 @@
 > The 0.1.87 merge did not take upstream's adoption of a running server newer than the CLI (#416):
 > `lavish-safe` keeps a running server only when it is this very build, so it still replaces a
 > running server of any other version or build, newer included.
+>
+> The 0.1.94 merge did not take upstream's own collapsible conversation sidebar (#462): this build
+> keeps its own desktop Conversation button beside Annotate, whose hidden state is kept per tab and
+> per artifact and which brings the panel back for a note edit, a send hint, or a banner.
 >
 > The browser-side policy pins every fetch and frame navigation to the local server but cannot
 > stop WebRTC; see [What still touches the network](hardening/SETUP.md#what-still-touches-the-network).
@@ -166,6 +170,7 @@ Or just ask for anything that is easier to grasp visually - a plan, comparison, 
   A **Revisions** button then appears in the top bar with a legend listing each round - colour swatch, label, time, and the agent's summary - and **Reveal** steps through that round's changed blocks, flashing them one at a time.
   Each revision's swatch carries a distinct border style and fill pattern as well as a colour, so the rounds stay distinguishable without colour. Artifacts with no registry show no button and are otherwise unaffected, a malformed registry is ignored rather than surfaced as an error, and at most 6 revisions are listed - one per distinguishable swatch.
   Lavish never marks up the artifact for this: the legend lives in the browser chrome, so the served page stays identical to the saved file, and the registry and marks travel with the file through export.
+- **Live tab title and icon** - Opt-in. The browser tab adopts the artifact's `<title>` when it loads, and its first `<link rel="icon">` when that link's `href` is a `data:` URL. A long-lived artifact can keep the tab current afterwards with `window.lavish.setDocumentMeta({ title, icon })`: a string sets the field (a title that is blank after trimming restores the load-time title), `null` restores the load-time value, and an omitted field is left alone. The title is trimmed to 120 characters and shown as `<title> · Lavish`; the icon must be a `data:image/svg+xml` URL of at most 8192 characters. Anything else is ignored. A value stays until the next call or until the tab itself reloads, so call again after each page update. The call is a no-op when the page is not open in Lavish, so feature-detect with `window.lavish?.setDocumentMeta?.(...)`.
 - **Local assets** - Copy local images, CSS, fonts, and scripts next to the HTML artifact and reference them with relative paths from that directory; root-prefixed paths such as `/assets/logo.png` will not resolve through Lavish's artifact route.
 - **Export** - `lavish-safe export` writes `<name>.export.html` by inlining local assets only, stripping the annotation SDK, and leaving remote CDN/font references as links that still need network access.
   Files the local design snippet loads from `/design/` are inlined too, so an export keeps that styling offline. The vendored Mermaid module is not: module imports stay references, so a Mermaid diagram in an export shows its source text, and export lists that import under `unresolved_local_assets`.
