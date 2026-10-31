@@ -3841,6 +3841,45 @@ test("chrome client registers message listener before loading the artifact ifram
   assert.equal(chrome.srcLoads[0].hadMessageListener, true);
 });
 
+// The embedded load token in a freshly served chrome page may already be retired: the previous tab's
+// begin-load is what issued it. Navigating to it first commits the 409 "no longer current" page, and
+// Chrome can then drop the begin-load's navigation, leaving the review stuck on that page (#451).
+test("a fresh open navigates the artifact frame only to the begin-load's token", async () => {
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    sessionData: { ...defaultSessionData, initialArtifactRevision: 4, initialArtifactLoadToken: "retired-load" },
+  });
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(chrome.artifactBeginRequests.length, 1);
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    ["/artifact/abc/index.html?artifact_revision=1&artifact_load_token=harness-load-1"],
+  );
+});
+
+test("a superseded first load still shows the embedded artifact", async () => {
+  const chrome = await createChromeHarness({
+    artifactSrc: "/artifact/abc/index.html",
+    sessionData: {
+      ...defaultSessionData,
+      chromeLoadToken: "old-handoff",
+      initialArtifactRevision: 4,
+      initialArtifactLoadToken: "live-load",
+    },
+    beginLoadResponses: [{ ok: false, status: 409, json: async () => ({ status: "superseded" }) }],
+  });
+  await flushPromises();
+  await flushPromises();
+
+  assert.deepEqual(
+    chrome.srcLoads.map((load) => load.src),
+    ["/artifact/abc/index.html?artifact_revision=4&artifact_load_token=live-load"],
+  );
+  assert.equal(chrome.element("handoffBanner").hidden, false);
+});
+
 test("the layout gate reveals after a completed pass with no findings", async () => {
   const { posts, fetchImpl } = diagnosticsHarness([[]]);
   const chrome = await createChromeHarness({ fetchImpl });
@@ -6245,8 +6284,45 @@ test("chrome send and end with an empty composer nudges instead of ending", asyn
   assert.equal(posts.length, 0);
   assert.equal(chrome.postedToFrame.length, 0);
   assert.equal(chrome.element("sendHint").hidden, false);
+  assert.match(chrome.element("sendHint").textContent, /End session/);
   assert.equal(chrome.element("chatInput").focused, true);
   assert.equal(chrome.element("chatInput").disabled, false);
+});
+
+test("chrome send and end nudges toward End session when preparation leaves the queue empty", async () => {
+  const posts = [];
+  let finishPreparation = () => {};
+  const preparation = new Promise((resolve) => {
+    finishPreparation = () => resolve({ ok: true, json: async () => ({ warnings: [] }) });
+  });
+  const chrome = await createChromeHarness({
+    fetchImpl: async (url, init = {}) => {
+      posts.push({ url, body: init.body ? JSON.parse(init.body) : null });
+      if (String(url).endsWith("/layout-warnings/queue")) return preparation;
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  chrome.eventSource().listeners.get("layout-warnings")({
+    data: JSON.stringify({ warnings: [warningPayload()] }),
+  });
+  const [row] = chrome.warningRows();
+  row.children[0].checked = true;
+  row.children[0].dispatch("change");
+  chrome.element("sendHint").hidden = true;
+
+  chrome.element("warningsQueueButton").click();
+  chrome.element("sendAndEnd").click();
+  finishPreparation();
+  await flushPromises();
+  await flushPromises();
+
+  assert.equal(
+    posts.some((post) => String(post.url).endsWith("/prompts")),
+    false,
+  );
+  assert.equal(chrome.element("sendHint").hidden, false);
+  assert.match(chrome.element("sendHint").textContent, /End session/);
+  assert.equal(chrome.element("sendAndEnd").disabled, false);
 });
 
 test("an oversized terminal snapshot retries once without optional DOM context", async () => {
@@ -6305,6 +6381,7 @@ test("chrome send with an empty composer shows a visible hint", async () => {
 
   assert.equal(chrome.element("sendHint").hidden, false);
   assert.equal(chrome.element("sendHint").textContent, "Write a message or annotate an element first.");
+  assert.doesNotMatch(chrome.element("sendHint").textContent, /End session/);
   assert.equal(chrome.element("chatInput").focused, true);
   assert.equal(chrome.postedToFrame.length, 0);
 });

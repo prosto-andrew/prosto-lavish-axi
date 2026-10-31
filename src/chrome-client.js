@@ -1122,6 +1122,7 @@ function replaceExpiredThumbnail(event) {
 chatLog.addEventListener("error", replaceExpiredThumbnail, true);
 
 const DEFAULT_SEND_HINT = "Write a message or annotate an element first.";
+const EMPTY_END_HINT = "Nothing to send. To end without feedback, use End session in the More menu (⋮).";
 
 function showSendHint(message = DEFAULT_SEND_HINT, holdMs = 2600, focusInput = true) {
   // LAVISH-FORK: the hint lives in the composer, which must be on screen to show it or take focus.
@@ -2401,7 +2402,7 @@ function sendQueued(endAfter) {
   const shouldEnd = Boolean(endAfter && !chipsBlocked);
   const preparations = shouldEnd ? [...feedbackPreparations] : [];
   if (!queued.length && preparations.length === 0) {
-    if (!chipsBlocked && !sendFailureOwner) showSendHint();
+    if (!chipsBlocked && !sendFailureOwner) showSendHint(endAfter ? EMPTY_END_HINT : DEFAULT_SEND_HINT);
     return;
   }
   if (!sendFailureOwner) hideSendHint(true);
@@ -2451,7 +2452,7 @@ function completeTerminalPreparation(terminal, results) {
   clearPreparationFailure("terminal");
   if (!terminal.prompts.length) {
     releaseTerminalSubmission(terminal);
-    if (!sendFailureOwner) showSendHint();
+    if (!sendFailureOwner) showSendHint(EMPTY_END_HINT);
     return;
   }
   // Only make the reservation durable once every preparation has joined the exact
@@ -3682,6 +3683,9 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
       previousToken &&
       artifactSpokeToken !== previousToken
     ) {
+      // A first load that gets no fresh token falls back to the one embedded in the page, so a
+      // superseded chrome still shows the artifact behind its takeover banner.
+      if (!frame.src) frame.src = artifactFrameSrcForLoad({ revision: artifactLoadRevision, token: previousToken });
       armArtifactAvailabilityProbe(previousToken);
     }
     return false;

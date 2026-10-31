@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.1.93](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.92...lavish-axi-v0.1.93) (2026-10-24)
+
+
+### Bug Fixes
+
+* **artifact-sdk:** stop artifact key handlers from cancelling annotation typing ([#452](https://github.com/kunchenguid/lavish-axi/issues/452)) ([83ec776](https://github.com/kunchenguid/lavish-axi/commit/83ec77686f2eeb94ed29554bd0c02bd042d648b5))
+* **chrome:** navigate the artifact frame only from replaceArtifactFrame ([#453](https://github.com/kunchenguid/lavish-axi/issues/453)) ([8908c07](https://github.com/kunchenguid/lavish-axi/commit/8908c0772af62051c5c74ef75d347fea8ae5aea1)), closes [#451](https://github.com/kunchenguid/lavish-axi/issues/451)
+
+## [0.1.92](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.91...lavish-axi-v0.1.92) (2026-10-22)
+
+
+### Bug Fixes
+
+* **design-reference:** correct claim that Lavish serves files unmodified ([#449](https://github.com/kunchenguid/lavish-axi/issues/449)) ([8f71a85](https://github.com/kunchenguid/lavish-axi/commit/8f71a854a50a570d076c0b1321708e307bb9aeab))
+
+## [0.1.91](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.90...lavish-axi-v0.1.91) (2026-10-21)
+
+
+### Bug Fixes
+
+* **chrome:** name End session in the empty Send & End hint ([#441](https://github.com/kunchenguid/lavish-axi/issues/441)) ([c3f42c6](https://github.com/kunchenguid/lavish-axi/commit/c3f42c62dab7ae8b4d0c9a8c74c89cdff2c5f489))
+* **cli:** name LAVISH_AXI_ALLOWED_HOSTS in the home help ([#438](https://github.com/kunchenguid/lavish-axi/issues/438)) ([a20e8dd](https://github.com/kunchenguid/lavish-axi/commit/a20e8dd3aa3f07153c59a5c4f320a595e94172d8))
+
 ## [0.1.90](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.89...lavish-axi-v0.1.90) (2026-10-18)
 
 
