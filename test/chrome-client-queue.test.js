@@ -17,6 +17,8 @@ const servedChromeIds = new Set(
   ),
 );
 
+const SERVED_TAB_ICON = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'/>";
+
 /** @typedef {{ key: string, file: string, layoutGateEnabled?: boolean, layoutGateMaxHoldMs?: number, modeToggleHotkeyKey?: string, initialChat?: any[], initialChatAckIds?: string[], initialChatRevision?: number, initialLayoutWarnings?: any[], initialArtifactRevision?: number, initialArtifactLoadToken?: string, initialArtifactLoadSequence?: number, attachmentMaxBytes?: number, attachmentMaxCount?: number, attachmentAcceptedMime?: string[], initialEnded?: boolean, initialEndedBy?: string | null, revisionPalette?: { hex: string, borderStyle: string, pattern: string }[] }} HarnessSessionData */
 /** @type {HarnessSessionData} */
 const defaultSessionData = {
@@ -118,6 +120,15 @@ async function createChromeHarness({
   const windowListeners = new Map();
   const documentListeners = new Map();
   const elements = new Map();
+  let tabIcon = {
+    attrs: { rel: "icon", href: SERVED_TAB_ICON },
+    getAttribute(name) {
+      return name in this.attrs ? this.attrs[name] : null;
+    },
+    replaceWith(next) {
+      tabIcon = next;
+    },
+  };
   const timers = new Map();
   const srcLoads = [];
   const beginRequests = [];
@@ -465,8 +476,12 @@ async function createChromeHarness({
       }
     },
     document: {
+      // The tab as the server served it: the artifact's title and its icon link.
+      title: "Plan \u00b7 Lavish",
       body: element("body"),
       documentElement: element("html"),
+      head: { appendChild: (link) => (tabIcon = link) },
+      querySelector: (selector) => (selector === 'link[rel~="icon"]' ? tabIcon : null),
       get activeElement() {
         return activeElement;
       },
@@ -483,6 +498,12 @@ async function createChromeHarness({
       createElement(tag) {
         const el = element(`${tag}-${elements.size}`);
         el.tagName = tag.toUpperCase();
+        el.attrs = {};
+        el.setAttribute = (name, value) => (el.attrs[name] = String(value));
+        el.getAttribute = (name) => (name in el.attrs ? el.attrs[name] : null);
+        el.replaceWith = (next) => {
+          if (tabIcon === el) tabIcon = next;
+        };
         return el;
       },
       execCommand() {
@@ -608,6 +629,12 @@ async function createChromeHarness({
     },
     webSocketCount() {
       return webSockets.length;
+    },
+    messageHandlers() {
+      return windowListeners.get("message") || [];
+    },
+    tab() {
+      return { title: context.document.title, icon: tabIcon ? tabIcon.getAttribute("href") : null };
     },
     sendFrameMessage(data) {
       const handlers = windowListeners.get("message") || [];
@@ -10837,4 +10864,85 @@ test("a side change re-themes the fullscreen whiteboard too", async () => {
     { ...chrome.postedToWhiteboard.at(-1) },
     { type: "lavish-whiteboard:theme", theme: "light", channelId: "overlay-channel" },
   );
+});
+
+// ---- Tab title and icon from the artifact (lavish:documentMeta) ----
+
+const PAGE_ICON = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg'><circle r='4'/></svg>";
+
+async function sendDocumentMeta(chrome, meta, { token = chrome.artifactLoadToken() } = {}) {
+  chrome.sendFrameMessage({ type: "lavish:documentMeta", artifact_load_token: token, ...meta });
+}
+
+test("a page can set the tab title and icon after it loaded", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  assert.deepEqual(chrome.tab(), { title: "Plan \u00b7 Lavish", icon: SERVED_TAB_ICON });
+  await sendDocumentMeta(chrome, { title: "(2) Agent canvas", icon: PAGE_ICON });
+  assert.deepEqual(chrome.tab(), { title: "(2) Agent canvas \u00b7 Lavish", icon: PAGE_ICON });
+});
+
+test("a field the page leaves out stays as it was", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  await sendDocumentMeta(chrome, { title: "Only title" });
+  assert.deepEqual(chrome.tab(), { title: "Only title \u00b7 Lavish", icon: SERVED_TAB_ICON });
+  await sendDocumentMeta(chrome, { icon: PAGE_ICON });
+  assert.deepEqual(chrome.tab(), { title: "Only title \u00b7 Lavish", icon: PAGE_ICON });
+});
+
+test("null puts back the title and icon the tab loaded with", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  await sendDocumentMeta(chrome, { title: "Changed", icon: PAGE_ICON });
+  await sendDocumentMeta(chrome, { title: null, icon: null });
+  assert.deepEqual(chrome.tab(), { title: "Plan \u00b7 Lavish", icon: SERVED_TAB_ICON });
+});
+
+test("the tab title is flattened, trimmed and capped; a blank one restores the load-time title", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  await sendDocumentMeta(chrome, { title: "  two\n\tlines\u0000 here  " });
+  assert.equal(chrome.tab().title, "two lines here \u00b7 Lavish");
+  await sendDocumentMeta(chrome, { title: "x".repeat(500) });
+  assert.equal(chrome.tab().title, "x".repeat(120) + " \u00b7 Lavish");
+  await sendDocumentMeta(chrome, { title: " \n " });
+  assert.equal(chrome.tab().title, "Plan \u00b7 Lavish");
+});
+
+for (const [label, icon] of [
+  ["an http URL", "http://example.com/i.svg"],
+  ["an https URL", "https://example.com/i.svg"],
+  ["a png data URL", "data:image/png;base64,AAAA"],
+  ["a javascript URL", "javascript:alert(1)"],
+  ["a non-string", { href: PAGE_ICON }],
+  ["an oversized SVG", "data:image/svg+xml," + "a".repeat(8192)],
+]) {
+  test(`the tab icon refuses ${label}`, async () => {
+    const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+    await sendDocumentMeta(chrome, { icon, title: "still applies" });
+    assert.deepEqual(chrome.tab(), { title: "still applies \u00b7 Lavish", icon: SERVED_TAB_ICON });
+  });
+}
+
+test("the tab icon accepts an SVG data URL at the size cap", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  const icon = "data:image/svg+xml,".padEnd(8192, "a");
+  await sendDocumentMeta(chrome, { icon });
+  assert.equal(chrome.tab().icon, icon);
+});
+
+test("a document-meta message without the current load token is ignored", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  await sendDocumentMeta(chrome, { title: "stale", icon: PAGE_ICON }, { token: "an-old-load" });
+  await sendDocumentMeta(chrome, { title: "tokenless" }, { token: "" });
+  assert.deepEqual(chrome.tab(), { title: "Plan \u00b7 Lavish", icon: SERVED_TAB_ICON });
+});
+
+test("a window that is not the artifact frame cannot set the tab", async () => {
+  const chrome = await createChromeHarness({ artifactSrc: "/artifact/abc/index.html" });
+  const foreign = chrome.createForeignWindow();
+  for (const handler of chrome.messageHandlers()) {
+    handler({
+      source: foreign.source,
+      data: { type: "lavish:documentMeta", artifact_load_token: chrome.artifactLoadToken(), title: "spoof" },
+    });
+  }
+  assert.equal(chrome.tab().title, "Plan \u00b7 Lavish");
 });
