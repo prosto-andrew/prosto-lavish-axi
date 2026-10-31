@@ -919,8 +919,10 @@ export async function serve({
   // the sweeper's reference snapshot and its delete (D5), and `queuePrompts` cannot
   // interleave with a concurrent poll.
 
-  const defaultJsonParser = express.json({ limit: "2mb" });
-  const whiteboardJsonParser = express.json({ limit: "20mb" });
+  // LAVISH-HARDENED: nothing in this build sends a compressed body, so none is ever decompressed;
+  // an encoded body gets 415 before any decoder exists (GHSA-27r3-jxmh-p828 lived in that decoder).
+  const defaultJsonParser = express.json({ limit: "2mb", inflate: false });
+  const whiteboardJsonParser = express.json({ limit: "20mb", inflate: false });
   app.use((req, res, next) => {
     // The attachment upload reads the raw request stream itself (see the route),
     // so no body parser runs for it - express.raw's limit aborts on Content-Length
