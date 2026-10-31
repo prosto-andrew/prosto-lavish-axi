@@ -106,6 +106,21 @@ function assertObservablePollWakePath(text) {
   assert.doesNotMatch(text, /foreground command may run.*run the poll as a background task/i);
 }
 
+test("home help names LAVISH_AXI_ALLOWED_HOSTS for the 403 forbidden host case", () => {
+  const output = createHomeOutput({ bin: "lavish-axi", sessions: [] });
+  const hostHelp = output.help.find((item) => item.includes("LAVISH_AXI_ALLOWED_HOSTS"));
+
+  assert.ok(hostHelp, "home help names the allowlist variable");
+  assert.match(hostHelp, /403 `forbidden host`/);
+  assert.match(hostHelp, /reverse-proxy/);
+  assert.match(hostHelp, /README's Allowed hosts section/);
+  assert.doesNotMatch(hostHelp, /whitespace-separated/);
+  // LAVISH-HARDENED: the help names the launcher, and it suggests no LAN address to allow: this
+  // server listens on loopback only, so a request by LAN IP never reaches it.
+  assert.match(hostHelp, /`lavish-safe stop`/);
+  assert.doesNotMatch(hostHelp, /LAN IP/);
+});
+
 test("CLI version tracks package.json so release-please bumps reach the published binary", async () => {
   const packageJson = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
   assert.equal(VERSION, packageJson.version);
@@ -393,6 +408,8 @@ test("design output prints local asset URLs, never a CDN", () => {
   // directly opened copy shows the diagram source instead of the diagram.
   assert.match(output.whiteboard_tooling.use_when, /only inside a Lavish review/);
   assert.match(output.design.summary, /opened directly from disk is unstyled/);
+  assert.match(output.design.summary, /start it with `<!doctype html>`/);
+  assert.match(output.design.summary, /quirks mode/);
 });
 
 // LAVISH-FORK: the default is the luxury/caramellatte pair that follows the reviewer's light/dark side

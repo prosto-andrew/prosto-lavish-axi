@@ -249,7 +249,7 @@ export function createDesignOutput() {
       summary:
         "Use this Lavish local design fallback only if (1) the user gave no design direction and (2) you already inspected the project the artifact is about and found no design system or style conventions to match. If you have not checked the subject project yet, check first. Lavish does not auto-inject any design system. Paint an explicit page background and readable text. " +
         DESIGN_PRIORITY_RULE +
-        " Paste the local design snippet below into your `<head>`. It loads from this machine's Lavish server, so the artifact makes no outbound request; `export` inlines these files into the standalone copy, while the source file opened directly from disk is unstyled.",
+        " Lavish adds only its SDK script to your file and never wraps a fragment, so start it with `<!doctype html>`: without one the page renders in quirks mode, where `<table>` text stops inheriting the color a wrapper theme sets. Paste the local design snippet below into your `<head>`. It loads from this machine's Lavish server, so the artifact makes no outbound request; `export` inlines these files into the standalone copy, while the source file opened directly from disk is unstyled.",
       cdn_snippet: DESIGN_CDN_SNIPPET,
       theme_switch_snippet: THEME_SWITCH_SNIPPET,
       theme_switch_note:

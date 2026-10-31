@@ -1,6 +1,6 @@
 # Установка hardened lavish в WSL / Linux
 
-Ставится **hardened-сборка** lavish-axi 0.1.90 из вашего форка —
+Ставится **hardened-сборка** lavish-axi 0.1.93 из вашего форка —
 копия, из исходников которой удалены телеметрия, публикация на сторонний хост, привязка
 к Tailscale/LAN, установка постоянных хуков и загрузка ассетов с CDN. Стоковый пакет из
 npm ставить нельзя ни при каких условиях.
@@ -117,7 +117,7 @@ ln -sf "$PWD/lavish-safe" ~/.local/bin/lavish-safe
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 
-lavish-safe --version    # => 0.1.90
+lavish-safe --version    # => 0.1.93
 ```
 
 Если вы позже перенесёте папку форка, просто повторите `ln -sf` из нового места.
