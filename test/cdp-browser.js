@@ -3,9 +3,9 @@
 // fetches `chrome-devtools-mcp@latest` from npm at run time (past the lockfile and the release-age
 // policy), and on Windows `spawnSync` cannot start its npm `.cmd` shim without a shell. This module
 // covers exactly what those suites asked of it: open, emulate, evaluate, wait, and a real click and
-// typing inside the sandboxed artifact frame. LAVISH-FORK: plus a real Enter key press and a fresh
-// second tab, for the desktop conversation toggle suite; and typing one key at a time, Space and
-// ArrowRight, for the annotation keyboard suite.
+// typing inside the sandboxed artifact frame. LAVISH-FORK: plus real key presses (Enter, Escape,
+// ArrowRight, Ctrl with a letter) for the desktop conversation toggle and annotation keyboard suites,
+// a fresh second tab for the former, and typing one key at a time for the latter.
 //
 // `node --test` runs every `.js` file under test/, so this file also runs as an empty test file.
 import { spawn, spawnSync } from "node:child_process";
@@ -350,22 +350,29 @@ export async function launchBrowser({ chromePath, profileDir }) {
         await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...key }, page);
       }
     },
-    /** Presses a key on whatever has focus, the way a keyboard would: Enter, Space (" ") or ArrowRight. */
-    async press(key) {
-      if (key === "Enter") {
-        const enter = { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
-        await cdp.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...enter }, page);
-        await cdp.send("Input.dispatchKeyEvent", { type: "char", text: "\r", ...enter }, page);
-        await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...enter }, page);
-      } else if (key === " ") {
-        await this.typeKeys(" ");
-      } else if (key === "ArrowRight") {
-        const arrow = { key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39, nativeVirtualKeyCode: 39 };
-        await cdp.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...arrow }, page);
-        await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...arrow }, page);
+    /**
+     * Presses a key on whatever has focus, the way a keyboard would: Enter, Escape or ArrowRight, or a
+     * lowercase letter with `{ ctrl: true }` for a shortcut such as Ctrl+I. Spaces go through `typeKeys`.
+     */
+    async press(key, { ctrl = false } = {}) {
+      const named = {
+        Enter: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 },
+        Escape: { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 },
+        ArrowRight: { key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39, nativeVirtualKeyCode: 39 },
+      };
+      let event;
+      if (ctrl) {
+        if (!/^[a-z]$/.test(key)) throw new Error(`press with ctrl takes one lowercase letter, not ${key}`);
+        event = { ...keyFor(key), modifiers: 2 };
+      } else if (Object.hasOwn(named, key)) {
+        event = named[key];
       } else {
-        throw new Error(`press supports Enter, " " and ArrowRight, not ${key}`);
+        throw new Error(`press supports Enter, Escape, ArrowRight and Ctrl with a letter, not ${key}`);
       }
+      await cdp.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...event }, page);
+      // Only Enter types a character; Escape, an arrow and a Ctrl shortcut insert nothing.
+      if (key === "Enter") await cdp.send("Input.dispatchKeyEvent", { type: "char", text: "\r", ...event }, page);
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...event }, page);
     },
     /**
      * Opens `url` in a fresh tab of the same browser. Unlike `window.open`, which copies the
