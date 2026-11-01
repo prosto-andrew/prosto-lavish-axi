@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.96](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.95...lavish-axi-v0.1.96) (2026-10-29)
+
+
+### Bug Fixes
+
+* **server:** inject the SDK at the parser-reported body end tag ([#472](https://github.com/kunchenguid/lavish-axi/issues/472)) ([5696b36](https://github.com/kunchenguid/lavish-axi/commit/5696b369d63944e32abb1929681670c21400473d)), closes [#471](https://github.com/kunchenguid/lavish-axi/issues/471)
+* skip unresolved Tailscale binaries before probing ([#467](https://github.com/kunchenguid/lavish-axi/issues/467)) ([3472c71](https://github.com/kunchenguid/lavish-axi/commit/3472c71844d945f4cb5d8a7a7e4b5bc060c192aa))
+
+## [0.1.95](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.94...lavish-axi-v0.1.95) (2026-10-28)
+
+
+### Bug Fixes
+
+* **chrome:** warn that unsent answers stay in their own tab before takeover and on empty Send ([#464](https://github.com/kunchenguid/lavish-axi/issues/464)) ([741ea83](https://github.com/kunchenguid/lavish-axi/commit/741ea8390fed0e56922ef338c274565659dc526d))
+
 ## [0.1.94](https://github.com/kunchenguid/lavish-axi/compare/lavish-axi-v0.1.93...lavish-axi-v0.1.94) (2026-10-26)
 
 

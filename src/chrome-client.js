@@ -1121,7 +1121,10 @@ function replaceExpiredThumbnail(event) {
 
 chatLog.addEventListener("error", replaceExpiredThumbnail, true);
 
-const DEFAULT_SEND_HINT = "Write a message or annotate an element first.";
+const UNSENT_OWNERSHIP_COPY =
+  "Unsent answers stay in the tab or window where you entered them; taking over in another window does not bring them along.";
+const DEFAULT_SEND_HINT = "Nothing queued in this tab. " + UNSENT_OWNERSHIP_COPY;
+const EMPTY_SEND_HINT_HOLD_MS = 9000;
 const EMPTY_END_HINT = "Nothing to send. To end without feedback, use End session in the More menu (⋮).";
 
 function showSendHint(message = DEFAULT_SEND_HINT, holdMs = 2600, focusInput = true) {
@@ -2402,7 +2405,10 @@ function sendQueued(endAfter) {
   const shouldEnd = Boolean(endAfter && !chipsBlocked);
   const preparations = shouldEnd ? [...feedbackPreparations] : [];
   if (!queued.length && preparations.length === 0) {
-    if (!chipsBlocked && !sendFailureOwner) showSendHint(endAfter ? EMPTY_END_HINT : DEFAULT_SEND_HINT);
+    if (!chipsBlocked && !sendFailureOwner) {
+      if (endAfter) showSendHint(EMPTY_END_HINT);
+      else showSendHint(DEFAULT_SEND_HINT, EMPTY_SEND_HINT_HOLD_MS);
+    }
     return;
   }
   if (!sendFailureOwner) hideSendHint(true);
@@ -3758,7 +3764,7 @@ async function replaceArtifactFrame({ recoveryRetry = false } = {}) {
           if (!artifactLoadToken) {
             setLayoutGateFailure(
               "This review is already open in another tab.",
-              "Lavish loads an artifact in one tab at a time. Take over here to move the review into this tab, or switch back to the tab that already has it.",
+              UNSENT_OWNERSHIP_COPY,
               "Take over here",
             );
           }

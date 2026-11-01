@@ -44,3 +44,16 @@ test("parseTailscaleStatus ignores malformed or non-running status", () => {
     null,
   );
 });
+
+// LAVISH-HARDENED: upstream 0.1.96 resolves each Tailscale command to an executable file before it
+// runs one (#467). This build has no probe for that to guard (specs/2026-10-13-upstream-sync-0.1.87-design.md
+// 13.3, 15.4), so the module keeps its single import and no part of #467's lookup comes back with a
+// later merge, not even as a function nothing calls.
+test("upstream's executable lookup before the Tailscale probe (#467) is not in this build", async () => {
+  const source = await readFile(new URL("../src/tailscale.js", import.meta.url), "utf8");
+  const imports = [...source.matchAll(/^import\b[^;]*?\bfrom\s+"([^"]+)";/gm)].map((match) => match[1]);
+  assert.deepEqual(imports, ["node:net"]);
+  for (const name of ["resolveTailscaleCommand", "resolveCommand", "X_OK"]) {
+    assert.ok(!source.includes(name), `src/tailscale.js carries #467's ${name}`);
+  }
+});
