@@ -218,6 +218,27 @@ test("the conversation panel hides and returns on a wide screen", { skip: browse
     await browser.wait(300);
     assert.equal((await geometry()).hidden, true);
 
+    // ---- The element of the note being edited brings the hidden panel back to that edit ----
+    await browser.clickInPage("#panelButton");
+    await browser.wait(300);
+    await browser.clickInPage(".bubble.queued");
+    await browser.wait(300);
+    await browser.type(", edited");
+    await browser.clickInPage("#panelButton");
+    await browser.wait(300);
+    assert.equal((await geometry()).hidden, true, "the panel hides with the edit open");
+    await browser.clickInArtifact("#annotate-me");
+    await browser.wait(800);
+    const edit = parsed(
+      await browser.evaluate(
+        '() => { const input = document.querySelector(".queued-edit-input"); const r = input ? input.getBoundingClientRect() : null; return JSON.stringify({ hidden: document.body.classList.contains("panel-hidden"), focused: Boolean(input) && document.activeElement === input, value: input ? input.value : "", width: r ? Math.round(r.width) : 0 }); }',
+      ),
+    );
+    assert.equal(edit.hidden, false, `the panel comes back: ${JSON.stringify(edit)}`);
+    assert.equal(edit.focused, true, `the edit has focus: ${JSON.stringify(edit)}`);
+    assert.ok(edit.width > 0, `the edit is on screen: ${JSON.stringify(edit)}`);
+    assert.equal(edit.value, "Note while hidden, edited");
+
     // ---- A fresh tab starts with the panel shown ----
     const tab = await browser.openTab(url);
     await browser.wait(3000);

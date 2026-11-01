@@ -8329,6 +8329,41 @@ test("desktop panel: editing a queued note from the artifact shows the panel", a
   assert.match(chrome.element("queuedLog").innerHTML, /class="queued-edit-input"[^>]*>Make this heading bigger</);
 });
 
+// Hiding the panel keeps an open edit, so the element of the note being edited brings it back.
+test("desktop panel: clicking the element of the note being edited shows the panel at that edit", async () => {
+  const chrome = await createChromeHarness();
+  queueHeadingNote(chrome, "Shorter heading");
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["bubble", "queued"], 0) });
+  typeIntoQueuedEdit(chrome, "Much shorter heading");
+  chrome.element("panelButton").dispatch("click", {});
+  assert.equal(panelState(chrome).hidden, true);
+  // The click on the element in the artifact takes the focus into the frame.
+  chrome.element("artifact").focus();
+
+  chrome.sendFrameMessage({ type: "lavish:editQueuedAnchor", selector: "main > h2" });
+
+  assert.equal(panelState(chrome).hidden, false);
+  assert.equal(chrome.focusLog.at(-1), "queued-edit-input");
+  assert.match(chrome.element("queuedLog").innerHTML, /class="queued-edit-input"[^>]*>Much shorter heading</);
+});
+
+test("phone sheet: clicking the element of the note being edited raises the sheet at that edit", async () => {
+  const chrome = await createChromeHarness({ mobile: true });
+  chrome.element("panelHead").dispatch("click", {});
+  queueHeadingNote(chrome, "Shorter heading");
+  chrome.element("queuedLog").dispatch("click", { target: queuedLogNode(["bubble", "queued"], 0) });
+  typeIntoQueuedEdit(chrome, "Much shorter heading");
+  chrome.element("panelScrim").dispatch("click", {});
+  assert.equal(sheetState(chrome).open, false);
+  chrome.element("artifact").focus();
+
+  chrome.sendFrameMessage({ type: "lavish:editQueuedAnchor", selector: "main > h2" });
+
+  assert.equal(sheetState(chrome).open, true);
+  assert.equal(chrome.focusLog.at(-1), "queued-edit-input");
+  assert.match(chrome.element("queuedLog").innerHTML, /class="queued-edit-input"[^>]*>Much shorter heading</);
+});
+
 test("desktop panel: an empty send from the artifact shows the panel before focusing the composer", async () => {
   const chrome = await createChromeHarness();
   chrome.element("panelButton").dispatch("click", {});
