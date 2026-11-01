@@ -132,3 +132,81 @@ test(
     }
   },
 );
+
+// LAVISH-FORK: the card's own keys, pressed for real. The shadow root stops each key on its way out
+// to the artifact; stopped on the way in (capture) instead, it would also keep Enter and Escape from
+// the card's field, and a mode hotkey listening in the bubble phase would never hear Ctrl+I there.
+test(
+  "Escape, the mode hotkey and Enter still work inside the annotation card",
+  { skip: browserSkip, timeout: 180_000 },
+  async () => {
+    const temp = await mkdtemp(path.join(tmpdir(), "lavish-keyboard-e2e-"));
+    const port = await freePort();
+    const lavishEnv = {
+      LAVISH_AXI_PORT: String(port),
+      LAVISH_AXI_STATE_DIR: path.join(temp, "state"),
+      LAVISH_AXI_NO_OPEN: "1",
+      LAVISH_AXI_TELEMETRY: "0",
+      LAVISH_AXI_HOST: "127.0.0.1",
+      LAVISH_AXI_LINK_HOST: "127.0.0.1",
+    };
+    let browser;
+    const card = async () => JSON.parse(await browser.evaluateInArtifact(CARD));
+    const chrome = async () =>
+      JSON.parse(
+        await browser.evaluate(
+          `JSON.stringify({ annotate: document.getElementById("annotation").getAttribute("aria-pressed"), queued: document.querySelectorAll(".bubble.queued").length })`,
+        ),
+      );
+    const openCard = async () => {
+      await browser.clickInArtifact("#annotate-me");
+      const opened = await waitForValue(card, (state) => state.open && state.focused);
+      assert.ok(opened.open && opened.focused, `the card opens with its field focused: ${JSON.stringify(opened)}`);
+    };
+
+    try {
+      browser = await launchBrowser({ chromePath, profileDir: path.join(temp, "chrome") });
+      const artifact = path.join(temp, "deck.html");
+      await writeFile(artifact, ARTIFACT_HTML);
+      const output = run(process.execPath, ["bin/lavish-axi.js", artifact, "--no-open"], lavishEnv);
+      const url = output.match(/url:\s*"([^"]+)"/)?.[1];
+      assert.ok(url, output);
+
+      await browser.open(url);
+      const gate = await waitForValue(
+        () => browser.evaluate(`document.body.classList.contains("layout-gate-active")`),
+        (active) => active === false,
+        { timeoutMs: 20_000 },
+      );
+      assert.equal(gate, false, "the layout gate lifts");
+
+      await openCard();
+      await browser.press("Escape");
+      let state = await waitForValue(card, (value) => !value.open);
+      assert.equal(state.open, false, "Escape closes an empty card");
+
+      await openCard();
+      await browser.press("i", { ctrl: true });
+      const modeOff = await waitForValue(chrome, (value) => value.annotate === "false");
+      assert.equal(modeOff.annotate, "false", "Ctrl+I in the card turns Annotate off");
+      state = await waitForValue(card, (value) => !value.open);
+      assert.equal(state.open, false, "turning Annotate off closes the card");
+      await browser.clickInPage("#annotation");
+      const modeOn = await waitForValue(chrome, (value) => value.annotate === "true");
+      assert.equal(modeOn.annotate, "true");
+
+      await openCard();
+      await browser.typeKeys("queue this");
+      await browser.press("Enter");
+      state = await waitForValue(card, (value) => !value.open);
+      assert.equal(state.open, false, "Enter queues the note and closes the card");
+      const queued = await waitForValue(chrome, (value) => value.queued === 1);
+      assert.equal(queued.queued, 1, "the note is in the queue");
+      assert.equal(state.slide, "Slide 1", "the space typed in the card did not page the deck");
+    } finally {
+      run(process.execPath, ["bin/lavish-axi.js", "stop", "--port", String(port)], lavishEnv, 15_000);
+      await browser?.close();
+      await rm(temp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    }
+  },
+);

@@ -115,8 +115,9 @@ test("home help names LAVISH_AXI_ALLOWED_HOSTS for the 403 forbidden host case",
   assert.match(hostHelp, /reverse-proxy/);
   assert.match(hostHelp, /README's Allowed hosts section/);
   assert.doesNotMatch(hostHelp, /whitespace-separated/);
-  // LAVISH-HARDENED: the help names the launcher, and it suggests no LAN address to allow: this
-  // server listens on loopback only, so a request by LAN IP never reaches it.
+  // LAVISH-HARDENED: the help names the launcher, and it suggests no LAN address to allow: advice to
+  // allow one nudges an agent toward opening this loopback-only server to the network. A reverse
+  // proxy in front of it is set up as README's Allowed hosts section describes.
   assert.match(hostHelp, /`lavish-safe stop`/);
   assert.doesNotMatch(hostHelp, /LAN IP/);
 });

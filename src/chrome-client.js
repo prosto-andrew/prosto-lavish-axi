@@ -1917,7 +1917,18 @@ function editQueuedPrompt(index, { reveal = true } = {}) {
   const prompt = queued[index];
   if (ended || !isPromptEditable(prompt)) return;
   const id = promptIdentity(prompt);
-  if (!id || id === editingPromptId) return;
+  if (!id) return;
+  if (id === editingPromptId) {
+    // LAVISH-FORK: hiding the panel or lowering the sheet keeps the open edit, so asking for it
+    // again brings it back into view.
+    if (!conversationShown()) {
+      editFocusPending = true;
+      if (isMobileSheet()) setSheetOpen(true);
+      showPanelIfHidden();
+      render();
+    }
+    return;
+  }
   // Moving to another note keeps what was typed into the first, the way leaving a field does.
   commitQueuedEdit();
   editingPromptId = id;
