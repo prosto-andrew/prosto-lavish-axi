@@ -51,25 +51,6 @@ export function parseTailscaleStatus(raw) {
   return { ipv4, magicDnsName };
 }
 
-async function resolveTailscaleCommand(command, env) {
-  const candidates = path.isAbsolute(command)
-    ? [command]
-    : (env.PATH ?? (process.platform === "win32" ? "" : "/usr/bin:/bin")).split(path.delimiter).flatMap((directory) => {
-        const candidate = path.resolve(directory, command);
-        return process.platform === "win32" ? [candidate, `${candidate}.exe`] : [candidate];
-      });
-  for (const candidate of candidates) {
-    try {
-      if (!(await stat(candidate)).isFile()) continue;
-      await access(candidate, constants.X_OK);
-      return candidate;
-    } catch {
-      // Missing or inaccessible candidates must not trigger a launch attempt.
-    }
-  }
-  return null;
-}
-
 /**
  * Always null in this build. Callers still pass the stock options object; every
  * argument is ignored and no subprocess is started.

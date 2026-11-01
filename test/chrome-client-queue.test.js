@@ -4207,7 +4207,8 @@ test("empty Send names this tab's queue without importing another window's answe
     storage: secondStorage,
     fetchImpl,
     artifactSrc: "/artifact/abc/index.html",
-    sessionData: { ...defaultSessionData, chromeLoadToken: "old-handoff" },
+    // LAVISH-HARDENED: no chromeLoadToken - this build's page never embeds the handoff token (PR #16).
+    sessionData: defaultSessionData,
     beginLoadResponses: [{ ok: false, status: 409, json: async () => ({ status: "superseded" }) }],
   });
 
